@@ -116,10 +116,10 @@ impl BinaryPolyBusVerifier {
     pub fn input_shape(&self) -> BinaryPolyBusInputShape {
         self.input.clone()
     }
-    pub fn degree(&self) -> usize {
+    pub const fn degree(&self) -> usize {
         self.degree
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
     pub fn check_targets<T>(

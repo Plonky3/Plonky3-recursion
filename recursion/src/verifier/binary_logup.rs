@@ -156,7 +156,7 @@ pub struct NativeBinaryLogupStarInput<F = BinaryField128, E = BinaryField128> {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     NativeBinaryLogupStarInput<F, E>
 {
-    pub fn shape(&self) -> &BinaryLogupStarInputShape<F, E> {
+    pub const fn shape(&self) -> &BinaryLogupStarInputShape<F, E> {
         &self.shape
     }
     pub fn private_values<EF: Field>(
@@ -389,7 +389,7 @@ where
     pub fn input_shape(&self) -> BinaryLogupStarInputShape<F, E> {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

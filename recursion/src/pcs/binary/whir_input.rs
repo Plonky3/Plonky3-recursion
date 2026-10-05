@@ -225,7 +225,7 @@ pub struct NativeBinaryWhirInput<F> {
     limbs: Vec<u16>,
 }
 impl<F: RecursiveBinaryWhirTowerField> NativeBinaryWhirInput<F> {
-    pub fn shape(&self) -> &BinaryWhirInputShape<F> {
+    pub const fn shape(&self) -> &BinaryWhirInputShape<F> {
         &self.shape
     }
     pub fn private_values<EF: Field>(

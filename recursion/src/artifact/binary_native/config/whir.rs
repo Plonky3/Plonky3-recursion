@@ -109,13 +109,13 @@ where
             cap_height,
         })
     }
-    pub fn configuration(&self) -> &WhirConfig<BinaryField128, F, BinaryNativeChallenger<F>> {
+    pub const fn configuration(&self) -> &WhirConfig<BinaryField128, F, BinaryNativeChallenger<F>> {
         &self.config
     }
-    pub fn hash(&self) -> ByteHash {
+    pub const fn hash(&self) -> ByteHash {
         self.hash
     }
-    pub fn cap_height(&self) -> usize {
+    pub const fn cap_height(&self) -> usize {
         self.cap_height
     }
 }

@@ -390,7 +390,7 @@ fn mul(a: usize, b: usize) -> Result<usize, VerificationError> {
             component: "binary WHIR input sizes",
         })
 }
-pub(super) fn limit(
+pub(super) const fn limit(
     component: &'static str,
     actual: usize,
     limit: usize,

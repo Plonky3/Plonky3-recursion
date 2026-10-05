@@ -226,7 +226,7 @@ pub struct NativeBinaryWhirMultiStarkInput<F = BinaryField128> {
 }
 
 impl<F: RecursiveBinaryWhirTowerField> NativeBinaryWhirMultiStarkInput<F> {
-    pub fn shape(&self) -> &BinaryWhirMultiStarkInputShape<F> {
+    pub const fn shape(&self) -> &BinaryWhirMultiStarkInputShape<F> {
         &self.shape
     }
 
@@ -492,7 +492,7 @@ where
     pub fn input_shape(&self) -> BinaryWhirMultiStarkInputShape<F> {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

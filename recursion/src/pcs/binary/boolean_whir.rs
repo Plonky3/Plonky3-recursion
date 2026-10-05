@@ -94,7 +94,7 @@ pub struct NativeBinaryBooleanWhirInput {
 }
 
 impl NativeBinaryBooleanWhirInput {
-    pub fn shape(&self) -> &BinaryBooleanWhirInputShape {
+    pub const fn shape(&self) -> &BinaryBooleanWhirInputShape {
         &self.shape
     }
 
@@ -164,7 +164,7 @@ impl BinaryBooleanWhirVerifier {
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

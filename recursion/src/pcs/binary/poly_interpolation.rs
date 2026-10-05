@@ -127,7 +127,7 @@ impl Poly192SumcheckInterpolator {
         Ok(Self { coefficients })
     }
 
-    pub(crate) fn metadata_entries(&self) -> usize {
+    pub(crate) const fn metadata_entries(&self) -> usize {
         // The checked native constructor bounds this square before allocation.
         self.coefficients.len() * self.coefficients.len()
     }

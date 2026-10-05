@@ -151,7 +151,7 @@ pub struct NativeBinaryPolyLogupStarInput {
 }
 
 impl NativeBinaryPolyLogupStarInput {
-    pub fn shape(&self) -> &BinaryPolyLogupStarInputShape {
+    pub const fn shape(&self) -> &BinaryPolyLogupStarInputShape {
         &self.shape
     }
     pub fn private_values<EF: Field>(
@@ -379,7 +379,7 @@ impl BinaryPolyLogupStarVerifier {
     pub fn input_shape(&self) -> BinaryPolyLogupStarInputShape {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

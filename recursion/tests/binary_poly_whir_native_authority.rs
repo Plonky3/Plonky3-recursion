@@ -29,7 +29,7 @@ impl<AB: AirBuilder> Air<AB> for ConstantAir {
         b.assert_eq(b.main().current_slice()[0], b.public_values()[0]);
     }
 }
-fn parameters() -> ProtocolParameters {
+const fn parameters() -> ProtocolParameters {
     ProtocolParameters {
         security_level: 24,
         pow_bits: 0,

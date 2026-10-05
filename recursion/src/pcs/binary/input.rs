@@ -183,7 +183,7 @@ pub(super) struct NativeOracle {
 }
 
 impl NativeBinaryPcsInput {
-    pub fn shape(&self) -> &BinaryPcsInputShape {
+    pub const fn shape(&self) -> &BinaryPcsInputShape {
         &self.shape
     }
 

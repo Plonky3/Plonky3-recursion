@@ -43,7 +43,7 @@ pub struct BinaryPolyGenericSumcheckInputShape {
     shape: GenericDegreeShape,
 }
 impl BinaryPolyGenericSumcheckInputShape {
-    pub(crate) fn native_decode_shape(
+    pub(crate) const fn native_decode_shape(
         &self,
     ) -> crate::artifact::binary_native::codec::GenericDecode {
         crate::artifact::binary_native::codec::GenericDecode {
@@ -53,7 +53,7 @@ impl BinaryPolyGenericSumcheckInputShape {
         }
     }
 
-    fn pow_count(&self) -> usize {
+    const fn pow_count(&self) -> usize {
         if self.shape.pow_bits > 0 {
             self.shape.num_rounds
         } else {
@@ -110,7 +110,7 @@ pub struct NativeBinaryPolyGenericSumcheckInput {
     limbs: Vec<u16>,
 }
 impl NativeBinaryPolyGenericSumcheckInput {
-    pub fn shape(&self) -> &BinaryPolyGenericSumcheckInputShape {
+    pub const fn shape(&self) -> &BinaryPolyGenericSumcheckInputShape {
         &self.shape
     }
     pub fn private_values<EF: Field>(
@@ -183,7 +183,7 @@ impl BinaryPolyGenericSumcheckVerifier {
     pub fn input_shape(&self) -> BinaryPolyGenericSumcheckInputShape {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

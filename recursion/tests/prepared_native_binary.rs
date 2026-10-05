@@ -17,7 +17,7 @@ use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = BinaryField128;
-fn protocol() -> ProtocolParameters {
+const fn protocol() -> ProtocolParameters {
     ProtocolParameters {
         security_level: 8,
         pow_bits: 0,

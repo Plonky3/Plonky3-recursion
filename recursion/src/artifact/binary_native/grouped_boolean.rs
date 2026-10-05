@@ -72,7 +72,7 @@ impl<E: RecursiveBinaryChallengeField + ExtensionField<E>>
     pub fn canonical_verifier_bytes(&self) -> &[u8] {
         &self.identity
     }
-    pub fn native_input(&self) -> &NativeBinaryGroupedBooleanTraceMultiStarkInput<E> {
+    pub const fn native_input(&self) -> &NativeBinaryGroupedBooleanTraceMultiStarkInput<E> {
         &self.input
     }
     pub fn public_values(&self) -> &[Vec<E>] {

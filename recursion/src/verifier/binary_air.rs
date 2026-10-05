@@ -174,7 +174,7 @@ where
         })
     }
 
-    pub fn main_width(&self) -> usize {
+    pub const fn main_width(&self) -> usize {
         self.program.width
     }
     pub(super) fn indexed_reads(&self) -> &[IndexedRead] {
@@ -183,28 +183,28 @@ where
     pub(super) fn indexed_tables(&self) -> &[IndexedTable] {
         self.program.indexed.tables()
     }
-    pub fn public_value_count(&self) -> usize {
+    pub const fn public_value_count(&self) -> usize {
         self.program.public_count
     }
     pub fn next_columns(&self) -> &[usize] {
         &self.program.next_columns
     }
-    pub fn preprocessed_width(&self) -> usize {
+    pub const fn preprocessed_width(&self) -> usize {
         self.program.preprocessed_width
     }
     pub fn preprocessed_next_columns(&self) -> &[usize] {
         &self.program.preprocessed_next_columns
     }
-    pub fn log_height(&self) -> usize {
+    pub const fn log_height(&self) -> usize {
         self.program.log_height
     }
-    pub fn constraint_degree(&self) -> usize {
+    pub const fn constraint_degree(&self) -> usize {
         self.program.degree
     }
-    pub fn constraint_count(&self) -> usize {
+    pub const fn constraint_count(&self) -> usize {
         self.program.constraints.len()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.program.usage
     }
 
@@ -1063,31 +1063,31 @@ impl BinaryPolyAirConstraintPlan {
         .map(|(program, _)| Self { program })
     }
 
-    pub fn main_width(&self) -> usize {
+    pub const fn main_width(&self) -> usize {
         self.program.width
     }
-    pub fn public_value_count(&self) -> usize {
+    pub const fn public_value_count(&self) -> usize {
         self.program.public_count
     }
     pub fn next_columns(&self) -> &[usize] {
         &self.program.next_columns
     }
-    pub fn preprocessed_width(&self) -> usize {
+    pub const fn preprocessed_width(&self) -> usize {
         self.program.preprocessed_width
     }
     pub fn preprocessed_next_columns(&self) -> &[usize] {
         &self.program.preprocessed_next_columns
     }
-    pub fn log_height(&self) -> usize {
+    pub const fn log_height(&self) -> usize {
         self.program.log_height
     }
-    pub fn constraint_degree(&self) -> usize {
+    pub const fn constraint_degree(&self) -> usize {
         self.program.degree
     }
-    pub fn constraint_count(&self) -> usize {
+    pub const fn constraint_count(&self) -> usize {
         self.program.constraints.len()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.program.usage
     }
 

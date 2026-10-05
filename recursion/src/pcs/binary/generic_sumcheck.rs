@@ -39,7 +39,7 @@ impl Binary128SumcheckInterpolator {
         Ok(Self { coefficients })
     }
 
-    pub fn degree(&self) -> usize {
+    pub const fn degree(&self) -> usize {
         self.coefficients.len() - 1
     }
 

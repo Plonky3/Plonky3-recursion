@@ -214,7 +214,7 @@ pub struct NativeBinaryGroupedMultiStarkInput<F = BinaryField128, E = BinaryFiel
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     NativeBinaryGroupedMultiStarkInput<F, E>
 {
-    pub fn shape(&self) -> &BinaryGroupedMultiStarkInputShape<F, E> {
+    pub const fn shape(&self) -> &BinaryGroupedMultiStarkInputShape<F, E> {
         &self.shape
     }
 
@@ -494,7 +494,7 @@ where
     pub fn input_shape(&self) -> BinaryGroupedMultiStarkInputShape<F, E> {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

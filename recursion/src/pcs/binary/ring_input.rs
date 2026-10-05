@@ -134,7 +134,7 @@ pub struct NativeBinaryRingInput<E> {
 }
 
 impl<E: RecursiveBinaryChallengeField> NativeBinaryRingInput<E> {
-    pub fn shape(&self) -> &BinaryRingInputShape<E> {
+    pub const fn shape(&self) -> &BinaryRingInputShape<E> {
         &self.shape
     }
 

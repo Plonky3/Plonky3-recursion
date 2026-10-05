@@ -86,7 +86,7 @@ impl<E: RecursiveBinaryChallengeField> BinaryNonzeroChallengePlan<E> {
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 
@@ -194,7 +194,7 @@ impl<E: RecursiveBinaryChallengeField> BinaryNonzeroChallengeTailPlan<E> {
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

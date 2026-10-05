@@ -201,7 +201,7 @@ pub struct NativeBinaryBooleanWhirTraceMultiStarkInput {
 }
 
 impl NativeBinaryBooleanWhirTraceMultiStarkInput {
-    pub fn shape(&self) -> &BinaryBooleanWhirTraceMultiStarkInputShape {
+    pub const fn shape(&self) -> &BinaryBooleanWhirTraceMultiStarkInputShape {
         &self.shape
     }
 
@@ -471,7 +471,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
     pub fn input_shape(&self) -> BinaryBooleanWhirTraceMultiStarkInputShape {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

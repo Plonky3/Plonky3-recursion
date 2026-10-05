@@ -222,7 +222,7 @@ where
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.inner.input_resource_usage()
     }
 

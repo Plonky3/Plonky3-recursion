@@ -64,7 +64,7 @@ pub struct BinaryFractionGkrInputShape<F = BinaryField128, E = BinaryField128> {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryFractionGkrInputShape<F, E>
 {
-    pub(crate) fn native_decode_height(&self) -> usize {
+    pub(crate) const fn native_decode_height(&self) -> usize {
         self.height
     }
 
@@ -109,7 +109,7 @@ pub struct NativeBinaryFractionGkrInput<F = BinaryField128, E = BinaryField128> 
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     NativeBinaryFractionGkrInput<F, E>
 {
-    pub fn shape(&self) -> &BinaryFractionGkrInputShape<F, E> {
+    pub const fn shape(&self) -> &BinaryFractionGkrInputShape<F, E> {
         &self.shape
     }
 
@@ -248,7 +248,7 @@ where
     pub fn input_shape(&self) -> BinaryFractionGkrInputShape<F, E> {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

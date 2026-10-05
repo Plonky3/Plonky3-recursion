@@ -60,7 +60,7 @@ impl<AB: AirBuilder<F = F>> Air<AB> for SquaringAir {
         b.when_last_row().assert_eq(current, expected);
     }
 }
-fn protocol() -> ProtocolParameters {
+const fn protocol() -> ProtocolParameters {
     ProtocolParameters {
         security_level: 8,
         pow_bits: 0,

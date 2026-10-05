@@ -66,7 +66,7 @@ impl BinaryPolyNonzeroChallengePlan {
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 
@@ -201,7 +201,7 @@ impl BinaryPolyNonzeroChallengeTailPlan {
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

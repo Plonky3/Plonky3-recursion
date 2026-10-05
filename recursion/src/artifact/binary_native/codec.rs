@@ -361,7 +361,7 @@ fn suite<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>() -> u1
     };
     0xb000 | (base << 4) | challenge
 }
-fn malformed(component: &'static str) -> ArtifactError {
+const fn malformed(component: &'static str) -> ArtifactError {
     ArtifactError::MalformedProof { component }
 }
 fn write_field<F: ScalarWire>(w: &mut Writer, value: F) -> Result<(), ArtifactError> {

@@ -69,7 +69,7 @@ pub struct BinaryNativeChallenger<F> {
 }
 
 impl<F> BinaryNativeChallenger<F> {
-    pub(super) fn fresh(initial: Vec<u8>, hash: ByteHash) -> Self {
+    pub(super) const fn fresh(initial: Vec<u8>, hash: ByteHash) -> Self {
         Self {
             inner: Inner::from_hasher(initial, BinaryNativeHash(hash)),
             capture: Capture::Off,
@@ -342,7 +342,7 @@ where
     }
 }
 
-pub(super) fn tree<F>(hash: ByteHash, cap_height: usize) -> NativeMmcs<F> {
+pub(super) const fn tree<F>(hash: ByteHash, cap_height: usize) -> NativeMmcs<F> {
     NativeMmcs::new(
         SerializingHasher::new(BinaryNativeHash(hash)),
         CompressionFunctionFromHasher::new(BinaryNativeHash(hash)),

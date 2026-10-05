@@ -59,7 +59,7 @@ pub struct BinaryPolyFractionGkrInputShape {
 }
 
 impl BinaryPolyFractionGkrInputShape {
-    pub(crate) fn native_decode_height(&self) -> usize {
+    pub(crate) const fn native_decode_height(&self) -> usize {
         self.height
     }
 
@@ -108,7 +108,7 @@ pub struct NativeBinaryPolyFractionGkrInput {
 }
 
 impl NativeBinaryPolyFractionGkrInput {
-    pub fn shape(&self) -> &BinaryPolyFractionGkrInputShape {
+    pub const fn shape(&self) -> &BinaryPolyFractionGkrInputShape {
         &self.shape
     }
 
@@ -238,7 +238,7 @@ impl BinaryPolyFractionGkrVerifier {
     pub fn input_shape(&self) -> BinaryPolyFractionGkrInputShape {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

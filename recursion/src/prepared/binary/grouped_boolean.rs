@@ -173,16 +173,16 @@ where
         })
     }
 
-    pub fn binary_verifier(&self) -> &BinaryGroupedBooleanTraceMultiStarkVerifier<E> {
+    pub const fn binary_verifier(&self) -> &BinaryGroupedBooleanTraceMultiStarkVerifier<E> {
         &self.core.binary
     }
     pub fn native_verifier_identity(&self) -> Option<&[u8]> {
         self.core.native_identity.as_deref()
     }
-    pub fn statement_layout(&self) -> &BinaryStatementLayout<E> {
+    pub const fn statement_layout(&self) -> &BinaryStatementLayout<E> {
         &self.core.layout
     }
-    pub fn params(&self) -> &ProveNextLayerParams {
+    pub const fn params(&self) -> &ProveNextLayerParams {
         &self.core.params
     }
     pub fn verifier(&self) -> CircuitVerifier<SC> {

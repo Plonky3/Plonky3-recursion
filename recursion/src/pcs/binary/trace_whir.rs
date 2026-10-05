@@ -116,7 +116,7 @@ pub struct NativeBinaryBooleanWhirTraceInput {
 }
 
 impl NativeBinaryBooleanWhirTraceInput {
-    pub fn shape(&self) -> &BinaryBooleanWhirTraceInputShape {
+    pub const fn shape(&self) -> &BinaryBooleanWhirTraceInputShape {
         &self.shape
     }
 
@@ -190,7 +190,7 @@ impl BinaryBooleanWhirTraceVerifier {
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

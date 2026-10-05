@@ -73,7 +73,7 @@ impl<F: RecursiveBinaryWhirTowerField> VerifiedBinaryNativeWhirProof<F> {
     pub fn canonical_verifier_bytes(&self) -> &[u8] {
         &self.identity
     }
-    pub fn native_input(&self) -> &NativeBinaryWhirMultiStarkInput<F> {
+    pub const fn native_input(&self) -> &NativeBinaryWhirMultiStarkInput<F> {
         &self.input
     }
     pub fn public_values(&self) -> &[Vec<F>] {

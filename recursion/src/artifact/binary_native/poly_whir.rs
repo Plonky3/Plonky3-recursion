@@ -46,7 +46,7 @@ impl VerifiedBinaryNativePolyWhirProof {
     pub fn canonical_verifier_bytes(&self) -> &[u8] {
         &self.identity
     }
-    pub fn native_input(&self) -> &NativeBinaryPolyWhirMultiStarkInput {
+    pub const fn native_input(&self) -> &NativeBinaryPolyWhirMultiStarkInput {
         &self.input
     }
     pub fn public_values(&self) -> &[Vec<Poly64>] {

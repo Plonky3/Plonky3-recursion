@@ -10,7 +10,7 @@ use p3_recursion::verifier::{
     VerificationError,
 };
 
-fn limits(nodes: usize) -> CircuitConstructionLimits {
+const fn limits(nodes: usize) -> CircuitConstructionLimits {
     CircuitConstructionLimits {
         max_expression_nodes: nodes,
         max_pending_connects: 4096,

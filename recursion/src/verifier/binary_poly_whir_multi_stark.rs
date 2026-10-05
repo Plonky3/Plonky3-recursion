@@ -209,7 +209,7 @@ pub struct NativeBinaryPolyWhirMultiStarkInput {
 }
 
 impl NativeBinaryPolyWhirMultiStarkInput {
-    pub fn shape(&self) -> &BinaryPolyWhirMultiStarkInputShape {
+    pub const fn shape(&self) -> &BinaryPolyWhirMultiStarkInputShape {
         &self.shape
     }
 
@@ -490,7 +490,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
     pub fn input_shape(&self) -> BinaryPolyWhirMultiStarkInputShape {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

@@ -69,7 +69,7 @@ impl BinaryPolyStatementLayout {
     pub fn public_value_counts(&self) -> &[usize] {
         &self.counts
     }
-    pub fn schema(&self) -> &StatementSchema {
+    pub const fn schema(&self) -> &StatementSchema {
         &self.schema
     }
     pub const fn field_bits(&self) -> usize {

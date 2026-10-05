@@ -216,12 +216,12 @@ impl PreparedNativeBinaryPolyWhirLayer {
         })
     }
 
-    pub fn circuit(&self) -> &Circuit<F> {
+    pub const fn circuit(&self) -> &Circuit<F> {
         &self.circuit
     }
     /// Output authority, suitable as the independently trusted child of another
     /// `PreparedNativeBinaryPolyWhirLayer`. Its statement uses output AIR order.
-    pub fn authority(&self) -> &BinaryNativePolyWhirAuthority<OutputAir> {
+    pub const fn authority(&self) -> &BinaryNativePolyWhirAuthority<OutputAir> {
         &self.authority
     }
     /// Releases the circuit and proving key while preserving the output
@@ -232,7 +232,7 @@ impl PreparedNativeBinaryPolyWhirLayer {
     pub fn child_public_value_counts(&self) -> &[usize] {
         &self.public_counts
     }
-    pub fn initial_codeword_cells(&self) -> usize {
+    pub const fn initial_codeword_cells(&self) -> usize {
         self.initial_codeword_cells
     }
 

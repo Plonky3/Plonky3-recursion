@@ -110,7 +110,7 @@ impl<F: RecursiveBinaryTowerField> BinaryStatementLayout<F> {
     pub fn public_value_counts(&self) -> &[usize] {
         &self.counts
     }
-    pub fn schema(&self) -> &StatementSchema {
+    pub const fn schema(&self) -> &StatementSchema {
         &self.schema
     }
     pub const fn field_bits(&self) -> usize {
@@ -240,16 +240,16 @@ where
         })
     }
 
-    pub fn binary_verifier(&self) -> &BinaryMultiStarkVerifier<F, E> {
+    pub const fn binary_verifier(&self) -> &BinaryMultiStarkVerifier<F, E> {
         &self.core.binary
     }
     pub fn native_verifier_identity(&self) -> Option<&[u8]> {
         self.core.native_identity.as_deref()
     }
-    pub fn statement_layout(&self) -> &BinaryStatementLayout<F> {
+    pub const fn statement_layout(&self) -> &BinaryStatementLayout<F> {
         &self.core.layout
     }
-    pub fn params(&self) -> &ProveNextLayerParams {
+    pub const fn params(&self) -> &ProveNextLayerParams {
         &self.core.params
     }
     pub fn verifier(&self) -> CircuitVerifier<SC> {
@@ -387,16 +387,16 @@ where
         })
     }
 
-    pub fn binary_verifier(&self) -> &BinaryGroupedMultiStarkVerifier<F, E> {
+    pub const fn binary_verifier(&self) -> &BinaryGroupedMultiStarkVerifier<F, E> {
         &self.core.binary
     }
     pub fn native_verifier_identity(&self) -> Option<&[u8]> {
         self.core.native_identity.as_deref()
     }
-    pub fn statement_layout(&self) -> &BinaryStatementLayout<F> {
+    pub const fn statement_layout(&self) -> &BinaryStatementLayout<F> {
         &self.core.layout
     }
-    pub fn params(&self) -> &ProveNextLayerParams {
+    pub const fn params(&self) -> &ProveNextLayerParams {
         &self.core.params
     }
     pub fn verifier(&self) -> CircuitVerifier<SC> {

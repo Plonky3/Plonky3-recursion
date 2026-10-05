@@ -116,7 +116,7 @@ pub struct NativeBinaryBooleanTraceInput<E> {
 }
 
 impl<E: RecursiveBinaryChallengeField> NativeBinaryBooleanTraceInput<E> {
-    pub fn shape(&self) -> &BinaryBooleanTraceInputShape<E> {
+    pub const fn shape(&self) -> &BinaryBooleanTraceInputShape<E> {
         &self.shape
     }
     pub fn private_values<EF: Field>(
@@ -197,7 +197,7 @@ where
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

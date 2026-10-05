@@ -190,7 +190,7 @@ impl BinaryOpeningSchedule {
         (tables, BinaryOpeningSchedule { roles, air_batches })
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(super) const fn len(&self) -> usize {
         self.roles.len()
     }
     pub(super) fn air_batch(&self, air: usize) -> usize {
@@ -354,7 +354,7 @@ where
     pub(super) fn input_shape(&self) -> IndexedInputShape<F, E> {
         self.input.clone()
     }
-    pub(super) fn usage(&self) -> InputResourceUsage {
+    pub(super) const fn usage(&self) -> InputResourceUsage {
         self.usage
     }
 

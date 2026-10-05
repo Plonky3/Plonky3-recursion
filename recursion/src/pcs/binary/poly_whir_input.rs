@@ -215,7 +215,7 @@ pub struct NativeBinaryPolyWhirInput {
     limbs: Vec<u16>,
 }
 impl NativeBinaryPolyWhirInput {
-    pub fn shape(&self) -> &BinaryPolyWhirInputShape {
+    pub const fn shape(&self) -> &BinaryPolyWhirInputShape {
         &self.shape
     }
     pub fn private_values<EF: Field>(

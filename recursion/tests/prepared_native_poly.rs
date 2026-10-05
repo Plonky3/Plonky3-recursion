@@ -15,7 +15,7 @@ use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = Poly64;
 use p3_field::PrimeCharacteristicRing;
-fn protocol() -> ProtocolParameters {
+const fn protocol() -> ProtocolParameters {
     ProtocolParameters {
         security_level: 8,
         pow_bits: 0,

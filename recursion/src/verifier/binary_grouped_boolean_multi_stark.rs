@@ -217,7 +217,7 @@ pub struct NativeBinaryGroupedBooleanTraceMultiStarkInput<E = BinaryField128> {
 impl<E: RecursiveBinaryChallengeField + ExtensionField<E>>
     NativeBinaryGroupedBooleanTraceMultiStarkInput<E>
 {
-    pub fn shape(&self) -> &BinaryGroupedBooleanTraceMultiStarkInputShape<E> {
+    pub const fn shape(&self) -> &BinaryGroupedBooleanTraceMultiStarkInputShape<E> {
         &self.shape
     }
 
@@ -517,7 +517,7 @@ where
     pub fn input_shape(&self) -> BinaryGroupedBooleanTraceMultiStarkInputShape<E> {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

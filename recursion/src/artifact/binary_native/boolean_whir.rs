@@ -37,7 +37,7 @@ impl VerifiedBinaryNativeBooleanWhirTraceProof {
     pub fn canonical_verifier_bytes(&self) -> &[u8] {
         &self.identity
     }
-    pub fn native_input(&self) -> &NativeBinaryBooleanWhirTraceMultiStarkInput {
+    pub const fn native_input(&self) -> &NativeBinaryBooleanWhirTraceMultiStarkInput {
         &self.input
     }
     pub fn public_values(&self) -> &[Vec<E>] {

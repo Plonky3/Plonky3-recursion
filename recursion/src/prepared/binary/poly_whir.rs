@@ -156,16 +156,16 @@ where
         })
     }
 
-    pub fn binary_verifier(&self) -> &BinaryPolyWhirMultiStarkVerifier {
+    pub const fn binary_verifier(&self) -> &BinaryPolyWhirMultiStarkVerifier {
         &self.core.binary
     }
     pub fn native_verifier_identity(&self) -> Option<&[u8]> {
         self.core.native_identity.as_deref()
     }
-    pub fn statement_layout(&self) -> &BinaryPolyStatementLayout {
+    pub const fn statement_layout(&self) -> &BinaryPolyStatementLayout {
         &self.core.layout
     }
-    pub fn params(&self) -> &ProveNextLayerParams {
+    pub const fn params(&self) -> &ProveNextLayerParams {
         &self.core.params
     }
     pub fn verifier(&self) -> CircuitVerifier<SC> {

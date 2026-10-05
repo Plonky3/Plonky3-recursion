@@ -53,7 +53,7 @@ pub struct BinaryGenericSumcheckInputShape<F, E = BinaryField128> {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     BinaryGenericSumcheckInputShape<F, E>
 {
-    pub(crate) fn native_decode_shape(
+    pub(crate) const fn native_decode_shape(
         &self,
     ) -> crate::artifact::binary_native::codec::GenericDecode {
         crate::artifact::binary_native::codec::GenericDecode {
@@ -95,7 +95,7 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
         })
     }
 
-    fn pow_count(&self) -> usize {
+    const fn pow_count(&self) -> usize {
         if self.shape.pow_bits > 0 {
             self.shape.num_rounds
         } else {
@@ -113,7 +113,7 @@ pub struct NativeBinaryGenericSumcheckInput<F, E = BinaryField128> {
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     NativeBinaryGenericSumcheckInput<F, E>
 {
-    pub fn shape(&self) -> &BinaryGenericSumcheckInputShape<F, E> {
+    pub const fn shape(&self) -> &BinaryGenericSumcheckInputShape<F, E> {
         &self.shape
     }
 
@@ -202,7 +202,7 @@ where
     pub fn input_shape(&self) -> BinaryGenericSumcheckInputShape<F, E> {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

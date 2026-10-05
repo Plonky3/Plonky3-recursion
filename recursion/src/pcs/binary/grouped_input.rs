@@ -42,7 +42,7 @@ pub struct NativeBinaryGroupedPcsInput {
 }
 
 impl NativeBinaryGroupedPcsInput {
-    pub fn shape(&self) -> &BinaryGroupedPcsInputShape {
+    pub const fn shape(&self) -> &BinaryGroupedPcsInputShape {
         &self.shape
     }
     pub fn query_indices(&self) -> &[usize] {

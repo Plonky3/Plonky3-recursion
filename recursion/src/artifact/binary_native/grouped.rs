@@ -78,7 +78,7 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
     pub fn canonical_verifier_bytes(&self) -> &[u8] {
         &self.identity
     }
-    pub fn native_input(&self) -> &NativeBinaryGroupedMultiStarkInput<F, E> {
+    pub const fn native_input(&self) -> &NativeBinaryGroupedMultiStarkInput<F, E> {
         &self.input
     }
     pub fn public_values(&self) -> &[Vec<F>] {

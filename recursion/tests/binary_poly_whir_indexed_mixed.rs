@@ -24,7 +24,7 @@ struct IndexedAir {
     provide: Option<(&'static str, Vec<usize>)>,
     preprocessed: bool,
 }
-fn dense(raw: u64) -> Poly64 {
+const fn dense(raw: u64) -> Poly64 {
     Poly64::new(raw.wrapping_mul(0x9157_acde_1234_5678))
 }
 fn provider_a() -> Vec<Poly64> {

@@ -47,7 +47,7 @@ fn protocol(height: usize, mixed: bool) -> OpeningProtocol {
     OpeningProtocol::new(specs)
 }
 
-fn parameters(folding: FoldingFactor) -> ProtocolParameters {
+const fn parameters(folding: FoldingFactor) -> ProtocolParameters {
     ProtocolParameters {
         security_level: 8,
         pow_bits: 0,

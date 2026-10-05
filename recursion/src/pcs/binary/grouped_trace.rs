@@ -114,7 +114,7 @@ pub struct NativeBinaryGroupedBooleanTraceInput<E> {
 }
 
 impl<E: RecursiveBinaryChallengeField> NativeBinaryGroupedBooleanTraceInput<E> {
-    pub fn shape(&self) -> &BinaryGroupedBooleanTraceInputShape<E> {
+    pub const fn shape(&self) -> &BinaryGroupedBooleanTraceInputShape<E> {
         &self.shape
     }
     pub fn private_values<EF: Field>(
@@ -203,7 +203,7 @@ where
         })
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

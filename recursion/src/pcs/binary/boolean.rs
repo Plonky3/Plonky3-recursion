@@ -92,7 +92,7 @@ pub struct NativeBinaryBooleanInput<E> {
 }
 
 impl<E: RecursiveBinaryChallengeField> NativeBinaryBooleanInput<E> {
-    pub fn shape(&self) -> &BinaryBooleanInputShape<E> {
+    pub const fn shape(&self) -> &BinaryBooleanInputShape<E> {
         &self.shape
     }
 

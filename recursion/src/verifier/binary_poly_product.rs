@@ -122,7 +122,7 @@ pub struct NativeBinaryPolyProductGkrInput {
 }
 
 impl NativeBinaryPolyProductGkrInput {
-    pub fn shape(&self) -> &BinaryPolyProductGkrInputShape {
+    pub const fn shape(&self) -> &BinaryPolyProductGkrInputShape {
         &self.shape
     }
 
@@ -256,7 +256,7 @@ impl BinaryPolyProductGkrVerifier {
     pub fn input_shape(&self) -> BinaryPolyProductGkrInputShape {
         self.input.clone()
     }
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 

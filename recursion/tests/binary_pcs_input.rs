@@ -52,7 +52,7 @@ fn protocol() -> OpeningProtocol {
     )])
 }
 
-fn mmcs() -> Mmcs {
+const fn mmcs() -> Mmcs {
     Mmcs::new(
         keccak::FieldHash::new(keccak::byte_hash()),
         keccak::Compress::new(keccak::byte_hash()),

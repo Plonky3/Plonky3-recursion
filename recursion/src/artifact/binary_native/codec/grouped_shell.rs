@@ -27,7 +27,7 @@ impl fmt::Display for Error {
     }
 }
 impl core::error::Error for Error {}
-fn invalid() -> Error {
+const fn invalid() -> Error {
     Error(ArtifactError::MalformedProof {
         component: "binary grouped proof structure",
     })
@@ -85,7 +85,7 @@ impl<'a> Sink<'a> {
             _ => Err(invalid()),
         }
     }
-    fn writer(self) -> Result<&'a mut Writer, Error> {
+    const fn writer(self) -> Result<&'a mut Writer, Error> {
         match self {
             Self::Writer(w) => Ok(w),
             _ => Err(invalid()),

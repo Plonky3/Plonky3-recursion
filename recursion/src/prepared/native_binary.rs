@@ -254,12 +254,12 @@ where
         })
     }
 
-    pub fn circuit(&self) -> &Circuit<F> {
+    pub const fn circuit(&self) -> &Circuit<F> {
         &self.circuit
     }
     /// Output authority, suitable as the independently trusted child of another
     /// `PreparedNativeBinaryWhirLayer`. Its statement uses output AIR order.
-    pub fn authority(&self) -> &BinaryNativeWhirAuthority<F, OutputAir> {
+    pub const fn authority(&self) -> &BinaryNativeWhirAuthority<F, OutputAir> {
         &self.authority
     }
     /// Releases the circuit and proving key while preserving the output
@@ -270,7 +270,7 @@ where
     pub fn child_public_value_counts(&self) -> &[usize] {
         &self.public_counts
     }
-    pub fn initial_codeword_cells(&self) -> usize {
+    pub const fn initial_codeword_cells(&self) -> usize {
         self.initial_codeword_cells
     }
 

@@ -365,7 +365,7 @@ where
         observe_cap::<BF, EF>(circuit, challenger, cap)
     }
 
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
     }
 
@@ -971,7 +971,11 @@ fn shape_error(message: &str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
 }
 
-fn limit(component: &'static str, actual: usize, limit: usize) -> Result<(), VerificationError> {
+const fn limit(
+    component: &'static str,
+    actual: usize,
+    limit: usize,
+) -> Result<(), VerificationError> {
     if actual > limit {
         Err(VerificationError::ResourceLimitExceeded {
             component,

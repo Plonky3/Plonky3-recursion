@@ -43,7 +43,7 @@ impl BinaryPolyWhirVerifier {
     }
 
     /// Conservative checked input counters retained by the trusted plan.
-    pub fn input_resource_usage(&self) -> InputResourceUsage {
+    pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.plan.usage
     }
     pub fn new<Ch>(

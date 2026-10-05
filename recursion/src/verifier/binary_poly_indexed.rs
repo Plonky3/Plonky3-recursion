@@ -221,7 +221,7 @@ impl BinaryPolyIndexedVerifier {
     pub(super) fn input_shape(&self) -> PolyIndexedInputShape {
         self.input.clone()
     }
-    pub(super) fn usage(&self) -> InputResourceUsage {
+    pub(super) const fn usage(&self) -> InputResourceUsage {
         self.usage
     }
 
