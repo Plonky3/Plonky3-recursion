@@ -6,7 +6,8 @@ use core::hash::Hash;
 
 use p3_bus::ProductGkrRootShape;
 use p3_circuit::CircuitBuilder;
-use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_field::Field;
 
 use super::super::binary_field_policy::BinaryProtocolPolicy;
 use crate::BinaryTower128Challenger;
@@ -25,7 +26,7 @@ pub(crate) struct ProductKernelOutput<T> {
 }
 
 /// All shapes are checked by the adapter before this kernel adds constraints.
-pub(crate) fn verify_layers<P, BF, EF>(
+pub(crate) fn verify_layers<P, H, EF>(
     b: &mut CircuitBuilder<EF>,
     mut ch: BinaryTower128Challenger,
     transmitted_roots: &[P::ChallengeTarget],
@@ -40,11 +41,11 @@ pub(crate) fn verify_layers<P, BF, EF>(
     ) -> Result<P::ChallengeTarget, VerificationError>,
 ) -> Result<ProductKernelOutput<P::ChallengeTarget>, VerificationError>
 where
-    P: BinaryProtocolPolicy,
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
+    P: BinaryProtocolPolicy<EF>,
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
 {
-    P::observe::<BF, EF>(b, &mut ch, transmitted_roots)?;
+    P::observe::<H>(b, &mut ch, transmitted_roots)?;
     let roots = if root_shape == ProductGkrRootShape::FirstTwoShared {
         let mut roots = vec![transmitted_roots[0].clone(), transmitted_roots[0].clone()];
         roots.extend_from_slice(&transmitted_roots[1..]);
@@ -55,12 +56,12 @@ where
     let mut values = roots.clone();
     let mut point = Vec::new();
     for (&(arity, _), layer) in schedule.iter().zip(layers) {
-        let batching = P::sample::<BF, EF>(b, &mut ch)?;
+        let batching = P::sample::<H>(b, &mut ch)?;
         let mut claim = combine::<P, EF>(b, &values, &batching)?;
         let mut round_point = Vec::new();
         for polynomial in layer.messages {
-            P::observe::<BF, EF>(b, &mut ch, polynomial)?;
-            let challenge = P::sample::<BF, EF>(b, &mut ch)?;
+            P::observe::<H>(b, &mut ch, polynomial)?;
+            let challenge = P::sample::<H>(b, &mut ch)?;
             claim = interpolate(b, &claim, polynomial, &challenge)?;
             round_point.push(challenge);
         }
@@ -82,9 +83,9 @@ where
         }
         P::assert_equal(b, &claim, &expected);
         let children: Vec<_> = layer.children.iter().flatten().cloned().collect();
-        P::observe::<BF, EF>(b, &mut ch, &children)?;
+        P::observe::<H>(b, &mut ch, &children)?;
         let branches = (0..arity.trailing_zeros())
-            .map(|_| P::sample::<BF, EF>(b, &mut ch))
+            .map(|_| P::sample::<H>(b, &mut ch))
             .collect::<Result<Vec<_>, _>>()?;
         values = layer
             .children
@@ -111,7 +112,7 @@ where
     })
 }
 
-fn pair<P: BinaryProtocolPolicy, EF: Field + Eq + Hash>(
+fn pair<P: BinaryProtocolPolicy<EF>, EF: Field + Eq + Hash>(
     b: &mut CircuitBuilder<EF>,
     left: &P::ChallengeTarget,
     right: &P::ChallengeTarget,
@@ -122,7 +123,7 @@ fn pair<P: BinaryProtocolPolicy, EF: Field + Eq + Hash>(
     P::add(b, left, &weighted)
 }
 
-fn combine<P: BinaryProtocolPolicy, EF: Field + Eq + Hash>(
+fn combine<P: BinaryProtocolPolicy<EF>, EF: Field + Eq + Hash>(
     b: &mut CircuitBuilder<EF>,
     values: &[P::ChallengeTarget],
     batching: &P::ChallengeTarget,

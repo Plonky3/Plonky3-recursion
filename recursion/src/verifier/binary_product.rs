@@ -1,26 +1,26 @@
 //! Trusted binary product-tree GKR reductions.
+use p3_circuit::ops::{binary_encoding::PrimeBinaryEncoding, binary_host::BinaryCircuitHost};
 
 use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use p3_binary_field::BinaryField128;
+use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_bus::{
     ProductGkrLayerProof, ProductGkrOutput, ProductGkrProof, ProductGkrRootShape, ProductGkrShape,
 };
 use p3_challenger::FieldChallenger;
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 
-use super::binary_air::constrain_width;
-use super::binary_field_policy::TowerRelation;
+use super::binary_field_policy::{BinaryProtocolPolicy, NativeTower128Relation, TowerRelation};
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{
     Binary128SumcheckInterpolator, RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
-    observe_seed,
+    observe_seed_with_host,
 };
 use crate::transcript::SeedTap;
 pub(crate) mod kernel;
@@ -28,26 +28,26 @@ use kernel::{ProductLayerView, verify_layers};
 
 /// One shape-derived layer, with tree-major child evaluations.
 #[derive(Clone, Debug)]
-pub struct BinaryProductGkrLayerTargets {
-    pub round_polys: Vec<Vec<BinaryTower128Target>>,
-    pub children: Vec<Vec<BinaryTower128Target>>,
+pub struct BinaryProductGkrLayerTargets<T = BinaryTower128Target> {
+    pub round_polys: Vec<Vec<T>>,
+    pub children: Vec<Vec<T>>,
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryProductGkrProofTargets {
-    pub roots: Vec<BinaryTower128Target>,
-    pub layers: Vec<BinaryProductGkrLayerTargets>,
+pub struct BinaryProductGkrProofTargets<T = BinaryTower128Target> {
+    pub roots: Vec<T>,
+    pub layers: Vec<BinaryProductGkrLayerTargets<T>>,
 }
 
 /// Internally consistent product claims awaiting authentication by the caller's
 /// committed-polynomial or AIR relation. This is not a verified statement.
 #[must_use = "product leaf evaluations must be authenticated by the surrounding protocol"]
 #[derive(Clone, Debug)]
-pub struct BinaryProductGkrOutput {
-    pub roots: Vec<BinaryTower128Target>,
+pub struct BinaryProductGkrOutput<T = BinaryTower128Target> {
+    pub roots: Vec<T>,
     /// Most-significant-variable-first multilinear point.
-    pub point: Vec<BinaryTower128Target>,
-    pub values: Vec<BinaryTower128Target>,
+    pub point: Vec<T>,
+    pub values: Vec<T>,
     pub challenger: BinaryTower128Challenger,
 }
 
@@ -86,10 +86,16 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let mut field = || {
+        self.allocate_with(|| {
             let limbs = b.alloc_private_input_array::<8>("binary product GKR field");
             Ok(b.binary128_from_limbs::<BF>(limbs)?)
-        };
+        })
+    }
+
+    fn allocate_with<T>(
+        &self,
+        mut field: impl FnMut() -> Result<T, VerificationError>,
+    ) -> Result<BinaryProductGkrProofTargets<T>, VerificationError> {
         let roots = (0..self.root_count())
             .map(|_| field())
             .collect::<Result<_, VerificationError>>()?;
@@ -284,12 +290,26 @@ where
     pub fn verify_reduction<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
-        mut ch: BinaryTower128Challenger,
+        ch: BinaryTower128Challenger,
         proof: &BinaryProductGkrProofTargets,
     ) -> Result<BinaryProductGkrOutput, VerificationError>
     where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
+    {
+        self.verify_using::<TowerRelation<F, E>, PrimeBinaryEncoding<BF>, EF>(b, ch, proof)
+    }
+
+    pub(super) fn verify_using<P, H, EF>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        mut ch: BinaryTower128Challenger,
+        proof: &BinaryProductGkrProofTargets<P::ChallengeTarget>,
+    ) -> Result<BinaryProductGkrOutput<P::ChallengeTarget>, VerificationError>
+    where
+        EF: Field + Eq + Hash,
+        H: BinaryCircuitHost<EF>,
+        P: BinaryProtocolPolicy<EF, Base = F, Challenge = E>,
     {
         self.check_targets(proof)?;
         for value in proof.roots.iter().chain(
@@ -298,9 +318,9 @@ where
                 .iter()
                 .flat_map(|layer| layer.round_polys.iter().chain(&layer.children).flatten()),
         ) {
-            constrain_width(b, value, E::RAW_BITS);
+            P::constrain_challenge(b, value);
         }
-        observe_seed::<F, BF, EF>(b, &mut ch, &self.input.seed)?;
+        observe_seed_with_host::<F, H, EF>(b, &mut ch, &self.input.seed)?;
         let layers = proof
             .layers
             .iter()
@@ -309,7 +329,7 @@ where
                 children: &layer.children,
             })
             .collect::<Vec<_>>();
-        let output = verify_layers::<TowerRelation<F, E>, BF, EF>(
+        let output = verify_layers::<P, H, EF>(
             b,
             ch,
             &proof.roots,
@@ -318,7 +338,7 @@ where
             &layers,
             |b, claim, polynomial, challenge| {
                 self.interpolator
-                    .reduce_claim(b, claim, polynomial, challenge)
+                    .reduce_claim_using::<P, EF>(b, claim, polynomial, challenge)
             },
         )?;
         Ok(BinaryProductGkrOutput {
@@ -329,9 +349,9 @@ where
         })
     }
 
-    pub(crate) fn check_targets(
+    pub(crate) fn check_targets<T>(
         &self,
-        proof: &BinaryProductGkrProofTargets,
+        proof: &BinaryProductGkrProofTargets<T>,
     ) -> Result<(), VerificationError> {
         if proof.roots.len() != self.input.root_count()
             || proof.layers.len() != self.input.layers.len()
@@ -451,10 +471,22 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
-    let bytes = ch.sample_bytes::<BF, EF>(b, E::RAW_BITS / 8)?;
+    sample_with_host::<E, PrimeBinaryEncoding<BF>, EF>(b, ch)
+}
+
+pub(super) fn sample_with_host<E, H, EF>(
+    b: &mut CircuitBuilder<EF>,
+    ch: &mut BinaryTower128Challenger,
+) -> Result<BinaryTower128Target, VerificationError>
+where
+    E: RecursiveBinaryChallengeField,
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
+{
+    let bytes = ch.sample_bytes_with_host::<H, EF>(b, E::RAW_BITS / 8)?;
     let mut bits = [ExprId::ZERO; 128];
     for (i, byte) in bytes.into_iter().enumerate() {
-        let byte = b.decompose_to_bits::<BF>(byte, 8)?;
+        let byte = H::decompose_word(b, byte, 8)?;
         bits[8 * i..8 * i + 8].copy_from_slice(&byte);
     }
     Ok(b.binary128_from_bits(bits)?)
@@ -486,5 +518,46 @@ pub(super) fn zero_proof<E: Field>(
                 }
             })
             .collect(),
+    }
+}
+
+impl BinaryProductGkrInputShape<BinaryField128, BinaryField128> {
+    /// Allocates one native carrier cell per field in the frozen proof schedule.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<BinaryProductGkrProofTargets<NativeTower128Target>, VerificationError> {
+        self.allocate_with(|| {
+            let value = b.alloc_private_input("native product GKR field");
+            Ok(b.native_tower128_from_expr(value))
+        })
+    }
+}
+impl NativeBinaryProductGkrInput<BinaryField128, BinaryField128> {
+    /// Raw native scalars, in the same order as `allocate_native_targets`.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryProductGkrInputShape<BinaryField128, BinaryField128>,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid("binary product input belongs to another verifier"));
+        }
+        Ok(self
+            .fields
+            .iter()
+            .copied()
+            .map(BinaryField128::from_repr)
+            .collect())
+    }
+}
+impl BinaryProductGkrVerifier<BinaryField128, BinaryField128> {
+    /// A scalar reduction requiring the caller to authenticate all returned leaves.
+    pub fn verify_reduction_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: BinaryTower128Challenger,
+        proof: &BinaryProductGkrProofTargets<NativeTower128Target>,
+    ) -> Result<BinaryProductGkrOutput<NativeTower128Target>, VerificationError> {
+        self.verify_using::<NativeTower128Relation, p3_circuit::ops::binary_encoding::NativeBinaryEncoding, BinaryField128>(b,ch,proof)
     }
 }

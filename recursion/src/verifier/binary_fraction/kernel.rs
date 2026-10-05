@@ -4,7 +4,8 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 
 use p3_circuit::CircuitBuilder;
-use p3_field::{ExtensionField, Field, PrimeField64};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_field::Field;
 
 use super::super::binary_field_policy::BinaryProtocolPolicy;
 use crate::verifier::VerificationError;
@@ -27,7 +28,7 @@ pub(crate) struct FractionKernelOutput<T> {
 }
 
 /// The adapter checks nonempty geometry and the root before this kernel runs.
-pub(crate) fn verify_layers<P, BF, EF>(
+pub(crate) fn verify_layers<P, H, EF>(
     b: &mut CircuitBuilder<EF>,
     mut ch: BinaryTower128Challenger,
     root_denominator: &P::ChallengeTarget,
@@ -45,12 +46,12 @@ pub(crate) fn verify_layers<P, BF, EF>(
     ) -> Result<FractionDraw<P::ChallengeTarget>, VerificationError>,
 ) -> Result<FractionKernelOutput<P::ChallengeTarget>, VerificationError>
 where
-    P: BinaryProtocolPolicy,
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
+    P: BinaryProtocolPolicy<EF>,
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
 {
-    P::observe::<BF, EF>(b, &mut ch, core::slice::from_ref(root_denominator))?;
-    let mut lambda = P::sample::<BF, EF>(b, &mut ch)?;
+    P::observe::<H>(b, &mut ch, core::slice::from_ref(root_denominator))?;
+    let mut lambda = P::sample::<H>(b, &mut ch)?;
     let mut state = MessageState::Live(ch);
     let mut numerator = P::constant(b, 0)?;
     let mut denominator = root_denominator.clone();
@@ -60,7 +61,7 @@ where
         let mut claim = P::add(b, &numerator, &weighted);
         let mut round_point = Vec::with_capacity(index + 1);
         for polynomial in layer.messages {
-            let ch = state.observe::<P, BF, EF>(b, polynomial)?;
+            let ch = state.observe::<P, H, EF>(b, polynomial)?;
             let output = draw(b, ch, false)?;
             claim = interpolate(b, &claim, polynomial, &output.value)?;
             round_point.push(output.value);
@@ -76,7 +77,7 @@ where
         let equality = P::eq_eval(b, &point, &round_point)?;
         let expected = P::mul(b, &equality, &gate);
         P::assert_equal(b, &claim, &expected);
-        let ch = state.observe::<P, BF, EF>(b, layer.claims)?;
+        let ch = state.observe::<P, H, EF>(b, layer.claims)?;
         let final_layer = index + 1 == layers.len();
         let output = draw(b, ch, !final_layer)?;
         if !final_layer {
@@ -105,26 +106,26 @@ enum MessageState {
     Waiting(BinaryQueryContinuation),
 }
 impl MessageState {
-    fn observe<P, BF, EF>(
+    fn observe<P, H, EF>(
         self,
         b: &mut CircuitBuilder<EF>,
         values: &[P::ChallengeTarget],
     ) -> Result<BinaryTower128Challenger, VerificationError>
     where
-        P: BinaryProtocolPolicy,
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        P: BinaryProtocolPolicy<EF>,
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
     {
         match self {
             Self::Live(mut ch) => {
-                P::observe::<BF, EF>(b, &mut ch, values)?;
+                P::observe::<H>(b, &mut ch, values)?;
                 Ok(ch)
             }
-            Self::Waiting(token) => P::observe_after_queries::<BF, EF>(b, token, values),
+            Self::Waiting(token) => P::observe_after_queries::<H>(b, token, values),
         }
     }
 }
-fn pair<P: BinaryProtocolPolicy, EF: Field + Eq + Hash>(
+fn pair<P: BinaryProtocolPolicy<EF>, EF: Field + Eq + Hash>(
     b: &mut CircuitBuilder<EF>,
     a: &P::ChallengeTarget,
     c: &P::ChallengeTarget,

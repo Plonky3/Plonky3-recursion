@@ -1,4 +1,5 @@
 //! Released product-tree GKR with Poly64 seeds and full Poly192 challenges.
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
 
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -281,7 +282,7 @@ impl BinaryPolyProductGkrVerifier {
                 children: &layer.children,
             })
             .collect::<Vec<_>>();
-        let output = verify_layers::<Poly64Relation, BF, EF>(
+        let output = verify_layers::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
             b,
             ch,
             &proof.roots,

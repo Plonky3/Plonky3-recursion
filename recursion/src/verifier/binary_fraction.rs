@@ -322,7 +322,7 @@ where
                 claims: &layer.claims,
             })
             .collect::<Vec<_>>();
-        let output = verify_layers::<TowerRelation<F, E>, BF, EF>(
+        let output = verify_layers::<TowerRelation<F, E>, PrimeBinaryEncoding<BF>, EF>(
             b,
             ch,
             &proof.root_denominator,

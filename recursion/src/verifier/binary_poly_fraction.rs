@@ -1,4 +1,5 @@
 //! Bounded Poly64/Poly192 Fraction-GKR and its exact observed continuation.
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
 
 use alloc::vec::Vec;
 use core::hash::Hash;
@@ -305,7 +306,7 @@ impl BinaryPolyFractionGkrVerifier {
                 claims: &layer.claims,
             })
             .collect::<Vec<_>>();
-        let output = verify_layers::<Poly64Relation, BF, EF>(
+        let output = verify_layers::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
             b,
             ch,
             &proof.root_denominator,

@@ -13,13 +13,15 @@ use p3_binary_field::BinaryField128;
 use p3_bus::{
     BusActivation, BusBoundary, BusDirection, BusName, BusSymbolicBuilder, SymbolicBusInteraction,
 };
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field};
 use p3_lookup::InteractionSymbolicBuilder;
 use p3_lookup::indexed::{IndexedLookups, IndexedRead, IndexedTable};
 
-use super::binary_field_policy::{BinaryRelationPolicy, Poly64Relation, TowerRelation};
+use super::binary_field_policy::{
+    BinaryRelationPolicy, NativeTower128Relation, Poly64Relation, TowerRelation,
+};
 use super::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 
@@ -91,8 +93,7 @@ where
         &self,
         w: &mut crate::artifact::wire::Writer,
     ) -> Result<(), crate::artifact::ArtifactError> {
-        self.program
-            .write_identity(TowerRelation::<F, E>::BASE_BITS, w)
+        self.program.write_identity(F::RAW_BITS, w)
     }
 
     pub fn from_air<A>(air: &A, log_height: usize) -> Result<Self, VerificationError>
@@ -265,7 +266,7 @@ where
         public: &[BinaryTower128Target],
         alpha: &BinaryTower128Target,
     ) -> Result<BinaryAirEvaluation, VerificationError> {
-        self.program.evaluate::<TowerRelation<F, E>, EF>(
+        self.evaluate_using::<TowerRelation<F, E>, EF>(
             b,
             point,
             current,
@@ -275,6 +276,71 @@ where
             public,
             alpha,
         )
+    }
+    pub(super) fn evaluate_using<P, EF>(
+        &self,
+        b: &mut CircuitBuilder<EF>,
+        point: &[P::ChallengeTarget],
+        current: &[P::ChallengeTarget],
+        next: &[P::ChallengeTarget],
+        preprocessed_current: &[P::ChallengeTarget],
+        preprocessed_next: &[P::ChallengeTarget],
+        public: &[P::BaseTarget],
+        alpha: &P::ChallengeTarget,
+    ) -> Result<BinaryAirEvaluation<P::ChallengeTarget>, VerificationError>
+    where
+        EF: Field + Eq + Hash,
+        P: BinaryRelationPolicy<EF, Base = F, Challenge = E>,
+    {
+        self.program.evaluate::<P, EF>(
+            b,
+            point,
+            current,
+            next,
+            preprocessed_current,
+            preprocessed_next,
+            public,
+            alpha,
+        )
+    }
+}
+
+impl BinaryAirConstraintPlan<BinaryField128, BinaryField128> {
+    /// Computes only the scalar AIR fold; the caller authenticates every opening.
+    pub fn evaluate_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        point: &[NativeTower128Target],
+        current: &[NativeTower128Target],
+        next: &[NativeTower128Target],
+        public: &[NativeTower128Target],
+        alpha: &NativeTower128Target,
+    ) -> Result<NativeTower128Target, VerificationError> {
+        self.evaluate_native_with_auxiliary(b, point, current, next, &[], &[], public, alpha)
+    }
+    /// Evaluates trusted preprocessing and periodic vectors in the native carrier.
+    pub fn evaluate_native_with_auxiliary(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        point: &[NativeTower128Target],
+        current: &[NativeTower128Target],
+        next: &[NativeTower128Target],
+        preprocessed_current: &[NativeTower128Target],
+        preprocessed_next: &[NativeTower128Target],
+        public: &[NativeTower128Target],
+        alpha: &NativeTower128Target,
+    ) -> Result<NativeTower128Target, VerificationError> {
+        self.evaluate_using::<NativeTower128Relation, BinaryField128>(
+            b,
+            point,
+            current,
+            next,
+            preprocessed_current,
+            preprocessed_next,
+            public,
+            alpha,
+        )
+        .map(|evaluation| evaluation.folded)
     }
 }
 
@@ -637,7 +703,7 @@ impl AirProgram {
         ))
     }
 
-    fn evaluate<P: BinaryRelationPolicy, EF: Field + Eq + Hash>(
+    fn evaluate<P: BinaryRelationPolicy<EF>, EF: Field + Eq + Hash>(
         &self,
         b: &mut CircuitBuilder<EF>,
         point: &[P::ChallengeTarget],
@@ -912,9 +978,9 @@ impl BinaryPolyAirConstraintPlan {
             p3_binary_field::Poly64,
             p3_binary_field::Poly192,
             A,
-        >(
-            air, log_height, limits, true, Poly64Relation::base_raw
-        )?;
+        >(air, log_height, limits, true, |value| {
+            value.to_bits() as u128
+        })?;
         Ok((Self { program }, declarations))
     }
 
@@ -1000,7 +1066,7 @@ impl BinaryPolyAirConstraintPlan {
             log_height,
             limits,
             false,
-            Poly64Relation::base_raw,
+            |value| value.to_bits() as u128,
         )
         .map(|(program, _)| Self { program })
     }
@@ -1073,7 +1139,7 @@ impl BinaryPolyAirConstraintPlan {
     }
 }
 
-fn evaluate_table<P: BinaryRelationPolicy, EF: Field + Eq + Hash>(
+fn evaluate_table<P: BinaryRelationPolicy<EF>, EF: Field + Eq + Hash>(
     b: &mut CircuitBuilder<EF>,
     values: &[P::ChallengeTarget],
     point: &[P::ChallengeTarget],

@@ -4,9 +4,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use super::RecursiveBinaryChallengeField;
+use crate::verifier::binary_field_policy::{
+    BinaryRelationPolicy, NativeTower128Relation, TowerRelation,
+};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_field::Field;
 
 use super::whir_plan::invalid;
@@ -50,14 +54,50 @@ impl Binary128SumcheckInterpolator {
         evaluations: &[BinaryTower128Target],
         challenge: &BinaryTower128Target,
     ) -> Result<BinaryTower128Target, VerificationError> {
+        self.reduce_claim_using::<TowerRelation<BinaryField128, BinaryField128>, F>(
+            b,
+            claim,
+            evaluations,
+            challenge,
+        )
+    }
+
+    /// Reduces the same claim with scalar arithmetic in the native carrier.
+    pub fn reduce_claim_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        claim: &NativeTower128Target,
+        evaluations: &[NativeTower128Target],
+        challenge: &NativeTower128Target,
+    ) -> Result<NativeTower128Target, VerificationError> {
+        self.reduce_claim_using::<NativeTower128Relation, BinaryField128>(
+            b,
+            claim,
+            evaluations,
+            challenge,
+        )
+    }
+
+    pub(crate) fn reduce_claim_using<P, F>(
+        &self,
+        b: &mut CircuitBuilder<F>,
+        claim: &P::ChallengeTarget,
+        evaluations: &[P::ChallengeTarget],
+        challenge: &P::ChallengeTarget,
+    ) -> Result<P::ChallengeTarget, VerificationError>
+    where
+        F: Field + Eq + Hash,
+        P: BinaryRelationPolicy<F>,
+        P::Challenge: RecursiveBinaryChallengeField,
+    {
         if evaluations.len() != self.degree() {
             return Err(invalid("binary generic sumcheck message width mismatch"));
         }
         let mut values = Vec::with_capacity(self.coefficients.len());
         values.push(evaluations[0].clone());
-        values.push(b.binary128_add(claim, &evaluations[0]));
+        values.push(P::add(b, claim, &evaluations[0]));
         values.extend_from_slice(&evaluations[1..]);
-        let zero = b.binary128_constant(0)?;
+        let zero = P::constant(b, 0)?;
         let mut polynomial = vec![zero; self.coefficients.len()];
         for (value, basis) in values.iter().zip(&self.coefficients) {
             for (coefficient, &constant) in polynomial.iter_mut().zip(basis) {
@@ -67,17 +107,17 @@ impl Binary128SumcheckInterpolator {
                 let term = if constant == 1 {
                     value.clone()
                 } else {
-                    let constant = b.binary128_constant(constant)?;
-                    b.binary128_mul(value, &constant)
+                    let constant = P::constant(b, constant)?;
+                    P::mul(b, value, &constant)
                 };
-                *coefficient = b.binary128_add(coefficient, &term);
+                *coefficient = P::add(b, coefficient, &term);
             }
         }
         let mut iter = polynomial.into_iter().rev();
         let mut result = iter.next().expect("checked positive degree");
         for coefficient in iter {
-            let product = b.binary128_mul(&result, challenge);
-            result = b.binary128_add(&product, &coefficient);
+            let product = P::mul(b, &result, challenge);
+            result = P::add(b, &product, &coefficient);
         }
         Ok(result)
     }
