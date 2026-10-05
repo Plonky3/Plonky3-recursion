@@ -3,6 +3,7 @@ mod executor;
 mod npo;
 mod op;
 
+pub mod binary_encoding;
 pub mod binary_native;
 pub mod binary_native_poly;
 pub mod binary_poly;
