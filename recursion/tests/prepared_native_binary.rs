@@ -122,7 +122,7 @@ where
     let proof = prover.prove(&public, vec![trace.clone()]).unwrap();
     let checked = authority.verify_native(&proof, &public).unwrap();
     let (foreign_prover, foreign_authority) = BinaryNativeWhirAuthority::<B, _>::setup(
-        vec![air.clone()],
+        vec![air],
         vec![1],
         foreign_spec,
         &VerifierLimits::default(),

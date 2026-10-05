@@ -97,7 +97,7 @@ fn checked_boolean_trace_chain(hash: ByteHash) {
         BinaryNativeBooleanTraceAuthority::<E, _>::setup_with_artifact_limits(
             vec![ConstantAir],
             vec![7],
-            native_spec.clone(),
+            native_spec,
             limits,
         )
         .unwrap();

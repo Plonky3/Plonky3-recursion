@@ -146,7 +146,7 @@ fn checked_poly_whir_chain(hash: ByteHash) {
     let (prover, authority) = BinaryNativePolyWhirAuthority::<_>::setup_with_artifact_limits(
         vec![InteractionAir],
         vec![2],
-        native_spec.clone(),
+        native_spec,
         limits,
     )
     .unwrap();

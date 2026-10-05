@@ -215,7 +215,7 @@ fn single_claim_prefix_round_counts_reuse_one_circuit() {
             "unused sumcheck messages must be canonical zeros"
         );
     }
-    let mut wrong = values.clone();
+    let mut wrong = values;
     wrong[8 * 9] += BabyBear::ONE;
     assert!(!run(&circuit, &wrong), "claimed current reading");
 }

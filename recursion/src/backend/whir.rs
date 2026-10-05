@@ -2093,14 +2093,14 @@ mod poseidon1_backend_tests {
                         &config,
                         config.into(),
                     )
-                    .unwrap()
+                    .unwrap();
                 }
                 PermConfig::Poseidon2(config) => {
                     check_input_permutation::<KoalaBear, QuinticEF, 5, 16, 8, _>(
                         &config,
                         config.into(),
                     )
-                    .unwrap()
+                    .unwrap();
                 }
             }
         }

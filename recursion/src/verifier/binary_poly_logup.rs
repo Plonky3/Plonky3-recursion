@@ -431,7 +431,7 @@ impl BinaryPolyLogupStarVerifier {
                 value
                     .coefficients()
                     .iter()
-                    .flat_map(|c| c.bits().chunks_exact(8))
+                    .flat_map(|c| c.bits().as_chunks::<8>().0.iter())
             })
             .map(|bits| b.reconstruct_index_from_bits::<BF>(bits))
             .collect::<Result<Vec<_>, _>>()?;
@@ -789,7 +789,7 @@ impl BinaryPolyLogupStarVerifier {
             shape: self.input.clone(),
             pushforwards: proof.pushforwards.iter().flatten().copied().collect(),
             fraction: fraction_input,
-            positions: proof.position_claims.iter().copied().collect(),
+            positions: proof.position_claims.to_vec(),
             product: product_input,
             columns: proof.column_claims.iter().flatten().copied().collect(),
         };

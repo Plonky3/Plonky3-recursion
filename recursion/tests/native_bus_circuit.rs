@@ -177,7 +177,9 @@ fn native_product_bus_authenticates_repeated_gate_reads() {
     let pp = prepared.airs()[gate].preprocessed_trace().unwrap();
     let row = pp
         .values
-        .chunks_exact(12)
+        .as_chunks::<12>()
+        .0
+        .iter()
         .position(|row| row[8] == F::ONE)
         .unwrap();
     let mut forged = traces;

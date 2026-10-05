@@ -106,14 +106,16 @@ fn roundtrip(hash: ByteHash) {
             ByteHash::Blake3 => Blake3.hash_slice(&bytes),
         };
         let public: Vec<_> = digest
-            .chunks_exact(2)
-            .map(|chunk| BabyBear::from_u16(u16::from_le_bytes(chunk.try_into().unwrap())))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| BabyBear::from_u16(u16::from_le_bytes(*chunk)))
             .collect();
         let canonical: Vec<_> = digest
-            .chunks_exact(2)
-            .flat_map(|chunk| {
-                u32::from(u16::from_le_bytes(chunk.try_into().unwrap())).to_le_bytes()
-            })
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|chunk| u32::from(u16::from_le_bytes(*chunk)).to_le_bytes())
             .collect();
         let mut runner = circuit.runner();
         runner

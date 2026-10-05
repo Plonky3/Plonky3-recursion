@@ -234,7 +234,7 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
             .collect();
         match (&expected.relation.bus, &self.bus) {
             (Some(shape), Some(input)) => {
-                values.extend(input.private_values::<EF>(&shape.product)?)
+                values.extend(input.private_values::<EF>(&shape.product)?);
             }
             (None, None) => {}
             _ => return Err(invalid("binary MultiStark bus input shape mismatch")),
@@ -251,7 +251,7 @@ impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
         values.extend(self.opening.private_values::<EF>(&expected.opening)?);
         match (&expected.preprocessed, &self.preprocessed_opening) {
             (Some(shape), Some(input)) => {
-                values.extend(input.private_values::<EF>(&shape.opening)?)
+                values.extend(input.private_values::<EF>(&shape.opening)?);
             }
             (None, None) => {}
             _ => {
@@ -503,7 +503,7 @@ where
         ) {
             (Some(verifier), Some(shape), Some(proof)) => {
                 let cap = shape.constant_cap(b);
-                let points = self.relation.zero_points(true, zero.clone());
+                let points = self.relation.zero_points(true, zero);
                 verifier.check_targets(&cap, &points, proof)?;
                 Some(cap)
             }

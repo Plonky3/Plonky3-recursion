@@ -542,14 +542,9 @@ fn malformed_geometry_and_target_shapes_return_errors() {
         BinaryPcs128Verifier::new(fixture.config, wrong_protocol, ByteHash::Keccak256, 0, 64)
             .is_err()
     );
-    let verifier = BinaryPcs128Verifier::new(
-        fixture.config,
-        fixture.protocol.clone(),
-        ByteHash::Keccak256,
-        0,
-        64,
-    )
-    .unwrap();
+    let verifier =
+        BinaryPcs128Verifier::new(fixture.config, fixture.protocol, ByteHash::Keccak256, 0, 64)
+            .unwrap();
     let mut builder = CircuitBuilder::<Host>::new();
     let zero = builder.binary128_constant(0).unwrap();
     let cap = vec![vec![ExprId::ZERO; 16]];
@@ -564,7 +559,7 @@ fn malformed_geometry_and_target_shapes_return_errors() {
         pow_witness: zero,
         query_indices: vec![vec![ExprId::ZERO]; 2],
     };
-    let mut bad = vec![proof.clone(); 5];
+    let mut bad = vec![proof; 5];
     bad[0].sumcheck.clear();
     bad[1].evals.clear();
     bad[2].base_paths[0].pop();

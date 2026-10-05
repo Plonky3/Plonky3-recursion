@@ -237,7 +237,9 @@ fn combine_columns<EF: Field + Eq + Hash>(
     layer.resize(1usize << point.len(), zero);
     for coordinate in point.iter().rev() {
         layer = layer
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let difference = circuit.binary128_add(&pair[0], &pair[1]);
                 let product = circuit.binary128_mul(coordinate, &difference);

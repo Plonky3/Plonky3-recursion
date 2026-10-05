@@ -152,7 +152,9 @@ impl<F: RecursiveBinaryTowerField> BinaryGroupedOraclePlan<F> {
         let mut layer = leaf.to_vec();
         for &bit in &symbol_index[..self.group_bits] {
             layer = layer
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| {
                     let bits = core::array::from_fn(|i| {
                         b.select(bit, pair[1].bits()[i], pair[0].bits()[i])

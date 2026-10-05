@@ -452,7 +452,7 @@ where
         let bytes = proof
             .position_claims
             .iter()
-            .flat_map(|value| value.bits()[..E::RAW_BITS].chunks_exact(8))
+            .flat_map(|value| value.bits()[..E::RAW_BITS].as_chunks::<8>().0.iter())
             .map(|bits| b.reconstruct_index_from_bits::<BF>(bits))
             .collect::<Result<Vec<_>, _>>()?;
         let mut ch = fraction

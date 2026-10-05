@@ -100,7 +100,7 @@ fn checked_boolean_whir_trace_chain(hash: ByteHash) {
         BinaryNativeBooleanWhirTraceAuthority::<_>::setup_with_artifact_limits(
             vec![ConstantAir],
             vec![8],
-            native_spec.clone(),
+            native_spec,
             limits,
         )
         .unwrap();

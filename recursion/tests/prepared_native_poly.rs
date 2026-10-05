@@ -94,7 +94,7 @@ fn native_poly_layer_proves_and_binds_the_original_statement() {
     let proof = prover.prove(&public, vec![trace.clone()]).unwrap();
     let checked = authority.verify_native(&proof, &public).unwrap();
     let (foreign_prover, foreign_authority) = BinaryNativePolyWhirAuthority::<_>::setup(
-        vec![air.clone()],
+        vec![air],
         vec![1],
         foreign_spec,
         &VerifierLimits::default(),

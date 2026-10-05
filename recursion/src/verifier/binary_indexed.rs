@@ -187,7 +187,7 @@ impl BinaryOpeningSchedule {
                 .collect();
             tables.push(TableSpec::new(TableShape::new(height, width), batches));
         }
-        (tables, BinaryOpeningSchedule { roles, air_batches })
+        (tables, Self { roles, air_batches })
     }
 
     pub(super) const fn len(&self) -> usize {

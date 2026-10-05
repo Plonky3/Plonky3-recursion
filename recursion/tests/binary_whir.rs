@@ -384,12 +384,13 @@ fn varied_table_heights_and_mixed_openings_follow_native_batching_order() {
         ),
         TableSpec::new(TableShape::new(3, 1), vec![]),
     ]);
+    let keccak_protocol = protocol.clone();
     check!(
         BinaryField128,
         keccak,
         ByteHash::Keccak256,
         SuffixProver,
-        protocol.clone(),
+        keccak_protocol,
         FoldingFactor::Constant(2)
     );
     check!(

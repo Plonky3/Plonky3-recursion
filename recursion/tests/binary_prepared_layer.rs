@@ -224,12 +224,12 @@ fn check_statement<F: RecursiveBinaryTowerField>() {
             .iter()
             .all(|field| *field == p3_circuit::StatementField::Base)
     );
-    for (value, limbs) in values.iter().zip(packed.chunks_exact(8)) {
+    for (value, limbs) in values.iter().zip(packed.as_chunks::<8>().0.iter()) {
         let raw = value.raw_coordinates();
         let expected: Vec<_> = (0..8)
             .map(|i| BabyBear::from_u16((raw >> (16 * i)) as u16))
             .collect();
-        assert_eq!(limbs, expected);
+        assert_eq!(limbs.as_slice(), expected);
     }
     let mut wrong = public.clone();
     wrong[1].push(values[0]);

@@ -93,7 +93,7 @@ fn checked_binary_native_tokens_cross_portable_and_second_trusted_layer() {
     let (prover, authority) = BinaryNativeAuthority::<F, E, _>::setup_with_artifact_limits(
         vec![ConstantAir],
         vec![1],
-        native_spec.clone(),
+        native_spec,
         limits,
     )
     .unwrap();

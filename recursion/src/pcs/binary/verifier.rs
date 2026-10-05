@@ -651,7 +651,7 @@ where
                 let mut folded = coset.to_vec();
                 for j in 0..arity {
                     let mut next = Vec::with_capacity(folded.len() / 2);
-                    for (offset, pair) in folded.chunks_exact(2).enumerate() {
+                    for (offset, pair) in folded.as_chunks::<2>().0.iter().enumerate() {
                         let mut pair_index = index[start + j + 1..].to_vec();
                         for (b, bit) in pair_index[..arity - j - 1].iter_mut().enumerate() {
                             *bit = if offset >> b & 1 == 1 { one } else { zero };
@@ -877,7 +877,9 @@ where
         return Err(shape_error("binary tower byte width mismatch"));
     }
     Ok(value.bits()[..width]
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|bits| H::recompose_word(circuit, bits))
         .collect::<Result<_, _>>()?)
 }
@@ -953,7 +955,9 @@ fn select_symbol<F: Field + Eq + Hash>(
     let mut layer = symbols.to_vec();
     for &bit in index {
         layer = layer
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let bits = core::array::from_fn(|i| {
                     circuit.select(bit, pair[1].bits()[i], pair[0].bits()[i])
@@ -1034,8 +1038,10 @@ mod host_tests {
         let second = ch.sample_with_host::<H, CF>(&mut b).unwrap();
         let expected_second = native.sample_algebra_element::<BinaryField128>();
         let mut public: Vec<CF> = digest
-            .chunks_exact(2)
-            .map(|word| H::encode_u16(u16::from_le_bytes(word.try_into().unwrap())).unwrap())
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|word| H::encode_u16(u16::from_le_bytes(*word)).unwrap())
             .collect();
         for (actual, expected) in [first, second]
             .iter()

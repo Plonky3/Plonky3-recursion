@@ -147,10 +147,10 @@ impl<F: PrimeCharacteristicRing> BaseAir<F> for PeriodicBusAir {
 }
 impl<AB: AirBuilder + BusInteractionBuilder> Air<AB> for PeriodicBusAir {
     fn eval(&self, b: &mut AB) {
-        let periodic = b.periodic_values()[0].clone();
+        let periodic = b.periodic_values()[0];
         // Compile this root first as an ordinary constraint, then reuse it in
         // the declaration: pointer memoization must not bypass access checks.
-        b.assert_zero(periodic.clone());
+        b.assert_zero(periodic);
         b.push_bus_interaction(
             BusName::new("events"),
             BusDirection::Push,

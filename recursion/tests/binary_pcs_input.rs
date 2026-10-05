@@ -277,7 +277,7 @@ fn allocated_native_inputs_authenticate_and_reuse_one_circuit() {
     };
     let private = imported.private_values(&shape).unwrap();
     assert!(run(&public(&cap), &private));
-    let mut wrong = private.clone();
+    let mut wrong = private;
     wrong[0] += Host::ONE;
     assert!(!run(&public(&cap), &wrong));
     let (second_cap, second_points, second_proof, second_ch) = native(97);

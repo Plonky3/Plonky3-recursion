@@ -147,7 +147,9 @@ fn mle(values: &[F], point: &[F]) -> F {
     let count = values.len().ilog2() as usize;
     for &r in point[point.len() - count..].iter().rev() {
         layer = layer
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| p[0] + r * (p[0] + p[1]))
             .collect();
     }

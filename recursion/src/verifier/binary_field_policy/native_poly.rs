@@ -51,7 +51,9 @@ pub(crate) fn poly_native_values(
         ));
     }
     Ok(limbs
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|limbs| {
             let raw = limbs
                 .iter()
@@ -111,7 +113,7 @@ impl<CF: Field + Eq + Hash> BinaryPolyPolicy<CF> for Poly64Relation {
     ) -> Result<(), VerificationError> {
         let bytes = values
             .iter()
-            .flat_map(|value| value.bits().chunks_exact(8))
+            .flat_map(|value| value.bits().as_chunks::<8>().0.iter())
             .map(|bits| H::recompose_word(b, bits))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ch.observe_bytes_with_host::<H, CF>(b, &bytes)?)
@@ -196,7 +198,7 @@ impl BinaryPolyPolicy<Poly64> for NativePoly64Relation {
         let mut bytes = Vec::new();
         for &value in values {
             let bits = b.binary_decompose_coordinates(value, 64)?;
-            for bits in bits.chunks_exact(8) {
+            for bits in bits.as_chunks::<8>().0 {
                 bytes.push(H::recompose_word(b, bits)?);
             }
         }
@@ -275,7 +277,7 @@ fn native_bytes<H: BinaryCircuitHost<Poly64>>(
     for value in values {
         // The codec emits coefficient 0, then 1, then 2: exactly 24 bytes.
         let bits = b.native_poly192_to_bits(value)?;
-        for byte in bits.chunks_exact(8) {
+        for byte in bits.as_chunks::<8>().0 {
             bytes.push(H::recompose_word(b, byte)?);
         }
     }

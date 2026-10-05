@@ -434,7 +434,7 @@ where
         for layer in &proof.layers {
             match layer {
                 ProductGkrLayerProof::Binary { children } => {
-                    fields.extend(children.iter().flatten().copied().map(E::raw_coordinates))
+                    fields.extend(children.iter().flatten().copied().map(E::raw_coordinates));
                 }
                 ProductGkrLayerProof::RadixFour {
                     round_polys,

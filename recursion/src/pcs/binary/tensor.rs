@@ -79,7 +79,9 @@ impl<E: RecursiveBinaryChallengeField> BinaryTowerTensorTarget<E> {
         let mut rows = self.rows.clone();
         for coordinate in point.iter().rev() {
             rows = rows
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| {
                     let slope = circuit.binary128_add(&pair[0], &pair[1]);
                     let increment = circuit.binary128_mul(coordinate, &slope);

@@ -515,7 +515,7 @@ fn indexed_geometry_and_aggregate_work_are_checked_before_allocation() {
         },
         LogupStarTableShape {
             readers: vec![usize::MAX],
-            ..table.clone()
+            ..table
         },
     ] {
         assert!(prepare(&[bad], &VerifierLimits::default()).is_err());

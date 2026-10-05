@@ -384,7 +384,7 @@ fn check(
     let mut wrong = private.clone();
     wrong[0] += BabyBear::ONE;
     assert!(!run(&wrong, &public_limbs));
-    let mut wrong = public_limbs.clone();
+    let mut wrong = public_limbs;
     wrong[0] += BabyBear::ONE;
     assert!(!run(&private, &wrong));
     let pp = proof.preprocessed_opening.take();

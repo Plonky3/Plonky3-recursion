@@ -437,7 +437,7 @@ fn consecutive_grouped_trace_openings_resume_both_column_routes() {
         0,
     );
     let mmcs = GroupedCodewordMmcs::new(tree.clone(), 8);
-    let pcs = BooleanTracePcs::<E, _, _>::new(config, mmcs.clone(), mmcs.clone(), 7).unwrap();
+    let pcs = BooleanTracePcs::<E, _, _>::new(config, mmcs.clone(), mmcs, 7).unwrap();
     let protocols = [vec![1, 0], vec![0, 1], vec![1, 0]].map(|columns| {
         OpeningProtocol::new(vec![TableSpec::new(
             TableShape::new(6, 2),

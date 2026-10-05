@@ -246,7 +246,7 @@ impl<F: RecursiveBinaryWhirTowerField> NativeBinaryWhirMultiStarkInput<F> {
             .collect();
         match (&expected.relation.bus, &self.bus) {
             (Some(shape), Some(input)) => {
-                values.extend(input.private_values::<EF>(&shape.product)?)
+                values.extend(input.private_values::<EF>(&shape.product)?);
             }
             (None, None) => {}
             _ => return Err(invalid("binary WHIR MultiStark bus input shape mismatch")),
@@ -267,7 +267,7 @@ impl<F: RecursiveBinaryWhirTowerField> NativeBinaryWhirMultiStarkInput<F> {
         values.extend(self.opening.private_values::<EF>(&expected.opening)?);
         match (&expected.preprocessed, &self.preprocessed_opening) {
             (Some(shape), Some(input)) => {
-                values.extend(input.private_values::<EF>(&shape.opening)?)
+                values.extend(input.private_values::<EF>(&shape.opening)?);
             }
             (None, None) => {}
             _ => {
@@ -535,7 +535,7 @@ where
         ) {
             (Some(verifier), Some(shape), Some(proof)) => {
                 let cap = shape.constant_cap::<PrimeBinaryEncoding<BF>, EF>(b)?;
-                let points = self.relation.zero_points(true, zero.clone());
+                let points = self.relation.zero_points(true, zero);
                 verifier.check_targets(&cap, &points, proof)?;
                 Some(cap)
             }
@@ -809,12 +809,12 @@ where
             .flat_map(|root| {
                 bytes_to_limbs(root)
                     .into_iter()
-                    .map(|word| NativeBinaryEncoding::encode_u16(word))
+                    .map(NativeBinaryEncoding::encode_u16)
             })
             .collect::<Result<_, _>>()?;
         match (&expected.relation.bus, &self.bus) {
             (Some(shape), Some(input)) => {
-                values.extend(input.private_native_values(&shape.product)?)
+                values.extend(input.private_native_values(&shape.product)?);
             }
             (None, None) => {}
             _ => return Err(invalid("binary WHIR MultiStark bus input shape mismatch")),
@@ -826,7 +826,7 @@ where
         values.extend(self.opening.private_native_values(&expected.opening)?);
         match (&expected.preprocessed, &self.preprocessed_opening) {
             (Some(shape), Some(input)) => {
-                values.extend(input.private_native_values(&shape.opening)?)
+                values.extend(input.private_native_values(&shape.opening)?);
             }
             (None, None) => {}
             _ => {

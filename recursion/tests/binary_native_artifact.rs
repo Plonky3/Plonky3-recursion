@@ -315,7 +315,7 @@ fn native_artifact_authenticates_combined_bus_indexed_and_preprocessed_parts() {
             .public_values(),
         public
     );
-    let mut changed = encoded.clone();
+    let mut changed = encoded;
     // Revision, two raw public values and two main cap roots precede bus roots.
     changed[17 + 2 + 2 + 64] ^= 1;
     assert!(

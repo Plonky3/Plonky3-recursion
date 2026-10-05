@@ -124,7 +124,9 @@ impl<CF: Field + Eq + Hash> BinaryWhirPolicy<CF> for Poly64Relation {
             BinaryOracleWord::Challenge => 192,
         };
         Ok(bits[..width]
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|bits| H::recompose_word(b, bits))
             .collect::<Result<_, _>>()?)
     }
@@ -162,14 +164,18 @@ impl BinaryWhirPolicy<Poly64> for NativePoly64Relation {
                 }
                 let bits = b.binary_decompose_coordinates(value.coefficients()[0], 64)?;
                 Ok(bits
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|bits| H::recompose_word(b, bits))
                     .collect::<Result<_, _>>()?)
             }
             BinaryOracleWord::Challenge => {
                 let bits = b.native_poly192_to_bits(value)?;
                 Ok(bits
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|bits| H::recompose_word(b, bits))
                     .collect::<Result<_, _>>()?)
             }

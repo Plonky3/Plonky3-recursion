@@ -67,7 +67,9 @@ fn eval_table<EF: Field + Eq + Hash>(
     let mut layer = values.to_vec();
     for coordinate in point.iter().rev() {
         layer = layer
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let slope = if multilinear {
                     circuit.binary_poly192_add(&pair[0], &pair[1])
@@ -167,7 +169,7 @@ where
     }
     value.coefficients()[..bits / 64]
         .iter()
-        .flat_map(|coefficient| coefficient.bits().chunks_exact(8))
+        .flat_map(|coefficient| coefficient.bits().as_chunks::<8>().0.iter())
         .map(|byte| Ok(b.reconstruct_index_from_bits::<BF>(byte)?))
         .collect()
 }

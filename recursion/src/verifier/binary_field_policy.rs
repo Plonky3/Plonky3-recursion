@@ -214,7 +214,7 @@ where
     ) -> Result<BinaryTower128Challenger, VerificationError> {
         let bytes = values
             .iter()
-            .flat_map(|value| value.bits()[..E::RAW_BITS].chunks_exact(8))
+            .flat_map(|value| value.bits()[..E::RAW_BITS].as_chunks::<8>().0.iter())
             .map(|bits| H::recompose_word(b, bits))
             .collect::<Result<alloc::vec::Vec<_>, _>>()?;
         Ok(token.resume_with_observation_with_host::<H, EF>(b, &bytes)?)
@@ -263,7 +263,7 @@ impl<EF: Field + Eq + Hash> BinaryProtocolPolicy<EF> for Poly64Relation {
                 value
                     .coefficients()
                     .iter()
-                    .flat_map(|coefficient| coefficient.bits().chunks_exact(8))
+                    .flat_map(|coefficient| coefficient.bits().as_chunks::<8>().0.iter())
             })
             .map(|bits| H::recompose_word(b, bits))
             .collect::<Result<alloc::vec::Vec<_>, _>>()?;
@@ -400,7 +400,7 @@ fn native_tower_bytes<H: BinaryCircuitHost<BinaryField128>>(
     let mut bytes = alloc::vec::Vec::new();
     for value in values {
         let bits = b.native_tower128_to_bits(value)?;
-        for byte in bits.chunks_exact(8) {
+        for byte in bits.as_chunks::<8>().0 {
             bytes.push(H::recompose_word(b, byte)?);
         }
     }
@@ -430,7 +430,7 @@ pub(crate) trait BinaryTowerPolicy<CF: Field + Eq + Hash>: BinaryProtocolPolicy<
     ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
 }
 fn check_word_width(width: usize) -> Result<(), VerificationError> {
-    if width > 128 || width % 8 != 0 {
+    if width > 128 || !width.is_multiple_of(8) {
         return Err(VerificationError::InvalidProofShape(
             "invalid tower transcript word width".into(),
         ));
@@ -452,7 +452,9 @@ where
         H::check_carrier()?;
         constrain_tower_width(b, value, width);
         Ok(value.bits()[..width]
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|bits| H::recompose_word(b, bits))
             .collect::<Result<_, _>>()?)
     }
@@ -494,7 +496,9 @@ where
         // Decomposition reconstructs the entire scalar from exactly this width.
         let bits = b.binary_decompose_coordinates(value.as_expr(), width)?;
         Ok(bits
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|bits| H::recompose_word(b, bits))
             .collect::<Result<_, _>>()?)
     }

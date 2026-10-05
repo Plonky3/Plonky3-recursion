@@ -409,7 +409,7 @@ where
             let batched = P::add(b, &push, &pull);
             P::mul(b, lambda, &batched)
         } else {
-            zero.clone()
+            zero
         };
         let output = self.tau.sample_with_host::<H, CF>(b, ch)?;
         let reduction = self.sumcheck.verify_after_queries_using::<P, H, CF>(
@@ -567,7 +567,7 @@ where
         let height = *heights.iter().max().unwrap();
         match (&self.indexed, &proof.indexed) {
             (Some(verifier), Some(proof)) => {
-                verifier.check_native(&Point::new(vec![E::ZERO; height]), proof)?
+                verifier.check_native(&Point::new(vec![E::ZERO; height]), proof)?;
             }
             (None, None) => {}
             _ => {

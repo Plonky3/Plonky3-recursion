@@ -200,9 +200,11 @@ fn native_limbs_digest_and_grinding_keep_the_next_draw_bound() {
         .map(|word| E::encode_u16(word).unwrap())
         .collect();
     public.extend(
-        digest.chunks_exact(2).map(|pair| -> F {
-            E::encode_u16(u16::from_le_bytes(pair.try_into().unwrap())).unwrap()
-        }),
+        digest
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| -> F { E::encode_u16(u16::from_le_bytes(*pair)).unwrap() }),
     );
     public.extend(
         (0..8).map(|i| -> F { E::encode_u16((witness.to_repr() >> (16 * i)) as u16).unwrap() }),

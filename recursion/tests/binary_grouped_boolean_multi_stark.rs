@@ -357,7 +357,7 @@ fn check(
     let expected_target = b.binary128_from_limbs::<BabyBear>(expected_inputs).unwrap();
     for (byte, bits) in bytes
         .into_iter()
-        .zip(expected_target.bits()[..64].chunks_exact(8))
+        .zip(expected_target.bits()[..64].as_chunks::<8>().0.iter())
     {
         let actual = b.decompose_to_bits::<BabyBear>(byte, 8).unwrap();
         for (actual, &expected) in actual.into_iter().zip(bits) {
@@ -384,7 +384,7 @@ fn check(
     let mut wrong = private.clone();
     wrong[0] += BabyBear::ONE;
     assert!(!run(&wrong, &public_limbs));
-    let mut wrong = public_limbs.clone();
+    let mut wrong = public_limbs;
     wrong[0] += BabyBear::ONE;
     assert!(!run(&private, &wrong));
     let pp = proof.preprocessed_opening.take();

@@ -182,8 +182,7 @@ where
         let ch = BinaryTower128Challenger::with_initial_bytes::<Val<SC>, SC::Challenge>(
             &mut b, hash, &initial,
         )?;
-        let _completion =
-            binary.verify_circuit::<Val<SC>, SC::Challenge>(&mut b, ch, &public, &targets)?;
+        binary.verify_circuit::<Val<SC>, SC::Challenge>(&mut b, ch, &public, &targets)?;
         // SAFETY: These are the exact original limb IDs used above to build
         // each AIR public value consumed by the complete binary verifier.
         // The layout fixes their instance/value/limb order and Base encoding.

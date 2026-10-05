@@ -95,7 +95,9 @@ fn periodic_mle<F: Field, E: ExtensionField<F>>(values: &[F], point: &[E]) -> E 
     let mut values: Vec<_> = values.iter().copied().map(E::from).collect();
     for &coordinate in point[point.len() - arity..].iter().rev() {
         values = values
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| pair[0] + coordinate * (pair[1] - pair[0]))
             .collect();
     }

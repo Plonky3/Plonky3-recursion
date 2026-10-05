@@ -651,7 +651,7 @@ fn indexed_authority_and_combined_resource_limits_are_checked() {
             &heights,
             &VerifierLimits {
                 max_instances: airs.len(),
-                ..defaults.clone()
+                ..defaults
             }
         )
         .is_ok()
@@ -662,7 +662,7 @@ fn indexed_authority_and_combined_resource_limits_are_checked() {
             &heights,
             &VerifierLimits {
                 max_instances: airs.len() - 1,
-                ..defaults.clone()
+                ..defaults
             }
         )
         .is_err()
@@ -688,23 +688,23 @@ fn indexed_authority_and_combined_resource_limits_are_checked() {
     for limits in [
         VerifierLimits {
             max_rounds: usage.rounds - 1,
-            ..defaults.clone()
+            ..defaults
         },
         VerifierLimits {
             max_queries_per_round: 255,
-            ..defaults.clone()
+            ..defaults
         },
         VerifierLimits {
             max_total_scalar_elements: usage.scalar_elements - 1,
-            ..defaults.clone()
+            ..defaults
         },
         VerifierLimits {
             max_metadata_entries: usage.metadata_entries - 1,
-            ..defaults.clone()
+            ..defaults
         },
         VerifierLimits {
             max_metadata_string_bytes: usage.metadata_string_bytes - 1,
-            ..defaults.clone()
+            ..defaults
         },
     ] {
         assert!(matches!(

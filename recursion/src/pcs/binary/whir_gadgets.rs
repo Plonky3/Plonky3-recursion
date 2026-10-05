@@ -122,7 +122,9 @@ where
     let mut layer = values.to_vec();
     for coordinate in point.iter().rev() {
         layer = layer
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let slope = if multilinear {
                     P::add(circuit, &pair[0], &pair[1])

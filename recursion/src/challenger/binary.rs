@@ -353,7 +353,9 @@ impl BinaryTower128Challenger {
         H::check_hash(self.hash)?;
         let bytes = value
             .bits()
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|bits| H::recompose_word(circuit, bits))
             .collect::<Result<Vec<_>, _>>()?;
         self.observe_bytes_with_host::<H, EF>(circuit, &bytes)
@@ -419,7 +421,9 @@ impl BinaryTower128Challenger {
         let mut staged = self.clone();
         let bytes = staged.sample_bytes_with_host::<H, EF>(circuit, 24)?;
         let coefficients = bytes
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|bytes| {
                 let mut bits = Vec::with_capacity(64);
                 for &byte in bytes {

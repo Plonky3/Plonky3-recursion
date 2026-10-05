@@ -739,7 +739,7 @@ fn grouped_bus_and_indexed_proofs_authenticate_an_independent_preprocessed_cap()
         wrong[offset] += BabyBear::ONE;
         assert!(!run(&circuit, &wrong, &public_limbs));
     }
-    let mut wrong_statement = public_limbs.clone();
+    let mut wrong_statement = public_limbs;
     wrong_statement[0] += BabyBear::ONE;
     assert!(!run(&circuit, &private, &wrong_statement));
     let mut foreign_pp = pp.clone();

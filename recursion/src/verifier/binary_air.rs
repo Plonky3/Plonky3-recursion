@@ -1146,7 +1146,9 @@ fn evaluate_table<P: BinaryRelationPolicy<EF>, EF: Field + Eq + Hash>(
     let mut layer = values.to_vec();
     for r in point.iter().rev() {
         layer = layer
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let slope = P::add(b, &pair[0], &pair[1]);
                 let product = P::mul(b, r, &slope);
