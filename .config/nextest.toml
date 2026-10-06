@@ -1,0 +1,8 @@
+# Each full circuit proof uses several GiB. Reserve the CI test pool to
+# avoid overlapping its peak memory with other tests.
+[[profile.ci.overrides]]
+filter = """
+test(=a_complete_preprocessed_binary_air_proof_proves_in_a_prime_field_circuit)
+| test(=prepared_boolean_trace_multi_stark_proves_its_bound_statement)
+"""
+threads-required = "num-test-threads"

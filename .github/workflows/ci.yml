@@ -37,6 +37,10 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_PROFILE_DEV_STRIP: symbols
       CARGO_PROFILE_TEST_STRIP: symbols
+      # Optimize proof-heavy tests while keeping assertions and overflow checks.
+      CARGO_PROFILE_TEST_OPT_LEVEL: "3"
+      # Run the largest proof tests alone to fit hosted runner memory.
+      NEXTEST_PROFILE: ci
     strategy:
       fail-fast: false
       matrix:
