@@ -38,7 +38,8 @@ jobs:
       CARGO_PROFILE_DEV_STRIP: symbols
       CARGO_PROFILE_TEST_STRIP: symbols
       # Optimize proof-heavy tests while keeping assertions and overflow checks.
-      CARGO_PROFILE_TEST_OPT_LEVEL: "3"
+      # Level 1 also shares generic instantiations across integration binaries.
+      CARGO_PROFILE_TEST_OPT_LEVEL: "1"
       # Run the largest proof tests alone to fit hosted runner memory.
       NEXTEST_PROFILE: ci
     strategy:

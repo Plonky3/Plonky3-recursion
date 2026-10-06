@@ -32,6 +32,10 @@ type M = Tree;
 type Pcs = BooleanTracePcs<E, M, M>;
 type Ch = keccak::LevelChallenger<E>;
 
+// These fixed transcripts finish sampling within 24 candidate draws.
+// Larger bounds add unused sampler steps to the verifier circuit.
+const MAX_QUERY_DRAWS: usize = 24;
+
 struct Config {
     main: Pcs,
     pp: Pcs,
@@ -175,12 +179,12 @@ fn check(
             0,
             0,
             8,
-            64,
+            MAX_QUERY_DRAWS,
             BinaryBooleanTraceMultiStarkPreprocessing {
                 config: pp_cfg,
                 hash: ByteHash::Keccak256,
                 cap_height: 1,
-                max_query_draws: 64,
+                max_query_draws: MAX_QUERY_DRAWS,
                 commitment: pp_cap.clone(),
             },
             limits,
@@ -207,7 +211,7 @@ fn check(
                 )]),
                 ByteHash::Keccak256,
                 cap,
-                64,
+                MAX_QUERY_DRAWS,
                 &limits,
             )
             .unwrap();
@@ -433,6 +437,126 @@ fn boolean_trace_multi_stark_closes_bus_and_indexed_reductions() {
     check(true);
 }
 
+struct BoundTraceAir;
+
+impl BaseAir<E> for BoundTraceAir {
+    fn width(&self) -> usize {
+        1
+    }
+    fn num_public_values(&self) -> usize {
+        3
+    }
+    fn preprocessed_width(&self) -> usize {
+        1
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+    fn preprocessed_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+    fn preprocessed_trace(&self) -> Option<RowMajorMatrix<E>> {
+        Some(RowMajorMatrix::new(
+            (0..128).map(|i| E::from_bool(i & 1 != 0)).collect(),
+            1,
+        ))
+    }
+}
+
+impl<AB: AirBuilder<F = E>> Air<AB> for BoundTraceAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main().current_slice()[0];
+        let pp = b.preprocessed().current_slice()[0];
+        let public = b.public_values().to_vec();
+        b.assert_eq(main, pp);
+        b.when_first_row().assert_eq(main, public[0]);
+        b.when_last_row().assert_eq(main, public[1]);
+        b.when_first_row().assert_eq(pp, public[2]);
+    }
+}
+
+// The prepared owner needs statement and preprocessing bindings. The full
+// adder, successor, bus and indexed relations are exercised by the tests above.
+fn prepared_input() -> (
+    BinaryBooleanTraceMultiStarkVerifier<E>,
+    NativeBinaryBooleanTraceMultiStarkInput<E>,
+    Vec<Vec<E>>,
+) {
+    let cfg = BinaryPcsConfig::try_new::<E, E>(
+        1,
+        BinaryPcsParams {
+            log_inv_rate: 2,
+            pow_bits: 0,
+            security_level: 1,
+        },
+    )
+    .unwrap();
+    let tree = |cap| {
+        Tree::new(
+            keccak::FieldHash::new(keccak::byte_hash()),
+            keccak::Compress::new(keccak::byte_hash()),
+            cap,
+        )
+    };
+    let (main_tree, pp_tree) = (tree(0), tree(1));
+    let native = Config {
+        main: Pcs::new(cfg, main_tree.clone(), main_tree.clone(), 7).unwrap(),
+        pp: Pcs::new(cfg, pp_tree.clone(), pp_tree.clone(), 7).unwrap(),
+    };
+    let make = || Ch::from_hasher(vec![7, 19, 13], keccak::byte_hash());
+    let air = BoundTraceAir;
+    let (pk, vk) = setup(&native, &[&air], &mut make()).unwrap();
+    let trace = air.preprocessed_trace().unwrap();
+    let public = vec![vec![trace.values[0], trace.values[127], trace.values[0]]];
+    let table = Table::new(trace.transpose());
+    let (pp_cap, _) = native.pp.commit(vec![table.clone()], &mut make()).unwrap();
+    let proof = prove(
+        &native,
+        ProverInstances::new(vec![ProverInstance::new(&air, table, &pk, &public[0])]),
+        0,
+        &mut make(),
+    )
+    .unwrap();
+    verify(
+        &native,
+        VerifierInstances::new(vec![VerifierInstance::new(&air, &vk, 7, &public[0])]),
+        &proof,
+        0,
+        &mut make(),
+    )
+    .unwrap();
+    let recursive = BinaryBooleanTraceMultiStarkVerifier::<E>::with_preprocessing(
+        &[&air],
+        &[7],
+        cfg,
+        ByteHash::Keccak256,
+        0,
+        0,
+        8,
+        MAX_QUERY_DRAWS,
+        BinaryBooleanTraceMultiStarkPreprocessing {
+            config: cfg,
+            hash: ByteHash::Keccak256,
+            cap_height: 1,
+            max_query_draws: MAX_QUERY_DRAWS,
+            commitment: pp_cap,
+        },
+        &VerifierLimits::default(),
+    )
+    .unwrap();
+    let input = recursive
+        .import_native_with_preprocessing::<Config, _, _, _, _, _>(
+            &main_tree,
+            &main_tree,
+            Some((&pp_tree, &pp_tree)),
+            &public,
+            &proof,
+            &mut make(),
+        )
+        .unwrap();
+    (recursive, input, public)
+}
+
 #[test]
 fn prepared_boolean_trace_multi_stark_proves_its_bound_statement() {
     use p3_field::PrimeField64;
@@ -443,16 +567,8 @@ fn prepared_boolean_trace_multi_stark_proves_its_bound_statement() {
     };
     use p3_recursion::builtin_config::{FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary};
     use p3_recursion::prepared::PreparedBinaryBooleanTraceMultiStarkLayer;
-    let (recursive, input, public) = check(false);
-    // This complete relation has more primitive scalar rows than the default
-    // portable-artifact budget. Keep the larger fixture budget explicit.
-    let limits = ArtifactLimits {
-        verifier: VerifierLimits {
-            max_total_scalar_elements: 1 << 25,
-            ..VerifierLimits::default()
-        },
-        ..ArtifactLimits::default()
-    };
+    let (recursive, input, public) = prepared_input();
+    let limits = ArtifactLimits::default();
     let output_config = baby_bear_d4_poseidon2_binary(
         &FriConfigV1::new(
             SuiteIdV1::BabyBearD4Poseidon2BinaryFri,
@@ -480,6 +596,16 @@ fn prepared_boolean_trace_multi_stark_proves_its_bound_statement() {
     .unwrap();
     assert_eq!(layer.statement_layout().public_value_counts(), &[3]);
     assert_eq!(layer.statement_layout().schema().base_len(), 24);
+    let verifier = layer.verifier();
+    let identity = verifier.encode_verifier_artifact(limits).unwrap();
+    // Check the fixture's size before proving, then release the decoded verifier.
+    let portable = PortableVerifier::decode(
+        &identity,
+        ExpectedVerifierArtifact::from_trusted_bytes(&identity),
+        limits,
+    )
+    .unwrap();
+    drop(portable);
     let output = layer.prove(&input, &public).unwrap();
     layer
         .verifier()
@@ -489,16 +615,16 @@ fn prepared_boolean_trace_multi_stark_proves_its_bound_statement() {
         )
         .unwrap();
     let expected = layer.statement_layout().pack::<BabyBear>(&public).unwrap();
-    let mut wrong = expected.clone();
-    wrong[16] += BabyBear::ONE;
-    assert!(layer.verifier().verify(&output.0, &wrong).is_err());
+    for offset in [0, 8, 16] {
+        let mut wrong = expected.clone();
+        wrong[offset] += BabyBear::ONE;
+        assert!(layer.verifier().verify(&output.0, &wrong).is_err());
+    }
     let statement = expected
         .iter()
         .flat_map(|v| (v.as_canonical_u64() as u32).to_le_bytes())
         .collect::<Vec<_>>();
-    let verifier = layer.verifier();
     let proof = verifier.encode_proof_artifact(&output.0, limits).unwrap();
-    let identity = verifier.encode_verifier_artifact(limits).unwrap();
     drop(output);
     drop(layer);
     drop(verifier);
