@@ -265,18 +265,18 @@ fn product_geometry_and_aggregate_budgets_are_checked() {
 
 #[test]
 fn a_binary_product_reduction_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, Blake3CompressAirBuilder, Blake3CompressPreprocessor,
         Blake3CompressProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, values) = exercise::<BinaryField8, BinaryField64, _>(
         ByteHash::Blake3,
         || blake3::LevelChallenger::from_hasher(vec![9, 17, 3], blake3::byte_hash()),
         3,
         ProductGkrRootShape::FirstTwoShared,
     );
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(Blake3CompressProver::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

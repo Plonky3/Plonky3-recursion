@@ -177,14 +177,14 @@ fn tail_resources_are_trusted_and_zero_tail_preserves_legacy_accounting() {
 
 #[test]
 fn the_selected_tail_and_continuation_prove_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, Blake3CompressAirBuilder, Blake3CompressPreprocessor,
         Blake3CompressProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, values) =
         differential!(BinaryField8, BinaryField64, blake3, ByteHash::Blake3, 3, 1);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(Blake3CompressProver::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

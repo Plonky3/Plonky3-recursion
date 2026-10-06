@@ -486,11 +486,11 @@ fn filtered_preprocessing_slots_follow_mixed_height_air_order() {
 
 #[test]
 fn a_complete_preprocessed_binary_air_proof_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
         StatementAirBuilder, StatementPreprocessor, StatementProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, private, public) = check!(
         BinaryField8,
         BinaryField64,
@@ -499,7 +499,7 @@ fn a_complete_preprocessed_binary_air_proof_proves_in_a_prime_field_circuit() {
         vec![(1, true)]
     );
     let schema = circuit.statement_schema().unwrap().clone();
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
     prover.register_table_prover(Box::new(StatementProver::<1>::new(schema.clone())));
     let prepared = prover

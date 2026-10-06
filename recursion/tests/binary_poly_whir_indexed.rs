@@ -92,7 +92,8 @@ impl<AB: AirBuilder<F = Poly64> + BusInteractionBuilder + IndexedLookupBuilder> 
     }
 }
 macro_rules! check {
-    ($params:ident, $layout:ident, $hash:expr, $heights:expr, $variables:expr, $mode:expr) => {{
+    ($params:ident, $layout:ident, $hash:expr, $heights:expr, $variables:expr, $mode:expr) => {{ check!($params, $layout, $hash, $heights, $variables, $mode, 2) }};
+    ($params:ident, $layout:ident, $hash:expr, $heights:expr, $variables:expr, $mode:expr, $folding:expr) => {{
         type F = Poly64;
         type E = Poly192;
         type Ch = $params::LevelChallenger<F>;
@@ -132,7 +133,7 @@ macro_rules! check {
                 security_level: 8,
                 pow_bits: 0,
                 round_log_inv_rates: vec![],
-                folding_factor: FoldingFactor::Constant(2),
+                folding_factor: FoldingFactor::Constant($folding),
                 soundness_type: SecurityAssumption::JohnsonBound,
                 starting_log_inv_rate: 1,
             },
@@ -435,13 +436,15 @@ fn poly_bus_and_indexed_claims_share_the_exact_transcript() {
 
 #[test]
 fn a_composed_poly_indexed_bus_relation_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, Blake3CompressAirBuilder, Blake3CompressPreprocessor,
         Blake3CompressProver, StatementAirBuilder, StatementPreprocessor, StatementProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
-    let (circuit, private, public) = check!(blake3, SuffixProver, ByteHash::Blake3, vec![2], 4, 1);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    // Two distinct rows retain a nonidentity indexed permutation and endpoint bus.
+    let (circuit, private, public) =
+        check!(blake3, SuffixProver, ByteHash::Blake3, vec![1], 3, 1, 1);
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(Blake3CompressProver::<1>));
     let schema = circuit.statement_schema().unwrap().clone();
     prover.register_table_prover(Box::new(StatementProver::<1>::new(schema.clone())));
@@ -462,7 +465,10 @@ fn a_composed_poly_indexed_bus_relation_proves_in_a_prime_field_circuit() {
     let mut runner = circuit.runner();
     runner.set_private_inputs(&private).unwrap();
     runner.set_public_inputs(&public).unwrap();
-    let proof = prepared.prove(&runner.run().unwrap()).unwrap();
+    let traces = runner.run().unwrap();
+    drop(circuit);
+    let proof = prepared.prove(&traces).unwrap();
+    drop(traces);
     prepared.verifier().verify(&proof, &public).unwrap();
 }
 

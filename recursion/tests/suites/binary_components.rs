@@ -1,3 +1,7 @@
+#[path = "../common/test_config.rs"]
+mod test_config;
+use test_config::proof_config;
+
 // Share fixture types so their generic proof code is compiled once per suite.
 #[path = "../common/mod.rs"]
 mod common;

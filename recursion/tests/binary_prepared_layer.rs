@@ -98,7 +98,7 @@ macro_rules! check {
                 plan.clone(),
                 $hash,
                 &[7, 19, 13],
-                p3_circuit_prover::config::baby_bear(),
+                crate::proof_config(),
                 ProveNextLayerParams::default()
             ),
             Err(VerificationError::InvalidProofShape(_))
@@ -112,7 +112,7 @@ macro_rules! check {
                 plan.clone(),
                 $hash,
                 &[7, 19, 13],
-                p3_circuit_prover::config::baby_bear(),
+                crate::proof_config(),
                 ProveNextLayerParams::default(),
                 &limits
             ),
@@ -122,7 +122,7 @@ macro_rules! check {
             plan,
             $hash,
             &[7, 19, 13],
-            p3_circuit_prover::config::baby_bear(),
+            crate::proof_config(),
             ProveNextLayerParams::default(),
         )
         .unwrap();

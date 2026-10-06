@@ -1,9 +1,31 @@
-# Each full circuit proof uses several GiB. Reserve the CI test pool to
-# avoid overlapping its peak memory with other tests.
+[profile.ci]
+# Hosted Linux runners have four CPUs. Keep memory reservations consistent
+# when this profile is also used on a machine with more CPUs.
+test-threads = 4
+
+# Full proofs and the largest circuit-reuse fixtures use several GiB each.
+# Reserve the pool so their peak memory cannot overlap another test.
 [[profile.ci.overrides]]
 filter = """
-test(=binary_auxiliary_multi_stark::a_complete_preprocessed_binary_air_proof_proves_in_a_prime_field_circuit)
-| test(=binary_boolean_multi_stark::prepared_boolean_trace_multi_stark_proves_its_bound_statement)
-| test(=binary_boolean_trace::column_batched_routes_match_native_for_nonpower_width_and_width_one)
+package(=p3-recursion)
+& binary(/^binary_(components|boolean|stark|poly)$/)
+& (
+    test(/::(?:.*proves?.*|.*prime_field_proof|.*survive_two_portable_recursion_layers|.*cross_portable_and_second_trusted_layer|prepared_.*|.*closed_portable_identity)$/)
+    | test(=binary_pcs_input::consecutive_openings_preserve_native_transcript_for_both_entry_seeds)
+    | test(=binary_boolean_pcs::consecutive_boolean_openings_reuse_the_native_ring_entry)
+    | test(=binary_whir_arithmetic::empty_coordinate_points_enforce_boolean_ingress_in_the_proof)
+    | test(=binary_boolean_trace::column_batched_routes_match_native_for_nonpower_width_and_width_one)
+    | test(=binary_ring_switch::single_claim_prefix_round_counts_reuse_one_circuit)
+    | test(=binary_ring_switch::multiple_claims_match_native_common_and_individual_prefixes)
+    | test(=binary_ring_switch::eight_byte_challenges_and_dynamic_continuations_match_both_hashes)
+    | test(=binary_boolean_whir::native_blake3_whir_closes_batched_current_and_successor_readings)
+    | test(/^binary_(?:boolean_whir(?:_trace)?|poly_whir_(?:bus|indexed))::/)
+)
 """
 threads-required = "num-test-threads"
+
+# Other binary verifier circuits also allocate large expression graphs.
+# Let at most two run together while lighter workspace tests fill idle slots.
+[[profile.ci.overrides]]
+filter = "package(=p3-recursion) & binary(/^binary_(components|boolean|stark|poly)$/)"
+threads-required = 2

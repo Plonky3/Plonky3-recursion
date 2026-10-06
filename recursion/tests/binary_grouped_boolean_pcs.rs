@@ -299,17 +299,17 @@ fn grouped_boolean64_blake3_binds_batched_current_and_successor_readings() {
 
 #[test]
 fn grouped_boolean_opening_proves_in_a_prime_field() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, Blake3CompressAirBuilder, Blake3CompressPreprocessor,
         Blake3CompressProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let specs = [BinaryRingClaimSpec {
         current: true,
         next_rows: None,
     }];
     let (circuit, values, _) = fixture!(BinaryField64, blake3, ByteHash::Blake3, specs, 1, 13);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(Blake3CompressProver::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

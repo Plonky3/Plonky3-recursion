@@ -37,8 +37,9 @@ class RecursionTestTargetsTests(unittest.TestCase):
             for relative, module in MODULE.findall(entry.read_text()):
                 source = (entry.parent / relative).resolve()
                 self.assertTrue(source.is_file(), source)
-                if module == "common":
-                    self.assertEqual(source, TESTS / "common" / "mod.rs")
+                if module in {"common", "test_config"}:
+                    filename = "mod.rs" if module == "common" else "test_config.rs"
+                    self.assertEqual(source, TESTS / "common" / filename)
                     continue
                 self.assertEqual(module, source.stem)
                 registered.append(source)

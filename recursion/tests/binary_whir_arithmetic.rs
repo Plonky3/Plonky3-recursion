@@ -1,5 +1,11 @@
 //! Released additive WHIR selectors, row folds and coefficient evaluations.
 
+#[path = "common/rejection_oracle.rs"]
+#[cfg(debug_assertions)]
+#[allow(clippy::duplicate_mod)]
+#[allow(dead_code)]
+mod rejection_oracle;
+
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::whir::BinaryWhirDomain;
@@ -178,13 +184,13 @@ fn malformed_evaluation_geometry_is_rejected() {
 
 #[test]
 fn empty_coordinate_points_enforce_boolean_ingress_in_the_proof() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
-    use p3_circuit_prover::{ConstraintProfile, config};
     let mut b = CircuitBuilder::<BabyBear>::new();
     let bit = b.alloc_private_input("query bit");
     binary_whir_query_point::<BinaryField128, BabyBear>(&mut b, &[bit], 0).unwrap();
     let circuit = b.build().unwrap();
-    let prover = BatchStarkProver::new(config::baby_bear());
+    let prover = BatchStarkProver::new(crate::proof_config());
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
         .unwrap();
@@ -192,7 +198,24 @@ fn empty_coordinate_points_enforce_boolean_ingress_in_the_proof() {
         let mut runner = circuit.runner();
         runner.set_private_inputs(&[value]).unwrap();
         // BoolCheck is enforced by AIR; the runner only records its input.
-        let proof = prepared.prove(&runner.run().unwrap()).unwrap();
-        assert_eq!(prepared.verifier().verify(&proof, &[]).is_ok(), accepted);
+        let trace = runner.run().unwrap();
+        let check = || {
+            let proof = prepared.prove(&trace).unwrap();
+            prepared.verifier().verify(&proof, &[])
+        };
+        if accepted {
+            check().unwrap();
+        } else {
+            #[cfg(debug_assertions)]
+            assert!(matches!(
+                rejection_oracle::run_with_debug_oracle(check),
+                Err(rejection_oracle::DebugRejectionKind::Constraint)
+            ));
+            #[cfg(not(debug_assertions))]
+            assert!(matches!(
+                check(),
+                Err(p3_circuit_prover::BatchStarkProverError::Verify(_))
+            ));
+        }
     }
 }

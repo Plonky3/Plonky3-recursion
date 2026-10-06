@@ -405,10 +405,10 @@ fn varied_table_heights_and_mixed_openings_follow_native_batching_order() {
 
 #[test]
 fn full_additive_whir_opening_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, values) = check!(
         BinaryField128,
         keccak,
@@ -417,7 +417,7 @@ fn full_additive_whir_opening_proves_in_a_prime_field_circuit() {
         protocol(3, 1, false),
         FoldingFactor::Constant(2)
     );
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

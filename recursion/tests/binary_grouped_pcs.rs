@@ -285,11 +285,11 @@ fn grouped_pcs_native_openings_reuse_one_circuit_and_preserve_transcript() {
 
 #[test]
 fn grouped_pcs_opening_proves_in_a_prime_field() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, Blake3CompressAirBuilder, Blake3CompressPreprocessor,
         Blake3CompressProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, values) = check!(
         blake3,
         ByteHash::Blake3,
@@ -298,7 +298,7 @@ fn grouped_pcs_opening_proves_in_a_prime_field() {
         4,
         1
     );
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(Blake3CompressProver::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

@@ -61,15 +61,19 @@ jobs:
               --test native_keccak --test native_poly192 --test native_tower128 --test npo_integration
               --test statement --test statement_schema_api --test trusted_statement
             profile: --config profile.test.package.p3-recursion.opt-level=0
+            feature_args: ''
           - name: boolean
             targets: --test binary_boolean --test binary_poly --test native_recursion
             profile: ''
+            feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
           - name: stark
             targets: --test binary_stark --test whir_recursion --test whir_quintic
             profile: ''
+            feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
           - name: protocol
             targets: --test binary_components --test fri_recursion --test prepared_recursion --test protocol_contracts
             profile: ''
+            feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
         os: [ubuntu-latest]
         features: ['', '+avx2']
     runs-on: ${{ matrix.os }}
@@ -122,9 +126,13 @@ jobs:
       - name: Test shard (workspace)
         run: >-
           cargo nextest run --locked --workspace --timings
-          ${{ matrix.shard.targets }} ${{ matrix.shard.profile }}
+          ${{ matrix.shard.targets }} ${{ matrix.shard.profile }} ${{ matrix.shard.feature_args }}
 
+      # Core covers serial execution and all diagnostic/profiling features.
+      # Proof shards exercise parallel execution once: recording millions of
+      # diagnostic allocations exceeds runner memory and doubles compilation.
       - name: Test shard (workspace, all-features)
+        if: ${{ matrix.shard.name == 'core' }}
         run: >-
           cargo nextest run --locked --workspace --all-features --timings
           ${{ matrix.shard.targets }} ${{ matrix.shard.profile }}

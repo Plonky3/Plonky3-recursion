@@ -618,13 +618,13 @@ fn empty_deserialized_requests_and_tight_resource_limits_are_rejected() {
 
 #[test]
 fn a_complete_binary_opening_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let fixture = fixture!(keccak, 7, 1, 1, 0);
     let (circuit, public, private) = build(ByteHash::Keccak256, 0, &fixture);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<4>));
     let prepared = prover
         .prepare_circuit::<Host, 4>(
@@ -939,14 +939,14 @@ fn narrow_folded_oracles_hash_eight_byte_challenge_symbols() {
 
 #[test]
 fn a_narrow_binary_opening_proves_with_exact_one_byte_leaves() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let fixture = narrow_fixture!(BinaryField8, BinaryField64, keccak);
     let (circuit, public, private) =
         build_as::<BinaryField8, BinaryField64>(ByteHash::Keccak256, 0, &fixture);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<4>));
     let prepared = prover
         .prepare_circuit::<Host, 4>(

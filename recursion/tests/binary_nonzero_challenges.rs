@@ -98,12 +98,12 @@ fn both_tower_widths_and_hashes_keep_the_native_completion() {
 
 #[test]
 fn the_sampled_point_and_continuation_prove_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, values) = differential!(BinaryField8, BinaryField64, keccak, ByteHash::Keccak256);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

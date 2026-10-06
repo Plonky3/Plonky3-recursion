@@ -377,17 +377,17 @@ fn both_hashes_and_tower_widths_bind_padded_fraction_and_product_claims() {
 
 #[test]
 fn a_closed_indexed_reduction_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, Blake3CompressAirBuilder, Blake3CompressPreprocessor,
         Blake3CompressProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, values) = closed_fixture::<BinaryField8, BinaryField64, _>(
         ByteHash::Blake3,
         || blake3::LevelChallenger::from_hasher(vec![7, 19, 13], blake3::byte_hash()),
         false,
     );
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(Blake3CompressProver::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

@@ -32,3 +32,6 @@ mod binary_poly_whir_multi_stark;
 mod binary_poly_whir_native_authority;
 #[path = "../binary_poly_whir_trusted_portable.rs"]
 mod binary_poly_whir_trusted_portable;
+#[path = "../common/test_config.rs"]
+mod test_config;
+use test_config::proof_config;

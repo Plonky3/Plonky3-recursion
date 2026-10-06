@@ -284,8 +284,8 @@ fn shared_subexpressions_stay_bounded_and_pin_only_hints_match_native() {
 
 #[test]
 fn compiled_constraints_prove_over_a_prime_field() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
-    use p3_circuit_prover::{ConstraintProfile, config};
     type E = BinaryField128;
     let v = |i: u128| E::from_repr(0x1da7_9bc5_5d47_3bc5_a179_79ad_39b1_4917 ^ i);
     let (_, circuit, values) = compare!(
@@ -300,7 +300,7 @@ fn compiled_constraints_prove_over_a_prime_field() {
         v(29)
     );
     for (circuit, values) in [(circuit, values), narrow_recurrence()] {
-        let prover = BatchStarkProver::new(config::baby_bear());
+        let prover = BatchStarkProver::new(crate::proof_config());
         let prepared = prover
             .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
             .unwrap();

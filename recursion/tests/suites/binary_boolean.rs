@@ -29,27 +29,6 @@ mod binary_grouped_boolean_trace;
 #[path = "../binary_grouped_boolean_trusted_portable.rs"]
 mod binary_grouped_boolean_trusted_portable;
 
-// Functional circuit roundtrips do not need the benchmark suite's grinding
-// and 100 FRI queries. Keep the same field, hash and expansion factor.
-fn proof_config() -> p3_recursion::builtin_config::BabyBearD4Poseidon2BinaryConfig {
-    use p3_recursion::builtin_config::{FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary};
-    use p3_recursion::verifier::VerifierLimits;
-
-    baby_bear_d4_poseidon2_binary(
-        &FriConfigV1::new(
-            SuiteIdV1::BabyBearD4Poseidon2BinaryFri,
-            1,
-            0,
-            2,
-            2,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ),
-        &VerifierLimits::default(),
-    )
-    .unwrap()
-}
+#[path = "../common/test_config.rs"]
+mod test_config;
+use test_config::proof_config;
