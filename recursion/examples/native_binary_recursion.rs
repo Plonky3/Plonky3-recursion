@@ -3,8 +3,15 @@
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_binary_recursion -- --layers 1
 //!
-//! Requests four bits of composed security and uses non-hiding proofs. Deeper
-//! layers can exceed the explicit trace/codeword budgets of this demonstration.
+//! A tested two-layer configuration (large memory requirement):
+//! ./target/optimized/examples/native_binary_recursion --layers 2 \
+//!     --pcs-security-level 12 --cap-height 4 \
+//!     --max-expression-nodes 8388608 --max-pending-connects 8388608 \
+//!     --max-trace-cells 268435456 --max-pcs-codeword-cells 805306368
+//!
+//! Requests four bits of composed security and uses non-hiding proofs. Limits
+//! count field cells or graph entries, not bytes. The second layer's initial
+//! codewords alone occupy 12 GiB; traces, trees, and workspaces require more.
 
 use std::error::Error;
 use std::time::Instant;
@@ -35,6 +42,24 @@ struct Args {
     max_operations: usize,
     #[arg(long, default_value_t = 1 << 22)]
     max_expression_nodes: usize,
+    /// Maximum retained wiring equalities during construction.
+    #[arg(long, default_value_t = 1 << 22)]
+    max_pending_connects: usize,
+    /// Maximum combined trace, preprocessing, and temporary field cells.
+    #[arg(long, default_value_t = 1 << 27)]
+    max_trace_cells: usize,
+    /// Maximum combined initial main and preprocessing codeword cells.
+    #[arg(long, default_value_t = 1 << 27)]
+    max_pcs_codeword_cells: usize,
+    /// Maximum aggregate verifier rounds in each recursive output authority.
+    #[arg(long, default_value_t = 256)]
+    max_verifier_rounds: usize,
+    /// WHIR security level per opening; composed security still requires four bits.
+    #[arg(long, default_value_t = 32)]
+    pcs_security_level: usize,
+    /// Merkle cap height for the recursive output proofs.
+    #[arg(long, default_value_t = 0)]
+    cap_height: usize,
 }
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
@@ -70,26 +95,26 @@ const fn protocol() -> ProtocolParameters {
         starting_log_inv_rate: 1,
     }
 }
-fn recursive_protocol() -> ProtocolParameters {
+fn recursive_protocol(security_level: usize) -> ProtocolParameters {
     ProtocolParameters {
-        security_level: 32,
+        security_level,
         folding_factor: FoldingFactor::Constant(4),
         ..protocol()
     }
 }
-fn options(depth: usize) -> NativeBinaryRecursionOptions {
+fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
-        main: recursive_protocol(),
-        preprocessed: recursive_protocol(),
-        cap_height: 0,
+        main: recursive_protocol(args.pcs_security_level),
+        preprocessed: recursive_protocol(args.pcs_security_level),
+        cap_height: args.cap_height,
         initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
         security_bits: 4,
-        max_pcs_codeword_cells: 1 << 27,
+        max_pcs_codeword_cells: args.max_pcs_codeword_cells,
         artifact_limits: ArtifactLimits {
             verifier: VerifierLimits {
-                max_rounds: 256,
+                max_rounds: args.max_verifier_rounds,
                 max_metadata_entries: 1 << 20,
                 ..Default::default()
             },
@@ -135,18 +160,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let limits = DirectCircuitLimits {
         max_witnesses: args.max_witnesses,
         max_operations: args.max_operations,
-        max_trace_cells: 1 << 27,
+        max_trace_cells: args.max_trace_cells,
     };
     let construction_limits = CircuitConstructionLimits {
         max_expression_nodes: args.max_expression_nodes,
-        max_pending_connects: 1 << 22,
+        max_pending_connects: args.max_pending_connects,
         max_non_primitive_calls: 1 << 20,
         max_non_primitive_slots: 1 << 27,
     };
     println!("Preparing native recursion layer 1...");
     let mut layer = PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
         &authority,
-        options(1),
+        options(1, &args),
         &limits,
         &construction_limits,
     )?;
@@ -171,7 +196,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let authority = layer.into_authority();
             layer = PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
                 &authority,
-                options(depth + 1),
+                options(depth + 1, &args),
                 &limits,
                 &construction_limits,
             )?;
