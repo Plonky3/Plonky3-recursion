@@ -37,7 +37,7 @@ jobs:
       - name: Upload API compatibility logs
         id: upload_logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: api-compatibility-logs
           path: api-compatibility-logs/
