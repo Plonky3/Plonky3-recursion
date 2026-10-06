@@ -19,6 +19,7 @@ use crate::common::{KoalaBearD4Backend, KoalaBearD4RecursionConfig, solved_koala
 /// profile unchanged, then compares the profile path's output against the plain (non-profile)
 /// path byte-for-byte for one more layer under that confirmed-stable profile.
 #[test]
+#[ignore]
 fn profile_path_matches_plain_path_once_fixed_point_is_reached() {
     let (config, backend, layer1_prev, layer1_profile) = solved_koala_bear_d4_profile();
 

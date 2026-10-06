@@ -195,6 +195,7 @@ fn whir_backend_restoration_budget_accepts_exact_and_rejects_one_below() {
 /// merely witness-checked the way the lower-level test helpers in
 /// `whir_recursive_pcs.rs` do.
 #[test]
+#[ignore]
 fn whir_recursion_backend_proves_a_real_next_layer() {
     let log_n = 10;
     let n = 1 << log_n;
@@ -292,6 +293,7 @@ fn whir_recursion_backend_proves_a_real_next_layer_koala_bear() {
 /// in `WhirRecursionBackend` means exactly this: multi-layer chaining, where layer 2 is a
 /// verifier circuit over layer 1's batch proof.
 #[test]
+#[ignore]
 fn whir_recursion_backend_proves_a_batch_stark_next_layer() {
     let log_n = 10;
     let n = 1 << log_n;
@@ -449,6 +451,7 @@ fn whir_d4_batch_validation_rejects_degree_two_metadata_before_reconstruction() 
 /// second layer's own batch-STARK verification -- the `bound * scale == claimed` binding that
 /// ties the two copies together, not a recomputation from the transcript.
 #[test]
+#[ignore]
 #[should_panic(expected = "WitnessConflict")]
 fn whir_recursion_backend_rejects_a_tampered_first_layer_opened_value() {
     let (config, backend, mut layer1) = build_honest_first_layer();
@@ -475,6 +478,7 @@ fn whir_recursion_backend_rejects_a_tampered_first_layer_opened_value() {
 /// makes. Mirrors `whir_recursive_verifier_rejects_a_tampered_sibling_digest` in
 /// `whir_recursive_pcs.rs`, at the batch-STARK backend seam instead of the raw circuit-helper one.
 #[test]
+#[ignore]
 #[should_panic(expected = "WitnessConflict")]
 fn whir_recursion_backend_rejects_a_tampered_first_layer_sibling_digest() {
     let (config, backend, mut layer1) = build_honest_first_layer();

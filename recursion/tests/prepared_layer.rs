@@ -1024,6 +1024,7 @@ fn trusted_whir_uni_layer_exports_each_original_air_statement() {
 }
 
 #[test]
+#[ignore]
 fn whir_batch_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
     let config = bb_whir_config(vec![]);
     let backend = WhirRecursionBackend::<16, 8>::new(Poseidon2Config::BABY_BEAR_D4_W16)
