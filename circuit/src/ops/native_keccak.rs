@@ -69,6 +69,44 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             .expect("requested 100 native Keccak outputs"))
     }
 
+    /// Keccak-256 of low-first raw sixteen-coordinate words.
+    ///
+    /// Each word is serialized as two little-endian bytes. The native Keccak
+    /// AIR and its complete wiring argument constrain every absorbed word and
+    /// output limb to sixteen coordinates, without a byte-codec round trip.
+    /// Enable the native permutation before calling this.
+    pub fn native_keccak256_words(
+        &mut self,
+        words: &[ExprId],
+    ) -> Result<[ExprId; 16], CircuitBuilderError> {
+        check_field::<F>()?;
+        self.check_construction_limits()?;
+        self.ensure_op_enabled(&NpoTypeId::native_keccak_f1600())?;
+        const RATE_WORDS: usize = KECCAK256_RATE_BYTES / 2;
+        let padded_len = (words.len() / RATE_WORDS)
+            .checked_add(1)
+            .and_then(|blocks| blocks.checked_mul(RATE_WORDS))
+            .ok_or_else(|| CircuitBuilderError::NonPrimitiveOpArity {
+                op: "NativeKeccak256Words",
+                expected: "a representable padded word length".into(),
+                got: words.len(),
+            })?;
+        let mut padded = words.to_vec();
+        padded.push(self.define_const(F::from_raw_coordinates(1).expect("native one")));
+        padded.resize(padded_len, ExprId::ZERO);
+        let high = self.define_const(F::from_raw_coordinates(0x8000).expect("checked limb width"));
+        let last = padded.last_mut().expect("at least one padding block");
+        *last = self.add(*last, high);
+        let mut state = [ExprId::ZERO; KECCAK_STATE_LIMBS];
+        for block in padded.as_chunks::<RATE_WORDS>().0 {
+            for (limb, &word) in state.iter_mut().zip(block) {
+                *limb = self.add(*limb, word);
+            }
+            state = self.add_native_keccak_f1600(&state)?;
+        }
+        Ok(state[..16].try_into().expect("sixteen digest limbs"))
+    }
+
     /// Keccak-256 of any fixed byte length, including odd lengths.
     ///
     /// Bytes are checked raw eight-coordinate values. Absorption uses native

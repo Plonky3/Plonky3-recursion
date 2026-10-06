@@ -108,6 +108,15 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
         <Self as BinaryCircuitHost<F>>::check_hash(hash)?;
         builder.native_keccak256_bytes(bytes)
     }
+
+    fn hash_words(
+        builder: &mut CircuitBuilder<F>,
+        hash: ByteHash,
+        words: &[ExprId],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        <Self as BinaryCircuitHost<F>>::check_hash(hash)?;
+        Ok(builder.native_keccak256_words(words)?.to_vec())
+    }
 }
 
 impl<BF, F> BinaryCircuitHost<F> for PrimeBinaryEncoding<BF>
