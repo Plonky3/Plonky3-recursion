@@ -30,6 +30,13 @@ jobs:
 
   build_and_test:
     name: Build and Test
+    env:
+      # Debug info and generic symbol names exhaust hosted runner disks.
+      # Profile settings keep debug assertions and compose with the AVX2 RUSTFLAGS.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_PROFILE_DEV_STRIP: symbols
+      CARGO_PROFILE_TEST_STRIP: symbols
     strategy:
       fail-fast: false
       matrix:
