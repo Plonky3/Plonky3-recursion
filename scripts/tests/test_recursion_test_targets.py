@@ -1,8 +1,11 @@
 import re
+import shlex
 import tomllib
 import unittest
 from collections import Counter
 from pathlib import Path
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,6 +52,32 @@ class RecursionTestTargetsTests(unittest.TestCase):
                     re.search(r"(?m)^mod common;$", source.read_text()),
                     f"{source} reloads the common fixture",
                 )
+
+    def test_ci_build_groups_cover_every_workspace_target_once(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+        job = workflow["jobs"]["workspace_tests"]
+        groups = job["strategy"]["matrix"]["shard"]
+        selected = []
+        kinds = []
+        for group in groups:
+            arguments = shlex.split(group["targets"])
+            for position, argument in enumerate(arguments):
+                if argument == "--test":
+                    selected.append(arguments[position + 1])
+                elif argument in {"--lib", "--bins", "--examples", "--benches"}:
+                    kinds.append(argument)
+
+        workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())
+        expected = set()
+        for member in workspace["workspace"]["members"]:
+            directory = ROOT / member
+            manifest = tomllib.loads((directory / "Cargo.toml").read_text())
+            expected.update(target["name"] for target in manifest.get("test", []))
+            if manifest["package"].get("autotests", True):
+                expected.update(source.stem for source in (directory / "tests").glob("*.rs"))
+        self.assertEqual(set(selected), expected)
+        self.assertEqual(set(Counter(selected).values()), {1})
+        self.assertEqual(Counter(kinds), Counter({"--lib": 1, "--bins": 1, "--examples": 1, "--benches": 1}))
 
 
 if __name__ == "__main__":
