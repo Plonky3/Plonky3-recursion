@@ -1,8 +1,16 @@
-//! Native binary-field proving followed by one prime-field recursion layer.
+//! Hybrid example: native binary-field proving followed by prime-field recursion.
 //!
 //! Prove seven successive squarings in Poly64 using additive WHIR with Poly192
 //! challenges and a BLAKE3 transcript, then recursively verify the native proof
 //! in a BabyBear circuit proved with Poseidon2/FRI.
+//!
+//! For binary-field proving and binary-field recursion, run either native example:
+//! ```sh
+//! cargo run -p p3-recursion --profile optimized --features parallel \
+//!     --example native_binary_recursion -- --layers 1
+//! cargo run -p p3-recursion --profile optimized --features parallel \
+//!     --example native_poly_recursion -- --layers 1
+//! ```
 //!
 //! Run from the workspace root:
 //! ```sh
