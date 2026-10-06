@@ -98,10 +98,10 @@ p3-uni-stark = "0.8.0"
 p3-util = "0.8.0"
 p3-whir = "0.8.0"
 proptest = { version = "1.11", default-features = true }
-rand = { version = "0.10.1", default-features = false }
+rand = { version = "0.10.3", default-features = false }
 rayon = "1.12"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
-smallvec = { version = "1.15", default-features = false }
+smallvec = { version = "1.16", default-features = false }
 spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
 strum = { version = "0.28.0", default-features = false }
 strum_macros = "0.28.0"
