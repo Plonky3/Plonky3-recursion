@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[path = "common/rejection_oracle.rs"]
+#[allow(clippy::duplicate_mod)]
 mod rejection_oracle;
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{

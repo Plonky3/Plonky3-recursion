@@ -6,6 +6,7 @@
 //! is the fixed-key boundary a prover attack must cross.
 
 #[path = "common/rejection_oracle.rs"]
+#[allow(clippy::duplicate_mod)]
 mod rejection_oracle;
 
 use p3_circuit::ops::recompose::RecomposeTrace;

@@ -1,5 +1,3 @@
-mod common;
-
 use std::borrow::Cow;
 
 use p3_circuit::CircuitBuilder;
@@ -16,6 +14,8 @@ use p3_recursion::recursion::BatchOnly;
 use p3_recursion::traits::{LookupMetadata, RecursiveAir};
 use p3_recursion::{Poseidon2Config, RecursiveLagrangeSelectors, Target, VerificationError};
 use p3_uni_stark::{Val, prove};
+
+use crate::common;
 
 type Backend = common::KoalaBearD4Backend;
 type Config = common::KoalaBearD4RecursionConfig;

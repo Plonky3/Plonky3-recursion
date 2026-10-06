@@ -2,8 +2,6 @@
 //! Left: Uni-Stark (Fibonacci) with log_blowup=2, max_arity_log=3.
 //! Right: Batch-Stark (dummy circuit) with log_blowup=3, max_arity_log=4.
 
-mod common;
-
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};

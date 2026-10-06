@@ -1,5 +1,5 @@
-mod common;
 #[path = "common/rejection_oracle.rs"]
+#[allow(clippy::duplicate_mod)]
 #[allow(dead_code)]
 mod rejection_oracle;
 

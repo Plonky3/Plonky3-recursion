@@ -1,5 +1,3 @@
-mod common;
-
 use std::boxed::Box;
 
 use common::whir_config::{BbEF, BbF, BbWhirConfig, bb_whir_config};
@@ -15,6 +13,8 @@ use p3_recursion::{
     BatchOnly, Poseidon2Config, ProveNextLayerParams, TrustedPreparedAggregation,
     TrustedPreparedInput, TrustedPreparedSource,
 };
+
+use crate::common;
 
 #[test]
 fn whir_trusted_transition_reuses_one_owner_for_distinct_chains() {

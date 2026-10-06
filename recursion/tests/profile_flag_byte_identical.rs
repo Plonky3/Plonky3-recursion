@@ -1,5 +1,3 @@
-mod common;
-
 use p3_circuit_prover::ConstraintProfile;
 use p3_recursion::profile::solve_fixed_point;
 use p3_recursion::{

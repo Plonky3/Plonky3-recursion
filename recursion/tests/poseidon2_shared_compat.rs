@@ -1,5 +1,3 @@
-mod common;
-
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{
     NpoTypeId, Poseidon2Config, Poseidon2PermCall, generate_poseidon2_trace,
@@ -24,6 +22,8 @@ use p3_recursion::recursion::{
 use p3_recursion::traits::RecursiveChallenger;
 use p3_recursion::{FriRecursionBackend, PreparedInput, PreparedLayer, PreparedSource};
 use p3_test_utils::koala_bear_params::Challenge;
+
+use crate::common;
 
 type F = KoalaBear;
 type Config = common::KoalaBearD4RecursionConfig;

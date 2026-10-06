@@ -1,5 +1,3 @@
-mod common;
-
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
 use p3_field::PrimeCharacteristicRing;
 use p3_recursion::pcs::whir::uni::WhirUniProofTargets;

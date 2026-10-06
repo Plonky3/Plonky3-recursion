@@ -1,7 +1,5 @@
 //! Recursive verification of batch proofs whose circuits call the byte-hash tables.
 
-mod common;
-
 use p3_batch_stark::ProverData;
 use p3_blake3::Blake3;
 use p3_circuit::CircuitBuilder;

@@ -3,8 +3,6 @@
 //! These tests verify that the recursive CircuitChallenger produces identical
 //! transcript values as the native Plonky3 DuplexChallenger.
 
-mod common;
-
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, FieldChallenger};
 use p3_circuit::ops::{Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::{CircuitBuilder, Traces};

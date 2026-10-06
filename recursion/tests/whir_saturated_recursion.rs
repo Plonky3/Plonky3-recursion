@@ -1,7 +1,5 @@
 //! Real WHIR proofs exercising native whole-domain STIR queries and recursive verification.
 
-mod common;
-
 use common::whir_config::{BbChallenger, BbEF, BbF, BbMmcs};
 use p3_circuit::CircuitError;
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};
@@ -19,6 +17,8 @@ use p3_recursion::{
 };
 use p3_uni_stark::{Proof, StarkGenericConfig, prove, verify};
 use p3_whir::pcs::proof::QueryOpenings;
+
+use crate::common;
 
 type Config = BabyBearD4Poseidon2WhirConfig;
 

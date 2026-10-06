@@ -1,5 +1,3 @@
-mod common;
-
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_batch_stark::{

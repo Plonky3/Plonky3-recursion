@@ -2,7 +2,8 @@
 # avoid overlapping its peak memory with other tests.
 [[profile.ci.overrides]]
 filter = """
-test(=a_complete_preprocessed_binary_air_proof_proves_in_a_prime_field_circuit)
-| test(=prepared_boolean_trace_multi_stark_proves_its_bound_statement)
+test(=binary_auxiliary_multi_stark::a_complete_preprocessed_binary_air_proof_proves_in_a_prime_field_circuit)
+| test(=binary_boolean_multi_stark::prepared_boolean_trace_multi_stark_proves_its_bound_statement)
+| test(=binary_boolean_trace::column_batched_routes_match_native_for_nonpower_width_and_width_one)
 """
 threads-required = "num-test-threads"

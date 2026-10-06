@@ -1,6 +1,7 @@
 //! Focused provider checks for custom Poseidon1 WHIR recursion backends.
 
 #[path = "common/goldilocks_whir_config.rs"]
+#[allow(clippy::duplicate_mod)]
 mod goldilocks_whir_config;
 
 use core::any::TypeId;

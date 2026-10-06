@@ -1,5 +1,3 @@
-mod common;
-
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
@@ -36,10 +34,10 @@ fn init_logger() {
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
 
-    Registry::default()
+    let _ = Registry::default()
         .with(env_filter)
         .with(ForestLayer::default())
-        .init();
+        .try_init();
 }
 
 fn prove_fibonacci_batch(n: usize) -> (BatchStarkProof<MyConfig>, CircuitProverData<MyConfig>) {

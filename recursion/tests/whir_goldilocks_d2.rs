@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 #[path = "common/goldilocks_whir_config.rs"]
+#[allow(clippy::duplicate_mod)]
 mod goldilocks_whir_config;
 
 use goldilocks_whir_config::{GoldEF, GoldF, GoldWhirConfig, gold_whir_config};

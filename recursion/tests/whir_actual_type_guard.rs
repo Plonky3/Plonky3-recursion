@@ -5,9 +5,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[allow(dead_code)]
 #[path = "common/goldilocks_whir_config.rs"]
+#[allow(clippy::duplicate_mod)]
 mod goldilocks_whir_config;
 #[allow(dead_code)]
 #[path = "common/poseidon1_whir_config.rs"]
+#[allow(clippy::duplicate_mod)]
 mod poseidon1_whir_config;
 
 use goldilocks_whir_config::{

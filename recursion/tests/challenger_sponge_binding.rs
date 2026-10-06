@@ -45,6 +45,7 @@
 //! oracle: the same pipeline rejects a value the bus does bind.
 
 #[path = "common/rejection_oracle.rs"]
+#[allow(clippy::duplicate_mod)]
 mod rejection_oracle;
 use p3_batch_stark::ProverData;
 use p3_circuit::ops::{

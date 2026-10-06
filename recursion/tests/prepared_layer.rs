@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 #[path = "../examples/common/prepared_reuse.rs"]
 mod example_prepared_reuse;

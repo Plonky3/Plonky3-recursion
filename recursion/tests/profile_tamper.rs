@@ -1,5 +1,3 @@
-mod common;
-
 use p3_recursion::profile::{RecursionLayerProfile, build_layer_circuit};
 use p3_recursion::verifier::VerificationError;
 

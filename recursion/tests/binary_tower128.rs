@@ -1,7 +1,5 @@
 //! A bound BinaryField128 arithmetic statement and its trusted next recursive layer.
 
-mod common;
-
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::{CircuitBuilder, CircuitError, StatementExport};
 use p3_circuit_prover::ConstraintProfile;
@@ -15,6 +13,8 @@ use p3_recursion::{
     TrustedPreparedSource,
 };
 use p3_test_utils::koala_bear_params::F;
+
+use crate::common;
 
 const A_RAW: u128 = 0x21bade026a6ae768f2ed66ffdcc99396;
 

@@ -1,7 +1,5 @@
 //! Test for recursive STARK verification with a multiplication AIR.
 
-mod common;
-
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
