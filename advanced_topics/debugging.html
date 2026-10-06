@@ -177,17 +177,17 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="debugging"><a class="header" href="#debugging">Debugging</a></h1>
-<p>The <code>CircuitBuilder</code> provides built-in debugging tools to help identify wiring issues and unsatisfied constraints.</p>
+<p>The <code>CircuitBuilder</code> provides debugging tools to identify wiring and runner execution errors.</p>
 <h2 id="compile-features"><a class="header" href="#compile-features">Compile features</a></h2>
 <p>The workspace exposes several opt-in compile features that activate extra instrumentation. They are disabled by default to keep production binaries lean.</p>
 <div class="table-wrapper"><table><thead><tr><th>Crate</th><th>Feature</th><th>What it enables</th></tr></thead><tbody>
-<tr><td><code>p3-circuit</code></td><td><code>debugging</code></td><td>Allocation logging: every witness slot records the operation type, optional label, and call-site scope that allocated it. Exposes <code>AllocationLog</code>, <code>AllocationEntry</code>, and <code>AllocationType</code> in the public API.</td></tr>
+<tr><td><code>p3-circuit</code></td><td><code>debugging</code></td><td>Expression allocation logging and compiled-circuit provenance. Exposes <code>AllocationLog</code>, <code>AllocationEntry</code>, <code>AllocationType</code>, <code>CircuitProvenance</code>, and owned <code>CircuitDiagnostic</code> reports for runner errors.</td></tr>
 <tr><td><code>p3-circuit</code></td><td><code>profiling</code></td><td>Operation-count profiling (implies <code>debugging</code>): the builder tracks how many <code>add</code>, <code>mul</code>, <code>const</code>, <code>public</code>, <code>horner_acc</code>, <code>bool_check</code>, <code>mul_add</code>, and per-NPO-type operations were allocated, both globally and per named scope. Exposes <code>OpCounts</code> and <code>ProfilingState</code>.</td></tr>
 <tr><td><code>p3-circuit-prover</code></td><td><code>parallel</code></td><td>Enables multi-threaded trace generation via Rayon (<code>p3-maybe-rayon/parallel</code>). Strongly recommended for benchmarking and production workloads.</td></tr>
 </tbody></table>
 </div>
 <p>Enable a feature by passing <code>--features &lt;feature&gt;</code> (or <code>--features parallel</code> for the prover sub-crate) to Cargo:</p>
-<pre><code class="language-bash"># Enable allocation logging
+<pre><code class="language-bash"># Enable allocation logging and circuit diagnostics
 cargo test -p p3-circuit --features debugging
 
 # Enable profiling (includes debugging)
@@ -217,10 +217,11 @@ These logs can then be analyzed at runtime and leveraged to detect issues in cir
 </blockquote>
 <h3 id="enabling-debug-logging"><a class="header" href="#enabling-debug-logging">Enabling Debug Logging</a></h3>
 <p>Allocation logging is active whenever the <code>debugging</code> feature is compiled in.
-Logs can be dumped to <code>stdout</code> when calling <code>builder.dump_allocation_log()</code>, if logging level is set to <code>DEBUG</code> or lower.</p>
+<code>builder.dump_allocation_log()</code> emits tracing events. Install a tracing subscriber that accepts
+<code>DEBUG</code> events to see them; the chosen subscriber controls where they are written.</p>
 <h3 id="allocation-log-format"><a class="header" href="#allocation-log-format">Allocation Log Format</a></h3>
 <p>By default, the <code>CircuitBuilder</code> automatically logs all allocations with no specific labels.
-One can decide to attach a specific descriptive to ease debugging, like so:</p>
+You can attach descriptive labels to make failures easier to locate:</p>
 <pre><code class="language-rust ignore">let mut builder = CircuitBuilder::&lt;F&gt;::new();
 
 // Allocating with custom labels
@@ -235,8 +236,8 @@ let a_minus_bc = builder.alloc_sub(input_a, b_times_c, "a_minus_bc");
 // Default allocation
 let x = builder.public_input(); // unlabelled
 let y = builder.add(x, z);          // unlabelled</code></pre>
-<p>The <code>CircuitBuilder</code> also allows for nested scoping of allocation logs, so that users can debug
-a specific context within a larger circuit. Scoping can be defined arbitrarily by users as follows:</p>
+<p>The <code>CircuitBuilder</code> also allows nested scopes. Each allocation records the <strong>innermost</strong> active
+scope name, not a full path through all parent scopes:</p>
 <pre><code class="language-rust ignore">fn complex_function(builder: &amp;mut CircuitBuilder) {
     builder.push_scope("complex function");
 
@@ -253,10 +254,76 @@ fn inner_function(builder: &amp;mut CircuitBuilder) {
 
     builder.pop_scope();
 }</code></pre>
+<p>An allocation records its source <code>ExprId</code>, type, label, scope, and direct dependency groups in
+operand order. Private inputs have <code>AllocationType::PrivateInput</code>; code that exhaustively matches
+the debugging-only <code>AllocationType</code> enum must handle this variant. The zero expression is
+preallocated without an allocation record. Constant pooling, arithmetic simplification, and
+expression-level common-subexpression reuse may return an existing <code>ExprId</code>; in that case its
+first allocation's label and scope remain the recorded ones.</p>
+<h2 id="diagnosing-runner-errors"><a class="header" href="#diagnosing-runner-errors">Diagnosing runner errors</a></h2>
+<p><code>debugging</code> also retains immutable source information on a circuit built by <code>CircuitBuilder</code>.
+Call <code>run_with_diagnostics()</code> to receive an owned <code>CircuitDiagnostic</code> when the runner returns an
+error. It works without a tracing subscriber and can outlive the runner and circuit:</p>
+<pre><code class="language-rust ignore">use p3_baby_bear::BabyBear;
+use p3_circuit::{CircuitBuilder, CircuitError};
+
+let mut builder = CircuitBuilder::&lt;BabyBear&gt;::new();
+builder.push_scope("inputs");
+let _amount = builder.alloc_public_input("amount");
+builder.pop_scope();
+let circuit = builder.build().unwrap();
+
+let diagnostic = circuit.runner().run_with_diagnostics().unwrap_err();
+assert!(matches!(diagnostic.error(), CircuitError::PublicInputNotSet { .. }));
+println!("{diagnostic}"); // Includes the input's label and scope.
+for source in diagnostic.operation_origins() {
+    if let Some(allocation) = &amp;source.allocation {
+        println!("source {}: {}", source.expr_id, allocation.label);
+    }
+}
+let original_error: CircuitError = diagnostic.into_error();</code></pre>
+<p>The underlying <code>CircuitError</code> stays available through <code>error()</code>, <code>into_error()</code>, and the standard
+error <code>source()</code> method. Existing <code>run()</code> and input setters still return <code>CircuitError</code> directly.
+For an error from a setter, use <code>circuit.diagnose_error(error)</code>; this reports the caller phase and
+only context that can be established from the error. It cannot infer which operation would later
+execute. For example:</p>
+<pre><code class="language-rust ignore">let mut runner = circuit.runner();
+let error = runner.set_public_inputs(&amp;[]).unwrap_err();
+let diagnostic = circuit.diagnose_error(error);
+println!("{diagnostic}");</code></pre>
+<p>The reported <strong>compiled operation index</strong> is a zero-based position in <code>Circuit::ops</code>. It is
+different from both the original builder <code>ExprId</code> and a <code>NonPrimitiveOpId</code>. An operation's source
+list may contain more than one expression: exact duplicate operations merge during optimization,
+and an actual multiply-add fusion retains the source multiply and add. Subtraction and division
+can lower to backward arithmetic operations; a division error may therefore identify a compiled
+multiply while showing the original labeled <code>Div</code> expression and its numerator/denominator
+dependencies. A non-primitive or hint call can be the source even when it has no output witness.</p>
+<p>Witness aliases are related but distinct from the source of the failing operation. Several
+expressions connected to one canonical witness can be listed as aliases. The diagnostic keeps
+the failing operation's origins in <code>operation_origins()</code> separate from an implicated witness's
+<code>witness_aliases()</code>. Each <code>DiagnosticSource</code> has an <code>expr_id</code>, an optional <code>allocation</code>, and
+<code>dependencies</code> grouped in the original operand order. These dependencies are one level deep;
+the report does not walk the whole expression graph. <code>phase()</code> and <code>compiled_operation()</code> provide
+the failure stage and actual compiled operation when known. <code>Circuit::provenance()</code> exposes the
+builder-produced snapshot through <code>allocation(expr_id)</code>,
+<code>operation_origins(compiled_op_index)</code>, and <code>witness_origins(canonical_witness_id)</code>. Missing
+individual records remain missing; the API does not invent labels or scopes.</p>
+<p><code>CircuitDiagnostic</code> formats at most eight items per repeated section, marking skipped items with
+<code>… (+N more)</code>. Its whole <code>Display</code>, including the original error text, is capped at 4,096 Unicode
+characters followed by <code>… (+N characters omitted)</code> if truncated. Its structured accessors and
+<code>error()</code> retain the complete recorded data. A circuit created directly with <code>Circuit::new</code> has
+no builder provenance; its diagnostic can still report the typed error and available compiled
+operation context. Provenance describes the compiled snapshot: changing the public <code>Circuit::ops</code>
+or expression-to-witness mapping after build can invalidate source-to-operation correspondence.
+A same-length mutation cannot be detected automatically. Debug metadata is kept outside compiled
+operations, preprocessed data, trace values, and proof/artifact identity. Diagnostics do not
+collect source file locations or stack traces.</p>
 <h2 id="debugging-constraints"><a class="header" href="#debugging-constraints">Debugging constraints</a></h2>
-<p>When debugging constraint satisfaction issues, the system relies on Plonky3's internal <code>check_constraints</code>
-feature to evaluate AIR constraints, available in debug mode.
-This ensures that all constraints are properly satisfied before proceeding to the next proving phases.</p>
+<p>Diagnostics enrich errors actually returned by the circuit runner; they do not add new runtime
+constraint checks. In particular, the runner's <code>BoolCheck</code> execution does not universally reject
+a non-boolean witness value. A successful trace run does not establish that every AIR constraint
+is satisfied. Plonky3's <code>check_constraints</code> feature can help check AIR constraints during proving
+in debug builds.</p>
 
                     </main>
 

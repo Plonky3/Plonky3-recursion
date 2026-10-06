@@ -220,9 +220,20 @@ builder
     .add_challenges(betas);
 let public_inputs = builder.build();</code></pre>
 <h2 id="public-inputs-in-aggregation"><a class="header" href="#public-inputs-in-aggregation">Public inputs in aggregation</a></h2>
-<p>For aggregation circuits, public inputs from both verifications are concatenated — left first, then right. This is handled automatically by <code>prove_aggregation_layer</code>:</p>
+<p>For aggregation circuits, the <em>internal verifier inputs</em> from both child proofs
+are packed left first, then right. This is handled automatically by
+<code>prove_aggregation_layer</code> and by prepared aggregation owners:</p>
 <pre><code class="language-rust ignore">let mut public_inputs = left_result.pack_public_inputs(&amp;left)?;
 public_inputs.extend(right_result.pack_public_inputs(&amp;right)?);</code></pre>
+<p>This packing order is separate from the public statement exported by the parent
+proof. <code>TrustedPreparedAggregation::new</code> exports the two child statements in
+left-right order.
+With <code>TrustedPreparedAggregation::new_state_transition</code>, each child statement has
+the exact schema <code>state_schema || state_schema || [Base]</code> and values
+<code>[initial_state coefficients, final_state coefficients, count]</code>; the parent exports
+<code>[left.initial_state, right.final_state, left.count + right.count]</code>. Its statement
+has the same width and schema as either child, even though the internal verifier
+still packs both proofs' inputs. See <a href="./aggregation.html#composing-state-transitions">state-transition composition</a>.</p>
 
                     </main>
 

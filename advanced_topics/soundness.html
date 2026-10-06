@@ -215,7 +215,8 @@ It should not be replaced by <code>num_queries × log_blowup</code> unless an ad
 conjectural assumption is being made.</p>
 <h2 id="cryptographic-components-verified-in-circuit"><a class="header" href="#cryptographic-components-verified-in-circuit">Cryptographic components verified in-circuit</a></h2>
 <h3 id="merkle-tree-verification"><a class="header" href="#merkle-tree-verification">Merkle tree verification</a></h3>
-<p>Every MMCS opening proof (Merkle path) is verified in-circuit via Poseidon2 hashing. The circuit:</p>
+<p>Every MMCS opening proof (Merkle path) is verified in-circuit with the
+permutation selected by the configuration (Poseidon1 or Poseidon2). The circuit:</p>
 <ul>
 <li>Hashes sibling pairs up the tree</li>
 <li>Checks that the reconstructed root matches the committed root (a public input)</li>
@@ -234,18 +235,27 @@ conjectural assumption is being made.</p>
 <p>The circuit challenger implements a duplex sponge construction identical to Plonky3's native <code>DuplexChallenger</code>. It absorbs commitments and opened values in the same order as the native verifier, producing identical challenges. See <a href="./hashing.html">Hashing and Fiat-Shamir</a> for details on transcript compatibility.</p>
 <h3 id="zk-mode"><a class="header" href="#zk-mode">ZK mode</a></h3>
 <p>The recursive verifier supports ZK-enabled STARK configurations, including batch recursion transcript/randomization handling.</p>
-<h3 id="challenger-poseidon2-ctl-verified"><a class="header" href="#challenger-poseidon2-ctl-verified">Challenger Poseidon2: CTL-verified</a></h3>
-<p>The Fiat-Shamir challenger's Poseidon2 permutations are connected to the Poseidon2 AIR table via cross-table lookups (CTLs). The circuit builder's <code>add_poseidon2_perm_for_challenger</code> / <code>add_poseidon2_perm_for_challenger_base</code> use the standard Poseidon2 non-primitive op with full input and rate-output CTL exposure; the executor runs the real permutation and the lookup argument enforces that the (input, output) pair appears in the Poseidon2 table. The MMCS Poseidon2 calls (Merkle verification) are also CTL-verified.</p>
+<h3 id="challenger-permutation-ctl-verified"><a class="header" href="#challenger-permutation-ctl-verified">Challenger permutation: CTL-verified</a></h3>
+<p>The Fiat-Shamir challenger's permutations are connected to the matching
+Poseidon1 or Poseidon2 AIR table via cross-table lookups (CTLs). The circuit
+builder exposes the permutation input and rate output; the executor runs the
+selected permutation, and the lookup argument enforces that the input/output
+pair appears in its table. MMCS permutation calls for Merkle verification are
+also CTL-verified.</p>
 <h2 id="current-limitations"><a class="header" href="#current-limitations">Current limitations</a></h2>
-<h3 id="fixed-poseidon2-parameters"><a class="header" href="#fixed-poseidon2-parameters">Fixed Poseidon2 parameters</a></h3>
-<p>The recursion stack currently requires <code>WIDTH = 16</code> and <code>RATE = 8</code> for 32-bit fields with degree-4 extensions. Future versions will support configurable parameters.</p>
+<h3 id="supported-permutation-configurations"><a class="header" href="#supported-permutation-configurations">Supported permutation configurations</a></h3>
+<p>Custom recursion configurations support selected Poseidon1 or Poseidon2
+permutations and matching backend geometry and challenge dimension, including
+BabyBear D4 with width 16/rate 8 and Goldilocks D2 with width 8/rate 4.
+See <a href="../user_guide/configuration.html">Configuration</a> for supported combinations
+and the input PCS matching requirements.</p>
 <h2 id="verifier-trust-model"><a class="header" href="#verifier-trust-model">Verifier trust model</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Component</th><th>How it's verified</th></tr></thead><tbody>
-<tr><td>Commitment openings</td><td>Merkle path verification (Poseidon2, CTL-enforced)</td></tr>
+<tr><td>Commitment openings</td><td>Merkle path verification (selected permutation, CTL-enforced)</td></tr>
 <tr><td>FRI fold chain</td><td>Algebraic consistency checks in-circuit</td></tr>
 <tr><td>FRI query indices</td><td>Sampled in-circuit from transcript</td></tr>
 <tr><td>Proof-of-work</td><td>Verified in-circuit</td></tr>
-<tr><td>Fiat-Shamir challenges</td><td>Circuit challenger (CTL-verified against Poseidon2 AIR)</td></tr>
+<tr><td>Fiat-Shamir challenges</td><td>Circuit challenger (CTL-verified against the selected permutation AIR)</td></tr>
 <tr><td>AIR constraint satisfaction</td><td>Evaluated in-circuit via symbolic-to-circuit translation</td></tr>
 <tr><td>Lookup argument</td><td>LogUp verification in-circuit</td></tr>
 </tbody></table>

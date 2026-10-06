@@ -205,7 +205,8 @@ let input = RecursionInput::UniStark {
 };
 
 // 2. Create the FRI backend with a Poseidon2 config matching your field.
-let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
+let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .for_extension_degree::&lt;4&gt;();
 
 // 3. Prove. This builds the verifier circuit, runs it, and produces a batch-STARK proof.
 let params = ProveNextLayerParams::default();
@@ -218,7 +219,15 @@ let next_input = output.into_recursion_input::&lt;BatchOnly&gt;();
 let output_2 = build_and_prove_next_layer::&lt;_, _, _, 4&gt;(
     &amp;next_input, &amp;config, &amp;backend, &amp;params,
 )?;</code></pre>
-<p>The config (<code>&amp;config</code>) must implement <code>FriRecursionConfig</code>. See the <a href="./integration.html">Integration Guide</a> for how to set this up, or the <a href="./examples.html">Examples</a> for complete working code.</p>
+<p>The config (<code>&amp;config</code>) must implement <code>FriRecursionConfig</code>.
+<code>KoalaBearD4Poseidon2BinaryConfig</code> is the built-in suite that implements it directly.
+The other <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri.rs">native FRI factories</a> provide validated
+building blocks; using them with this recursion API requires a local <code>StarkGenericConfig</code>
+wrapper and <code>FriRecursionConfig</code> implementation. See the
+<a href="../user_guide/integration.html">Integration Guide</a> for that contract,
+or the <a href="./examples.html">Examples</a> for working code. This one-shot API transports the proof's
+attached metadata; use a trusted prepared owner when independently fixed relation and statement
+authority is required.</p>
 <h2 id="running-the-examples"><a class="header" href="#running-the-examples">Running the examples</a></h2>
 <p>Three examples ship with the library:</p>
 <pre><code class="language-bash"># Recursive Keccak (uni-STARK base proof)

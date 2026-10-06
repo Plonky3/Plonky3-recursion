@@ -177,15 +177,18 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="hashing-and-fiat-shamir-in-recursion"><a class="header" href="#hashing-and-fiat-shamir-in-recursion">Hashing and Fiat-Shamir in Recursion</a></h1>
-<p>This section explains how cryptographic hashing, specifically Poseidon2, is used in recursive verification,
-and how the Fiat-Shamir challenger is implemented to maintain transcript compatibility with native Plonky3.</p>
+<p>This section uses a width-16/rate-8, degree-4 Poseidon2 configuration to
+explain hashing in recursive verification and transcript compatibility with
+native Plonky3. Supported custom configurations also select Poseidon1 or a
+different geometry; see <a href="../user_guide/configuration.html">Configuration</a>.</p>
 <h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
 <p>Recursive verification requires two distinct uses of the permutation used by the selected prover configuration:</p>
 <ol>
 <li><strong>Fiat-Shamir Challenger</strong>: Derives random challenges from the transcript (commitments, opened values, etc.)</li>
 <li><strong>MMCS/Merkle Verification</strong>: Verifies Merkle tree opening proofs for commitments</li>
 </ol>
-<p>Both operations use the same underlying Poseidon2 permutation, but they interact with it differently:</p>
+<p>In the Poseidon2 example below, both operations use the same underlying
+permutation, but they interact with it differently:</p>
 <pre><code>┌─────────────────────────────────────────────────────────────────────┐
 │                    Poseidon2 Permutation (WIDTH=16)                 │
 ├──────────────────────────────┬──────────────────────────────────────┤
@@ -198,13 +201,13 @@ and how the Fiat-Shamir challenger is implemented to maintain transcript compati
 └──────────────────────────────┴──────────────────────────────────────┘
 </code></pre>
 <h2 id="the-poseidon2-permutation"><a class="header" href="#the-poseidon2-permutation">The Poseidon2 Permutation</a></h2>
-<p>In this implementation, we use the Poseidon2 permutation with:</p>
+<p>The concrete Poseidon2 example uses:</p>
 <ul>
 <li><strong>WIDTH = 16</strong>: The permutation operates on 16 field elements</li>
 <li><strong>RATE = 8</strong>: In sponge mode, 8 elements are absorbed/squeezed per permutation</li>
 </ul>
-<p><strong>Note</strong>: These parameters (WIDTH=16, RATE=8) are currently fixed and tailored to 32-bit fields.
-Future versions will make them configurable to support a wider range of applications.</p>
+<p>These width-16/rate-8 values describe this example. The selected supported
+permutation family, geometry, and backend degree depend on the configuration.</p>
 <h3 id="base-field-vs-extension-field-views"><a class="header" href="#base-field-vs-extension-field-views">Base Field vs Extension Field Views</a></h3>
 <p>The same Poseidon2 permutation can be viewed in two equivalent ways:</p>
 <p><strong>D=1 View (Base Field)</strong></p>
@@ -256,7 +259,8 @@ where each Eᵢ = eᵢ₀ + eᵢ₁·ω + eᵢ₂·ω² + eᵢ₃·ω³
 </code></pre>
 <h3 id="circuit-challenger-design"><a class="header" href="#circuit-challenger-design">Circuit Challenger Design</a></h3>
 <p>The recursive circuit operates over extension field elements, but must produce <strong>identical transcripts</strong> to the native challenger. This requires careful state management.</p>
-<p>The <code>CircuitChallenger</code> maintains state as <strong>coefficient-level targets</strong>:</p>
+<p>Conceptually, the Poseidon2 circuit challenger in this example maintains
+<strong>coefficient-level targets</strong>. This sketch is not its literal Rust definition:</p>
 <pre><pre class="playground"><code class="language-rust edition2024"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>struct CircuitChallenger&lt;const WIDTH: usize, const RATE: usize&gt; {
@@ -292,14 +296,16 @@ E₃ = c₁₂ + c₁₃·ω + c₁₄·ω² + c₁₅·ω³
 <p><strong>Decomposition</strong> (4 extension elements → 16 coefficients):
 The inverse operation, extracting basis coefficients from each extension element.</p>
 <h3 id="row-overhead"><a class="header" href="#row-overhead">Row Overhead</a></h3>
-<p>The recomposition/decomposition unfortunately adds overhead in the primitive tables:</p>
+<p>For this width-16/rate-8, degree-4 example, recomposition/decomposition adds
+overhead in the primitive tables:</p>
 <div class="table-wrapper"><table><thead><tr><th>Operation</th><th>Mul Rows</th><th>Add Rows</th><th>Witness Rows</th></tr></thead><tbody>
 <tr><td>Recompose (4 ext)</td><td>16</td><td>12</td><td>0</td></tr>
 <tr><td>Decompose (4 ext)</td><td>16</td><td>12</td><td>16</td></tr>
 <tr><td><strong>Total per duplexing</strong></td><td><strong>32</strong></td><td><strong>24</strong></td><td><strong>16</strong></td></tr>
 </tbody></table>
 </div>
-<p>This adds a total of approximately <strong>70</strong> rows over the different primitive tables per challenger duplexing.</p>
+<p>This example adds a total of approximately <strong>70</strong> rows over the different
+primitive tables per challenger duplexing.</p>
 <blockquote>
 <p><strong>Optimization Note</strong>: When using D=1 configuration (base field challenges), no recomposition/decomposition
 is needed as the state maps directly to the Poseidon2 inputs, eliminating this overhead.</p>
@@ -343,7 +349,8 @@ The AIR constrains the Poseidon2 permutation over the base field regardless of h
 the order the native verifier performed for the recursive circuit to be able to satisfy the
 associated constraints.</p>
 <h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
-<p>The challenger is configured with a <code>Poseidon2Config</code> that specifies the field and extension degree:</p>
+<p>For the Poseidon2 examples here, <code>Poseidon2Config</code> specifies the field and
+permutation extension degree:</p>
 <div class="table-wrapper"><table><thead><tr><th>Config</th><th>Field</th><th>D</th><th>WIDTH</th><th>Use Case</th></tr></thead><tbody>
 <tr><td><code>BabyBearD4Width16</code></td><td>BabyBear</td><td>4</td><td>16</td><td>Standard recursive verification</td></tr>
 <tr><td><code>BabyBearD1Width16</code></td><td>BabyBear</td><td>1</td><td>16</td><td>Base field challenges (lower overhead)</td></tr>
@@ -353,7 +360,10 @@ associated constraints.</p>
 <tr><td><code>KoalaBearD4Width24</code></td><td>KoalaBear</td><td>4</td><td>24</td><td>Wider configuration, efficient hashing</td></tr>
 </tbody></table>
 </div>
-<p>The challenger is in charge to validate at runtime that the config matches the extension field being used.</p>
+<p>For supported custom WHIR configurations using Poseidon1 or Poseidon2, backend
+input validation also checks the actual base field and challenge dimension. See
+<a href="../user_guide/configuration.html">Configuration</a> for the supported combinations
+and matching requirements.</p>
 
                     </main>
 

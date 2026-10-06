@@ -179,7 +179,7 @@
 <h1 id="aggregation"><a class="header" href="#aggregation">Aggregation</a></h1>
 <p>The library supports 2-to-1 recursive aggregation: verifying two proofs inside a single circuit and producing one output proof. This enables binary tree aggregation of independent computations.</p>
 <h2 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h2>
-<p>An aggregation circuit contains two verifier sub-circuits sharing the same <code>CircuitBuilder</code>. Both verifications use the same Poseidon2 table and primitive chips. The combined circuit is then proved as a single batch-STARK.</p>
+<p>An aggregation circuit contains two verifier sub-circuits sharing the same <code>CircuitBuilder</code>. Both verifications use the matching permutation tables and primitive chips. The combined circuit is then proved as a single batch-STARK.</p>
 <pre><code>       ┌────────────────────────┐
        │   Aggregation Circuit  │
        │                        │
@@ -207,13 +207,63 @@ let right = RecursionInput::UniStark {
     proof: &amp;proof_b, air: &amp;air_b, public_inputs: pis_b.clone(), preprocessed_commit: None,
 };
 
-let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
+let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .for_extension_degree::&lt;4&gt;();
 let params = ProveNextLayerParams::default();
 
 let output = build_and_prove_aggregation_layer::&lt;_, _, _, _, 4&gt;(
     &amp;left, &amp;right, &amp;config, &amp;backend, &amp;params,
 )?;</code></pre>
-<p>The output is a regular <code>RecursionOutput</code> and can be fed into further aggregation or recursion layers via <code>into_recursion_input::&lt;BatchOnly&gt;()</code>.</p>
+<p>The output is a regular <code>RecursionOutput</code> and can be fed into further aggregation or recursion
+layers via <code>into_recursion_input::&lt;BatchOnly&gt;()</code>. That helper carries proof-attached values;
+use <code>TrustedPreparedAggregation</code> with independently retained child verifier authority and
+caller-expected statements when aggregating trusted relations.</p>
+<h2 id="composing-state-transitions"><a class="header" href="#composing-state-transitions">Composing state transitions</a></h2>
+<p>Use <code>TrustedPreparedAggregation::new_state_transition</code> when each trusted child proves a
+transition with the exact statement schema <code>state_schema || state_schema || [Base]</code>.
+Its values are ordered <code>[initial_state coefficients, final_state coefficients, count]</code>.
+The constructor takes the same left and right <code>TrustedPreparedSource</code>s, output config,
+backend, and parameters as <code>new</code>, plus a <code>StateTransitionLayout</code>:</p>
+<pre><code class="language-rust ignore">use p3_circuit::StateTransitionLayout;
+use p3_recursion::TrustedPreparedAggregation;
+
+let layout = StateTransitionLayout::base(2, 4)?; // two Base state coefficients; 4 count bits
+let owner = TrustedPreparedAggregation::new_state_transition(
+    left_source, right_source, output_config, backend, params, layout.clone(),
+)?;
+let output = owner.prove(left_input, right_input)?;</code></pre>
+<p>For example, <code>[10, 20, 13, 26, 3]</code> followed by <code>[13, 26, 20, 40, 7]</code>
+produces <code>[10, 20, 20, 40, 10]</code>. The merger connects <strong>every</strong> left final-state
+coefficient to the corresponding right initial-state coefficient, adds the two
+counts, and exports the left initial state, right final state, and sum. All child
+schemas must equal the layout exactly, including semantic <code>StatementField</code>
+boundaries. Use <code>StateTransitionLayout::try_new(state_schema, count_bits)</code> for a
+state schema containing extension fields.</p>
+<p>Counts are canonical nonnegative integers from <code>0</code> through <code>2^b - 1</code>, where
+<code>b = count_bits</code>. The layout requires <code>2 * (2^b - 1) &lt; p</code> for the base-field
+modulus <code>p</code>; each child count and their sum must also fit in <code>b</code> bits. These
+checks make addition an ordinary integer sum without field wraparound. Zero is
+allowed; the authorized leaf relation defines what a zero-count transition means
+and what the count measures. The merger only adds the counts asserted by those
+child relations.</p>
+<p>The prepared owner can prove multiple compatible pairs with different states and
+counts. At each level, supply each child's proof and caller-expected statement;
+retain the child verifier authority independently. The application should also
+retain its own expected root statement and verify the final proof against it,
+including when using a portable verifier. The same concrete base-field type is
+supported across the input and output configurations of a prepared owner. The
+FRI and WHIR backends each support this constructor with that field type.</p>
+<p><code>TrustedPreparedAggregation::new</code> still exports the ordered concatenation of
+its child statements. Transition composition exports a compact statement of the
+same width as one child, and its verifier has no concat-specific
+<code>aggregation_statement_layout()</code> metadata. The compiled verifier relation enforces
+the transition rules. See the <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/circuit/src/statement.rs">layout implementation</a>,
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/prepared/trusted.rs">prepared constructor</a>,
+and <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/artifact_recursive_roundtrip.rs">two-level FRI transition test</a>
+for the API, prepared reuse, and portable root verification.</p>
+<p>When child proofs arrive as serialized artifacts, <a href="./integration.html#import-portable-artifacts-into-trusted-recursion">typed import</a>
+checks each proof against an independently pinned verifier and caller-expected
+statement before its <code>as_source()</code> or <code>as_input()</code> view enters a prepared owner.</p>
 <h2 id="tree-aggregation"><a class="header" href="#tree-aggregation">Tree aggregation</a></h2>
 <p>To aggregate N independent proofs, arrange them as leaves of a binary tree and aggregate pairwise, bottom up:</p>
 <pre><code>Level 0 (leaves):  P0   P1   P2   P3
@@ -239,7 +289,7 @@ while proofs.len() &gt; 1 {
 }
 // proofs[0] is the root proof</code></pre>
 <h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
-<p>An aggregation circuit is roughly twice the size of a single-verification circuit (two verifiers in one circuit). The Poseidon2 table is shared, so the overhead is less than 2x for hash-heavy proofs.</p>
+<p>An aggregation circuit is roughly twice the size of a single-verification circuit (two verifiers in one circuit). Matching permutation tables are shared, so the overhead is less than 2x for hash-heavy proofs.</p>
 <p>Adjust <code>TablePacking</code> for aggregation circuits — they produce wider traces than single-verification circuits. See <a href="./configuration.html#table-packing">Configuration</a> for guidance.</p>
 
                     </main>

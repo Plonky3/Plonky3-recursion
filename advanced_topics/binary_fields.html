@@ -189,7 +189,13 @@ multilinear commitments and a SuperSpartan-style prover over those fields.</li>
 <code>Blake3BinaryAir</code> (<code>p3-blake3-air</code>).</li>
 </ul>
 <h2 id="what-this-repository-supports-today"><a class="header" href="#what-this-repository-supports-today">What this repository supports today</a></h2>
-<p>This is groundwork only. Nothing here proves or recursively verifies a binary-field proof.</p>
+<p>The repository supports complete native binary recursion for Tower128, and for
+Poly64 with Poly192 challenges, using additive WHIR, product buses and native Keccak.
+The Tower128 owner also accepts Tower32 children. It separately verifies binary
+PCS and additive-WHIR proofs inside prime-field circuits, including indexed
+lookup variants. <code>recursion/examples/native_binary_recursion.rs</code> and
+<code>recursion/examples/native_poly_recursion.rs</code> demonstrate binary-in/binary-out
+proofs. <code>recursion/examples/binary_prover.rs</code> demonstrates the prime-field outer path.</p>
 <ul>
 <li>
 <p><strong>Circuits over binary fields.</strong> The primitive circuit layer (constants, public and private
@@ -204,7 +210,190 @@ so they keep only the parity of their argument.</li>
 for a characteristic-2 base field. The decomposition and recomposition gadgets require
 <code>BF: PrimeField64</code> with <code>F: ExtensionField&lt;BF&gt;</code>, and the binary tower only extends its
 byte-aligned levels, so they cannot be instantiated over it at all.</li>
+<li>The separate <code>binary_decompose_coordinates</code> / <code>binary_recompose_coordinates</code> APIs
+use the field's raw basis through <code>BinaryCoordinateField</code>. Every coordinate is
+constrained Boolean, and requesting fewer than the full width also constrains
+the omitted coordinates to zero. These APIs preserve each field's own basis;
+they do not reinterpret a polynomial element as a tower element.</li>
 </ul>
+</li>
+<li>
+<p><strong>Bit-oriented <code>BinaryField128</code> arithmetic.</strong> <code>BinaryTower128Target</code> represents the Wiedemann
+tower type <code>p3_binary_field::BinaryField128</code> as 128 Boolean coordinates in a prime or binary
+circuit field. It does not use the GHASH polynomial coordinates of <code>Ghash128</code>.
+At each level, <code>a = a0 + a1 X_k</code> stores the lower coefficient first and uses
+<code>X_k² + X_(k-1) X_k + 1 = 0</code>, with <code>X_(-1) = 1</code>. Bit 0 is one; bit <code>j</code> is the product of
+tower roots selected by the set bits of <code>j</code>. Every 128-bit pattern is a valid tower element.
+The raw <code>u128</code> coordinates in native code come from <code>TowerLevel::from_repr</code> / <code>to_repr</code>,
+or from little-endian bytes, <strong>not</strong> <code>from_u128</code> (which embeds through <code>GF(2)</code>).</p>
+<ul>
+<li>Import/export uses eight little-endian 16-bit limbs:
+<code>limb[j] = Σ_(i=0..15) bit[16j+i]·2^i</code>. The base field must have order above 65535;
+both limb methods also reject characteristic two. Limb import constrains the range and
+base-field embedding, and raw-bit import asserts every input bit is Boolean.</li>
+<li><code>binary128_add</code>, <code>binary128_mul</code>, and <code>binary128_square</code> use the existing ALU relations
+for Boolean XOR/AND and recursive tower reduction. <code>assert_binary128_inverse(value, candidate)</code> constrains their product to tower one; the caller supplies the candidate,
+and zero has no satisfying inverse. There are no new tables, AIRs, or native-field hints.</li>
+<li>All <code>ExprId</code>s passed to these methods must come from the same <code>CircuitBuilder</code> expression
+graph. The target's read-only bits do not carry a builder identity. A circuit using this
+arithmetic can be proved with the compact circuit prover and carried into the next
+recursion layer over the supported prime host fields. Bits-only arithmetic also runs
+over binary fields; integer-limb import/export remains prime-only.</li>
+</ul>
+</li>
+<li>
+<p><strong>Native primitive circuit proofs.</strong> <code>p3_circuit_prover::direct::DirectCircuitAir</code> freezes
+a circuit's primitive relation and binds public values in caller order. It accepts native
+binary carrier fields without integer witness addresses or count-based lookups.
+<code>recursion/tests/native_binary_circuit.rs</code> proves and verifies circuits over both
+<code>BinaryField128</code> and <code>Poly64</code> (with <code>Poly192</code> challenges). The AIR repeats the entire
+assignment on every row, so its width and openings grow with the circuit's witness count.
+It is a non-hiding correctness baseline, rejects custom non-primitive tables, and does
+not yet provide an efficient recursive binary prover.</p>
+</li>
+<li>
+<p><strong>Native challenge scalars.</strong> <code>NativeTower128Target</code> keeps one expression per
+scalar and uses native addition, multiplication and squaring only on
+<code>CircuitBuilder&lt;BinaryField128&gt;</code>. Checked conversions materialize Boolean
+coordinates or raw words at serialization boundaries. It does not treat
+GHASH or polynomial carriers as the Wiedemann tower. <code>NativePoly192Target</code>
+separately represents the polynomial challenge as three <code>Poly64</code> scalars,
+with reduction by <code>y³ = y + 1</code>.</p>
+</li>
+<li>
+<p><strong>Compact native primitive tables.</strong> <code>p3_circuit_prover::indexed::IndexedCircuit</code> stores
+one canonical witness table and proves every gate operand and output with indexed
+reads. Trusted preprocessing pins the graph's positions, constants and selectors;
+public values bind in caller order, including aliases. No field-valued integer read
+counts or creator-role tags are used. Main and preprocessing PCS dimensions are
+computed from their complete stacked layouts. The native tower and polynomial
+tests in <code>recursion/tests/native_indexed_circuit.rs</code> exercise real indexed proofs.
+This path remains non-hiding and rejects custom non-primitive tables.</p>
+</li>
+<li>
+<p><strong>Native Keccak circuit tables.</strong> <code>p3_circuit_prover::native_binary::NativeBinaryCircuit</code>
+extends the compact indexed relation with the explicitly enabled
+<code>native_keccak_f1600</code> operation. <code>native_keccak256_bytes</code> accepts checked raw
+eight-coordinate bytes and returns 32 bytes in natural digest order. The
+default upstream binary Keccak AIR retains its Boolean constraints; fixed
+preprocessing pins each permutation's schedule, and indexed reads bind all
+100 input and output limbs to canonical circuit witnesses. Other custom
+operations still fail closed. <code>recursion/tests/native_keccak_circuit.rs</code>
+exercises native proof verification and rejection of changed digest values
+and bridge payloads. The product-bus backend below also uses these hash tables.</p>
+</li>
+<li>
+<p><strong>Native product-bus wiring.</strong> <code>p3_circuit_prover::native_bus::NativeBusCircuit</code>
+binds gates, public inputs and Keccak boundaries through fixed witness
+occurrences. Adjacent copies of each witness agree; native product buses
+authenticate their reads without sending a provider-sized pushforward vector.
+Each circuit requires a trusted, distinct bus namespace when composed with
+other circuits under one authority. The complete AIR/preprocessing bundle
+must be retained together. <code>recursion/tests/native_bus_circuit.rs</code> checks
+native tower and polynomial proofs, including rejection of cross-circuit
+public swaps and locally valid forged gate/hash payloads. This non-hiding
+backend proves the complete native recursive verifier described below. Its
+minimum-height constructor pads trusted inactive rows for larger initial PCS
+folds, without adding bus occurrences.
+Its Keccak table uses the upstream 1,625 bit columns and computes bus limbs
+from constrained bits, avoiding the indexed backend's 100 extra limb columns.</p>
+</li>
+<li>
+<p><strong>Full native Tower128 recursion.</strong>
+<code>prepared::PreparedNativeBinaryWhirLayer</code> builds a complete native scalar
+verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark authority, including product
+GKR, generic sumcheck, AIR evaluation and both main/preprocessing openings.
+It proves that verifier over Tower128 using native Keccak and product buses,
+and verifies against independently supplied child public values. Checked
+child tokens must match the retained authority identity before packing or
+witness execution. The output authority can be used as the next layer's
+trusted child. <code>recursion/examples/native_binary_recursion.rs</code> demonstrates
+one actual native outer proof; the prepared integration test covers wrong
+statements and foreign-authority rejection. Graph, trace and initial
+codeword limits are explicit; codeword counts exclude Merkle trees and
+proving workspaces. Dense Keccak openings currently cause substantial growth
+in later layers. These proofs are non-hiding.</p>
+</li>
+<li>
+<p><strong>Full native polynomial recursion.</strong>
+<code>prepared::PreparedNativeBinaryPolyWhirLayer</code> verifies a trusted Poly64
+additive-WHIR MultiStark proof in a Poly64 circuit, with Poly192 challenges
+represented by three coefficient cells. Product GKR, generic sumcheck, AIR
+evaluation, main openings and independently committed preprocessing openings
+all use native polynomial arithmetic. Base oracle rows serialize as eight
+bytes, while challenge oracle rows serialize as 24 coefficient-order bytes;
+base rows constrain the upper two coefficients to zero. Public values remain
+native Poly64 cells. The prepared owner checks authority identity, binds the
+caller's expected statement and exposes its output authority for another layer.
+<code>recursion/examples/native_poly_recursion.rs</code> produces an actual native outer
+proof; integration tests also reject changed statements and foreign tokens.
+The same non-hiding and resource limits as the Tower128 path apply.</p>
+</li>
+<li>
+<p><strong>Construction budgets for native owners.</strong> Both prepared owners expose
+<code>from_native_authority_with_construction_limits</code>. <code>CircuitConstructionLimits</code>
+bounds retained expression nodes, pending connections, non-primitive calls
+and their slots at periodic checkpoints. A checkpoint can exceed a bound by
+its local group of work; the final builder also checks before lowering. These
+counts are separate from final witness/operation limits, trace cells and
+initial codeword cells, and do not bound bytes or process memory. The examples
+expose <code>--max-expression-nodes</code> and apply all four entry budgets.</p>
+</li>
+<li>
+<p><strong>Non-native binary byte-hash transcript.</strong> <code>BinaryTower128Challenger</code> has a separate,
+fallible inherent API (<code>new</code>, <code>with_initial_limbs</code>, <code>observe</code>, <code>observe_slice</code>,
+<code>observe_digest</code>, <code>sample</code>, <code>sample_bits</code>, <code>check_witness</code>). It matches native
+<code>BinaryChallenger&lt;BinaryField128, HashChallenger&lt;u8, H, 32&gt;&gt;</code> for
+<code>H = Keccak256Hash</code> or <code>p3_blake3::Blake3</code>, selected by the fixed <code>ByteHash</code> passed to
+its constructor. It is separate from the prime-field <code>RecursiveChallenger</code> trait.</p>
+<ul>
+<li>The initial transcript is empty or an even number of raw bytes, supplied as low-byte-first
+16-bit limbs. There is no length prefix or padding. A tower observation appends its eight
+low-first limbs (the raw little-endian Wiedemann coordinates); a digest observation appends
+all sixteen 16-bit limbs in natural byte order. External initial and digest limbs are
+constrained to base-field integers at most 65535. The host base field must be an
+odd-characteristic <code>PrimeField64</code> with order above 65535.</li>
+<li>An observation clears unread output bytes and appends to the next hash input. A refill
+hashes that entire input; the resulting digest becomes both the forward input for the next
+chained hash and the current output. Sampling draws bytes from the <strong>end</strong> of that digest,
+retaining a short remainder across draws and refilling only when it is exhausted. Thus the
+first sample from an empty transcript starts with the last byte of <code>H([])</code>, while a refill
+after consuming its digest hashes <code>H(previous_digest)</code>; later observations are appended to
+that digest in forward order before hashing. A field sample consumes 16 bytes and interprets
+them as raw little-endian tower coordinates, with no rejection sampling.</li>
+<li><code>sample_bits(bits)</code> consumes eight bytes even when <code>bits == 0</code>, returning Boolean targets
+for the requested low bits; <code>bits</code> must be below <code>usize::BITS</code>. By contrast,
+<code>check_witness(0, witness)</code> leaves the transcript and builder untouched. For nonzero
+difficulty, <code>check_witness</code> observes the canonical witness, samples eight bytes and
+constrains the requested low bits to zero. This is witness <strong>checking</strong>; native grinding
+search is outside this API.</li>
+<li>Every target and <code>ExprId</code> used with one challenger must belong to the same
+<code>CircuitBuilder</code> graph; expression IDs do not enforce graph ownership. Enable the matching
+Keccak-f or BLAKE3 compression operation before a refill, and register its existing
+preprocessor, AIR builder and prover together with the statement table when proving.
+Bind dynamic transcript limbs, witnesses and returned samples through
+<code>StatementExport::Base</code> in an agreed order. An error leaves the challenger's transcript
+state unchanged for retry, although expressions or constraints already added to the
+builder by a fallible gadget may remain.</li>
+</ul>
+</li>
+<li>
+<p><strong>Native binary transcript hosts.</strong> The challenger's <code>_with_host</code> methods
+share the same transcript implementation with an explicit
+<code>BinaryCircuitHost</code>. <code>PrimeBinaryEncoding&lt;BF&gt;</code> preserves integer words;
+<code>NativeBinaryEncoding</code> uses checked raw coordinates and native Keccak tables.
+Word packing, digest compression, refill order, partial samples and Poly192
+coefficient serialization are tested across tower and polynomial carriers.
+Native BLAKE3 hashing is not yet available through this host. These APIs do
+not by themselves implement a complete binary-host proof verifier.</p>
+</li>
+<li>
+<p><strong>Native byte Merkle verification.</strong>
+<code>verify_byte_hash_mmcs_opening_bytes_with_host</code> authenticates serialized rows
+with the chosen host, sharing the prime API's mixed-height injection, index
+bounds and cap selection. Native tests cover odd-width rows, non-power-of-two
+heights, tower/polynomial carriers and a cap at the leaf layer. The caller
+still supplies trusted row widths, heights and serialization rules.</p>
 </li>
 <li>
 <p><strong>Binary hash configurations.</strong> <code>p3_test_utils::binary_field_params</code> provides the
@@ -291,11 +480,12 @@ manifest must still list the backend's own tables exactly, as before.</li>
 </ul>
 <h2 id="not-yet-supported"><a class="header" href="#not-yet-supported">Not yet supported</a></h2>
 <ul>
-<li>Proving circuits over a binary field. The circuit prover's tables, lookups and Poseidon
-permutations assume a two-adic prime field, as do FRI and the prime-field WHIR.</li>
-<li>Recursively verifying binary-PCS or multi-stark proofs. That needs <code>GF(2^128)</code> arithmetic
-inside a prime-field circuit, plus in-circuit Keccak-256 or BLAKE3 for the transcript and
-Merkle paths.</li>
+<li>Native scalar recursion for indexed lookup relations or a BLAKE3 circuit
+host. The complete native Tower128 and Poly64 paths use product buses,
+Keccak and additive WHIR; those other input adapters still use prime hosts.</li>
+<li>Efficient bounded-size composition across many native layers. Output
+authorities can prepare subsequent layers, but dense Keccak oracle openings
+currently make those verifier circuits grow substantially.</li>
 <li>MMCS trees of arity above two.</li>
 </ul>
 

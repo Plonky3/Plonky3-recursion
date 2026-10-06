@@ -199,9 +199,14 @@
 <p>Use <code>UniStark</code> when verifying an external Plonky3 proof (e.g. Keccak AIR). Use <code>BatchStark</code> when verifying a proof produced by this library's own prover.</p>
 <h3 id="recursionoutput"><a class="header" href="#recursionoutput"><code>RecursionOutput</code></a></h3>
 <p>The output of one recursion step:</p>
-<pre><code class="language-rust ignore">pub struct RecursionOutput&lt;SC&gt;(pub BatchStarkProof&lt;SC&gt;, pub Rc&lt;CircuitProverData&lt;SC&gt;&gt;);</code></pre>
-<p>Contains the batch-STARK proof and the prover data (reference-counted for cheap cloning) needed for further chaining. Convert it to a <code>RecursionInput</code> for the next layer:</p>
+<pre><code class="language-rust ignore">pub struct RecursionOutput&lt;SC&gt;(pub BatchStarkProof&lt;SC&gt;, pub Arc&lt;CircuitProverData&lt;SC&gt;&gt;);</code></pre>
+<p>Contains the batch-STARK proof and prover data in an <code>Arc</code>. The latter is a
+compatibility handle, not independent verifier authority. Convert to an expert
+<code>RecursionInput</code> using proof-attached table public values:</p>
 <pre><code class="language-rust ignore">let next_input = output.into_recursion_input::&lt;BatchOnly&gt;();</code></pre>
+<p>For trusted chaining, retain a <code>CircuitVerifier</code> separately and call
+<code>output.into_trusted_recursion_input::&lt;BatchOnly&gt;(&amp;verifier, &amp;expected_statement)</code>.
+That method derives the per-table public vectors from the verifier's retained relation.</p>
 <p>The <code>BatchOnly</code> marker type satisfies the <code>RecursiveAir</code> bound without carrying any AIR data — it's a no-op used when the next layer only needs to verify the recursive batch proof.</p>
 <h3 id="provenextlayerparams"><a class="header" href="#provenextlayerparams"><code>ProveNextLayerParams</code></a></h3>
 <p>Controls the proving pipeline:</p>
@@ -233,9 +238,14 @@
 owner.check_input(&amp;input)?;
 let output = owner.prove(input)?;</code></pre>
 <p><code>PreparedLayer</code> owns the committed preprocessed columns and prover, and rejects malformed or incompatible native inputs before proving. Use a new owner when the native contract changes.</p>
-<p>This compatibility check is shape-only: a prepared owner is not a portable trusted relation
-verifier and does not bind child proving keys, recursion statements, or public claims. Later
-trust-boundary work must pin those relations before an owner can be reused across such changes.</p>
+<p>This compatibility check is shape-only: a prepared owner does not bind child proving keys,
+recursion statements, or public claims. Use <code>TrustedPreparedLayer</code> when the verifier relation
+must be fixed independently of each proof. Its <code>TrustedPreparedSource::UniStark</code> retains the
+trusted native config, AIR and preprocessing commitment; its <code>BatchStark</code> source retains a
+<code>CircuitVerifier</code>. <code>TrustedPreparedInput</code> supplies only a proof and caller-expected statement.
+The owner can export an independently retained verifier for its output. See the
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/prelude.rs">compiled prelude example</a> and
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/prepared_layer.rs">trusted layer tests</a>.</p>
 <h3 id="build_and_prove_aggregation_layer"><a class="header" href="#build_and_prove_aggregation_layer"><code>build_and_prove_aggregation_layer</code></a></h3>
 <p>Verifies two proofs in a single circuit. The two inputs can be different <code>RecursionInput</code> variants:</p>
 <pre><code class="language-rust ignore">let output = build_and_prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(
@@ -265,19 +275,18 @@ let right = PreparedInput::BatchStark {
 };
 owner.check_inputs(&amp;left, &amp;right)?;
 let output = owner.prove(left, right)?;</code></pre>
-<p>As with <code>PreparedLayer</code>, this owner checks native shape compatibility only. It does not itself
-bind child keys or statements, so relation and claim changes require explicit trust-boundary
-policy rather than owner reuse.</p>
+<p>As with <code>PreparedLayer</code>, this owner checks native shape compatibility only. Use
+<code>TrustedPreparedAggregation</code> to retain both child authorities and their left/right statement
+layout. Supply each child's expected statement on every proof attempt; see the
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/prepared_aggregation.rs">trusted aggregation tests</a>.</p>
 <h3 id="prove_aggregation_layer"><a class="header" href="#prove_aggregation_layer"><code>prove_aggregation_layer</code></a></h3>
-<p>The split build/prove variant for aggregation. The circuit builder is private; use <code>prove_aggregation_layer</code> with a pre-built circuit when you need to re-prove the same aggregation shape:</p>
-<pre><code class="language-rust ignore">let output = prove_aggregation_layer::&lt;SC, A1, A2, B, D&gt;(
-    &amp;left, &amp;right, &amp;left_result, &amp;right_result,
-    circuit, &amp;config, &amp;backend, &amp;params,
-)?;</code></pre>
-<p>See the source of <code>build_and_prove_aggregation_layer</code> for how to obtain <code>left_result</code>, <code>right_result</code>, and <code>circuit</code> when splitting manually.</p>
+<p>The split build/prove variant is an expert API. Follow the checked
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/recursion.rs"><code>build_aggregation_layer_circuit</code> and <code>prove_aggregation_layer</code> signatures</a>
+if you need to manage the circuit and verifier results directly.</p>
 <h2 id="recursion-loop-pattern"><a class="header" href="#recursion-loop-pattern">Recursion loop pattern</a></h2>
 <p>A typical recursion loop looks like this:</p>
-<pre><code class="language-rust ignore">let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
+<pre><code class="language-rust ignore">let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .for_extension_degree::&lt;4&gt;();
 
 // Layer 1: verify the base proof
 let input = RecursionInput::UniStark { proof: &amp;base_proof, air: &amp;my_air, .. };
@@ -290,23 +299,51 @@ for _ in 2..=num_layers {
 }</code></pre>
 <p>After enough layers, the recursive proof reaches a steady-state size — further layers don't meaningfully change the proof dimensions.</p>
 <h2 id="type-parameter-d"><a class="header" href="#type-parameter-d">Type parameter <code>D</code></a></h2>
-<p>The const generic <code>D</code> is the extension field degree. For binomial extensions (BabyBear, KoalaBear), use <code>D = 4</code>. A quintic variant (<code>D = 5</code>, KoalaBear only) is supported via <code>FriRecursionBackendD5</code>.</p>
+<p>The const generic <code>D</code> is the extension field degree. Built-in BabyBear and
+KoalaBear binomial suites use <code>D = 4</code>; Goldilocks uses <code>D = 2</code>. KoalaBear
+quintic FRI uses <code>D = 5</code> through <code>FriRecursionBackendD5</code>, with a base-field
+(<code>D1</code>) challenger permutation. The built-in WHIR suites use <code>D = 4</code>.</p>
 <h2 id="frirecursionbackend"><a class="header" href="#frirecursionbackend">FriRecursionBackend</a></h2>
-<p>The <code>FriRecursionBackend&lt;WIDTH, RATE, C&gt;</code> implements <code>PcsRecursionBackend</code> for FRI-based configs. It handles:</p>
+<p><code>FriRecursionBackend::for_extension_degree::&lt;D&gt;()</code> returns a degree-tagged backend that
+implements <code>PcsRecursionBackend</code> for the matching FRI-based config. It handles:</p>
 <ul>
 <li>Preparing the circuit for verification (enabling the challenger permutation and NPOs)</li>
 <li>Building the verifier circuit (delegating to <code>verify_p3_uni_proof_circuit</code> or <code>verify_p3_batch_proof_circuit</code>)</li>
 <li>Packing public inputs</li>
 <li>Setting Merkle path private data</li>
 </ul>
-<p><code>WIDTH</code> and <code>RATE</code> are the permutation parameters (typically 16 and 8 for 32-bit fields). <code>C</code> is the challenger permutation config (defaults to <code>Poseidon2Config</code>).</p>
+<p><code>WIDTH</code> and <code>RATE</code> describe the challenger permutation: 16 and 8 for
+BabyBear/KoalaBear, or 8 and 4 for Goldilocks. <code>C</code> is the challenger config
+(<code>Poseidon1Config</code> or <code>Poseidon2Config</code>); use <code>_</code> in the type arguments to
+infer it from <code>new</code>.</p>
 <pre><code class="language-rust ignore">// Standard Poseidon2 backend
-let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16);
+let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .for_extension_degree::&lt;4&gt;();
 
-// With an extra Poseidon2 table config for proofs that use a wider MMCS hash
-let backend = FriRecursionBackend::&lt;16, 8&gt;::new(Poseidon2Config::KoalaBearD4Width16)
-    .with_extra_poseidon2_table(Poseidon2Config::KoalaBearD4Width24);</code></pre>
-<p><code>FriRecursionBackendD5</code> is a type alias for the quintic (<code>D = 5</code>) variant and <code>FriRecursionBackendForExt</code> covers mixed-degree scenarios.</p>
+// Quaternary FRI: narrow challenger, wider Poseidon2 MMCS table
+let quaternary = FriRecursionBackend::&lt;16, 8, _&gt;::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+    .with_extra_poseidon2_table(Poseidon2Config::KOALA_BEAR_D4_W32)
+    .for_extension_degree::&lt;4&gt;();
+
+// KoalaBear quintic FRI: the challenger uses D1 base-field Poseidon lanes
+let quintic = FriRecursionBackend::&lt;16, 8, _&gt;::new_d5(
+    Poseidon2Config::KOALA_BEAR_D1_W16,
+);</code></pre>
+<p><code>FriRecursionBackendD5</code> handles the supported quintic (<code>D = 5</code>) variant;
+<code>FriRecursionBackendForExt&lt;D&gt;</code> tags binomial extension degrees such as 2 and 4.
+For Poseidon1 suites, select the matching <code>p3_recursion::ops::Poseidon1Config</code>
+constant in <code>new</code> or <code>new_d5</code>. Quaternary built-ins use Poseidon2 and require
+the matching wide table; binary and hiding FRI do not add one. See
+<a href="./configuration.html#choosing-a-built-in-recursion-backend">built-in backend selection</a>
+for the suite map and FRI table shapes.</p>
+<h2 id="whirrecursionbackend"><a class="header" href="#whirrecursionbackend">WhirRecursionBackend</a></h2>
+<p>The BabyBear and KoalaBear built-in WHIR suites use a Poseidon2 challenger,
+binary commitments, and a degree-4 extension:</p>
+<pre><code class="language-rust ignore">let backend = p3_recursion::backend::whir::WhirRecursionBackend::&lt;16, 8&gt;::new(
+    Poseidon2Config::BABY_BEAR_D4_W16,
+).for_extension_degree::&lt;4&gt;();</code></pre>
+<p>Choose recursively admissible WHIR geometry as described in
+<a href="./configuration.html#choosing-a-built-in-recursion-backend">Configuration</a>.</p>
 
                     </main>
 

@@ -177,146 +177,127 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="integration-guide"><a class="header" href="#integration-guide">Integration Guide</a></h1>
-<p>This section explains how to wire Plonky3-recursion into your own project.</p>
-<h2 id="implementing-frirecursionconfig"><a class="header" href="#implementing-frirecursionconfig">Implementing <code>FriRecursionConfig</code></a></h2>
-<p>The unified API requires your STARK config to implement <code>FriRecursionConfig</code>. This trait bridges your native Plonky3 config with the recursive verifier's type system.</p>
-<p>The typical pattern is a wrapper struct that holds both the native config and the <code>FriVerifierParams</code>:</p>
-<pre><code class="language-rust ignore">use p3_recursion::{
-    FriRecursionConfig, FriVerifierParams, Poseidon2Config,
-    RecursionInput, RecursiveAir, pcs::*,
+<p>This section explains how to connect a native Plonky3 prover to recursive verification.</p>
+<h2 id="choose-a-native-config"><a class="header" href="#choose-a-native-config">Choose a native config</a></h2>
+<p>The 19 <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri.rs">built-in FRI aliases</a>
+implement <code>FriRecursionConfig</code>, and the two <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/whir.rs">built-in WHIR aliases</a>
+implement <code>WhirRecursionConfig</code>. Use a matching backend and parameters that
+the recursive verifier accepts; native factory validation alone does not
+establish recursive admissibility. The <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri/recursion.rs">built-in FRI integration</a>
+and <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/whir/recursion.rs">WHIR integration</a>
+show how each family prepares the circuit and restores opening witnesses.
+For generic random-codeword and salted FRI configs, recursion and typed import
+require <code>R: CryptoRng + SeedableRng + Send + Sync + 'static</code>; native factory
+construction itself requires only <code>CryptoRng + SeedableRng</code>.</p>
+<p>For a custom PCS setup outside those aliases, implement
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/backend/fri.rs"><code>FriRecursionConfig</code></a>
+or <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/backend/whir.rs"><code>WhirRecursionConfig</code></a>
+on a <code>StarkGenericConfig</code> wrapper. The FRI contract supplies verifier target types, matching
+FRI parameters, circuit preparation, and opening witness restoration. In particular,
+<code>set_fri_private_data</code> receives the config and an <code>OpeningTranscript</code>; restore each query's
+Merkle path from the proof's pruned multiproof before calling <code>set_fri_mmcs_private_data</code>.
+The trait's rustdoc and the built-in implementation show the current signature and transcript
+steps. Match the native prover parameters, including query count and MMCS permutation.</p>
+<h2 id="verify-your-air"><a class="header" href="#verify-your-air">Verify your AIR</a></h2>
+<p>AIRs implementing Plonky3's <code>Air</code> trait get a blanket <code>RecursiveAir</code> implementation from
+the symbolic constraint system. If your AIR needs a manual implementation, follow the
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/traits/air.rs">current <code>RecursiveAir</code> trait</a>, including its trace-length
+and lookup-aware quotient-degree calculation. For trusted prepared uni-STARK verification,
+<code>expected_public_input_count</code> must identify the fixed public-input width.</p>
+<p>Wrap a native proof in <code>RecursionInput::UniStark</code> for one-shot recursion, or construct
+<code>TrustedPreparedSource::UniStark</code> with the trusted config, AIR, and preprocessing commitment
+for repeated verification. See the <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/prelude.rs">compiled prelude example</a>
+and <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/tests/prepared_layer.rs">trusted layer tests</a> for the prepared contract.
+Use <code>FriRecursionBackend::new(challenger_config).for_extension_degree::&lt;D&gt;()</code> for a
+matching binomial extension, <code>FriRecursionBackend::new_d5</code> for a KoalaBear
+quintic suite, or <code>WhirRecursionBackend::new(...).for_extension_degree::&lt;D&gt;()</code>
+for WHIR, where D is 2 or 4 and matches the input's actual challenge dimension.
+See <a href="./configuration.html#choosing-a-built-in-recursion-backend">backend selection</a>.</p>
+<h2 id="import-portable-artifacts-into-trusted-recursion"><a class="header" href="#import-portable-artifacts-into-trusted-recursion">Import portable artifacts into trusted recursion</a></h2>
+<p>Use <code>TypedArtifactVerifier&lt;SC&gt;</code> when a serialized verifier and proof must enter a
+<code>TrustedPreparedLayer</code> or <code>TrustedPreparedAggregation</code>. Provision the expected
+verifier bytes through an independent trusted channel, choose the matching
+application-owned native <code>SC</code> configuration, and set <code>ArtifactLimits</code>. The
+candidate verifier must match the pinned bytes exactly and its complete built-in
+configuration descriptor must match the supplied configuration; matching only
+the field or suite is insufficient. The sealed <code>PortableArtifactImport</code> trait
+exposes this import for supported built-in configurations. The
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/artifact/mod.rs">typed importer</a>
+keeps that configuration and those limits for subsequent proof imports.</p>
+<pre><code class="language-rust ignore">use p3_recursion::artifact::{
+    ArtifactLimits, CanonicalStatement, ExpectedVerifierArtifact,
+    PortableArtifactImport, TypedArtifactVerifier,
 };
 
-#[derive(Clone)]
-struct MyRecursionConfig {
-    config: Arc&lt;MyStarkConfig&gt;,
-    fri_verifier_params: FriVerifierParams,
-}</code></pre>
-<h3 id="delegate-starkgenericconfig"><a class="header" href="#delegate-starkgenericconfig">Delegate <code>StarkGenericConfig</code></a></h3>
-<p>The wrapper must implement <code>StarkGenericConfig</code> by delegating to the inner config:</p>
-<pre><code class="language-rust ignore">impl StarkGenericConfig for MyRecursionConfig {
-    type Challenge = Challenge;
-    type Challenger = Challenger;
-    type Pcs = MyPcs;
-
-    fn pcs(&amp;self) -&gt; &amp;MyPcs { self.config.pcs() }
-    fn initialise_challenger(&amp;self) -&gt; Challenger { self.config.initialise_challenger() }
-}</code></pre>
-<h3 id="implement-frirecursionconfig"><a class="header" href="#implement-frirecursionconfig">Implement <code>FriRecursionConfig</code></a></h3>
-<p>The trait requires five associated types and four methods:</p>
-<pre><code class="language-rust ignore">impl FriRecursionConfig for MyRecursionConfig {
-    type Commitment = MerkleCapTargets&lt;F, DIGEST_ELEMS&gt;;
-    type InputProof = InputProofTargets&lt;F, Challenge, RecValMmcs&lt;F, DIGEST_ELEMS, MyHash, MyCompress&gt;&gt;;
-    type OpeningProof = FriProofTargets&lt;...&gt;;
-    type RawOpeningProof = &lt;MyPcs as Pcs&lt;Challenge, Challenger&gt;&gt;::Proof;
-    const DIGEST_ELEMS: usize = 8;
-
-    fn with_fri_opening_proof&lt;'a, A, R&gt;(
-        prev: &amp;RecursionInput&lt;'a, Self, A&gt;,
-        f: impl FnOnce(&amp;Self::RawOpeningProof) -&gt; R,
-    ) -&gt; R {
-        match prev {
-            RecursionInput::UniStark { proof, .. } =&gt; f(&amp;proof.opening_proof),
-            RecursionInput::BatchStark { proof, .. } =&gt; f(&amp;proof.proof.opening_proof),
-        }
-    }
-
-    fn prepare_circuit_for_verification(
-        &amp;self,
-        circuit: &amp;mut CircuitBuilder&lt;Challenge&gt;,
-    ) -&gt; Result&lt;(), VerificationError&gt; {
-        let perm = default_poseidon2_perm();
-        circuit.enable_poseidon2_perm::&lt;MyPoseidon2CircuitConfig, _&gt;(
-            generate_poseidon2_trace::&lt;Challenge, MyPoseidon2CircuitConfig&gt;,
-            perm,
-        );
-        Ok(())
-    }
-
-    fn pcs_verifier_params(&amp;self) -&gt; &amp;FriVerifierParams {
-        &amp;self.fri_verifier_params
-    }
-
-    fn set_fri_private_data(
-        runner: &amp;mut CircuitRunner&lt;Challenge&gt;,
-        op_ids: &amp;[NonPrimitiveOpId],
-        opening_proof: &amp;Self::RawOpeningProof,
-    ) -&gt; Result&lt;(), &amp;'static str&gt; {
-        set_fri_mmcs_private_data::&lt;F, Challenge, ChallengeMmcs, ValMmcs, MyHash, MyCompress, DIGEST_ELEMS&gt;(
-            runner, op_ids, opening_proof,
-        )
-    }
-}</code></pre>
-<p>The concrete types (<code>MyHash</code>, <code>MyCompress</code>, <code>ValMmcs</code>, etc.) must match your native Plonky3 prover setup. See the examples for complete implementations.</p>
-<h2 id="verifying-your-own-air"><a class="header" href="#verifying-your-own-air">Verifying your own AIR</a></h2>
-<p>To recursively verify a proof produced by a custom AIR, implement <code>RecursiveAir</code> for your AIR type:</p>
-<pre><code class="language-rust ignore">impl RecursiveAir&lt;F, EF, LogUpGadget&gt; for MyAir {
-    fn width(&amp;self) -&gt; usize {
-        // Number of main trace columns in your AIR.
-        MY_AIR_WIDTH
-    }
-
-    fn num_periodic_columns(&amp;self) -&gt; usize {
-        // Number of periodic columns the AIR declares (0 if none).
-        0
-    }
-
-    fn periodic_columns(&amp;self) -&gt; Vec&lt;Vec&lt;F&gt;&gt; {
-        // Each entry is the evaluation vector of one periodic column.
-        Vec::new()
-    }
-
-    fn eval_folded_circuit(
-        &amp;self,
-        builder: &amp;mut CircuitBuilder&lt;EF&gt;,
-        sels: &amp;RecursiveLagrangeSelectors,
-        alpha: &amp;Target,
-        lookup_metadata: &amp;LookupMetadata&lt;'_, F&gt;,
-        columns: ColumnsTargets&lt;'_&gt;,
-        lookup_gadget: &amp;LogUpGadget,
-    ) -&gt; Target {
-        // Convert your AIR's symbolic constraints to circuit form
-        // and fold them with alpha.
-        // Use `symbolic_to_circuit` or build manually.
-    }
-
-    fn get_log_num_quotient_chunks(
-        &amp;self,
-        preprocessed_width: usize,
-        contexts: &amp;[Lookup&lt;F&gt;],
-        is_zk: usize,
-        lookup_gadget: &amp;LogUpGadget,
-    ) -&gt; usize {
-        // log2 of the number of quotient polynomial chunks.
-        // Must match what the native prover uses.
-    }
-}</code></pre>
-<p>AIRs that implement Plonky3's <code>Air</code> trait get a blanket <code>RecursiveAir</code> implementation automatically — <code>num_periodic_columns</code>, <code>periodic_columns</code>, <code>eval_folded_circuit</code>, and <code>get_log_num_quotient_chunks</code> are all derived from the symbolic constraint system. You only need to implement <code>RecursiveAir</code> manually for AIRs that cannot be expressed symbolically.</p>
-<p>Then wrap your proof in <code>RecursionInput::UniStark</code>:</p>
-<pre><code class="language-rust ignore">let input = RecursionInput::UniStark {
-    proof: &amp;my_proof,
-    air: &amp;my_air,
-    public_inputs: my_public_values.clone(),
-    preprocessed_commit: Some(preprocessed_commitment),  // if your AIR has preprocessed columns
-};</code></pre>
+let authority = TypedArtifactVerifier::&lt;Config&gt;::decode_with_config(
+    app_config,
+    candidate_verifier_bytes,
+    ExpectedVerifierArtifact::from_trusted_bytes(pinned_verifier_bytes),
+    ArtifactLimits::default(),
+)?;
+let verified = authority.import_proof(
+    proof_bytes,
+    CanonicalStatement::new(expected_statement_bytes, statement_width),
+)?;</code></pre>
+<p>Encode expected values as canonical base-field coefficients in schema order:
+little-endian 4-byte words for BabyBear/KoalaBear or 8-byte words for
+Goldilocks, with <code>statement_width == authority.schema().base_len()</code>. The
+<code>CanonicalStatement</code> bytes have no length prefix.</p>
+<p>The application supplies <code>expected_statement_bytes</code> independently of the proof
+attachment. <code>import_proof</code> decodes under the retained limits and verifies the
+native proof against that expected statement before returning a
+<code>VerifiedArtifactProof&lt;SC&gt;</code>. Its <code>statement()</code> and <code>trusted_identity_bytes()</code>
+accessors report the checked statement and pinned identity. <code>as_source()</code> supplies
+the retained verifier authority and a representative proof when preparing a
+trusted owner; <code>as_input()</code> supplies a proof and expected statement for a
+compatible prepared owner's <code>prove</code> call. The destination owner still checks
+its own retained relation and input contract. Imported proofs own their native
+data and remain usable after the input byte buffers and importer are dropped.</p>
+<p>The caller-supplied configuration matters for hiding suites: typed import
+retains its application-controlled RNG setup. Salted FRI path restoration may
+construct a private, fixed-seed MMCS helper for verification; it draws no
+randomness and is not exposed as the proving configuration. <code>PortableVerifier</code>
+can verify encoded proofs but does not expose a native configuration or proving
+authority. Typed import supports the library's built-in artifact codecs; the
+19 FRI and two WHIR aliases have
+corresponding direct recursion integrations for admissible parameters. An output proving
+configuration and backend are selected separately when constructing the trusted
+prepared owner. See <a href="./configuration.html#built-in-native-configuration-suites">configuration support</a>
+and <a href="./aggregation.html#composing-state-transitions">transition aggregation</a>.</p>
+<p>The <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/examples/portable_aggregation.rs">portable aggregation example</a>
+runs trusted setup, proof production, aggregation, and final verification in
+separate processes:</p>
+<pre><code class="language-sh">cargo run --locked --release -p p3-recursion --example portable_aggregation -- setup --trusted-dir ./demo-auth
+cargo run --locked --release -p p3-recursion --example portable_aggregation -- produce --out-dir ./demo-children
+cargo run --locked --release -p p3-recursion --example portable_aggregation -- aggregate --trusted-dir ./demo-auth --children-dir ./demo-children --out-dir ./demo-root
+cargo run --locked --release -p p3-recursion --example portable_aggregation -- verify --trusted-dir ./demo-auth --root-dir ./demo-root --expected 10,20,20,40,10
+</code></pre>
+<p>Run with fresh output directories. Setup provisions <code>demo-auth/leaf.verifier</code>
+and <code>demo-auth/root.verifier</code> from a separate valid fixture, before the producer
+artifacts are consumed; it does not produce the root proof. The producer writes
+<code>demo-children/leaf.verifier</code> and four <code>leaf-0.proof</code> through <code>leaf-3.proof</code>
+payloads. Aggregation checks the child verifier against the trusted leaf pin,
+imports all four proofs with independently specified statements, reuses one
+prepared owner for both first-level pairs, and checks its emitted
+<code>demo-root/root.verifier</code> against the trusted root pin. Verification reads
+<code>demo-root/root.proof</code> and uses the <code>--expected</code> state and count supplied by
+the caller. The producer's verifier and attached proof statements are payload
+data; neither establishes the trusted identity or expected root. The example's
+small FRI settings are for demonstration and testing. Production parameters
+require separately provisioned trusted verifier artifacts.</p>
 <h2 id="custom-non-primitive-chips"><a class="header" href="#custom-non-primitive-chips">Custom non-primitive chips</a></h2>
-<p>The circuit builder supports registering custom non-primitive operations beyond Poseidon2. These are operations that are too expensive to express purely in primitives and benefit from dedicated AIR tables.</p>
-<p>Non-primitive operations:</p>
-<ul>
-<li>Must be explicitly enabled on the <code>CircuitBuilder</code> before use</li>
-<li>Require a custom trace builder for trace generation</li>
-<li>Interact with the shared witness memory via lookups, and may additionally use private data</li>
-</ul>
-<p>To enable a non-primitive operation, call the appropriate <code>enable_*</code> method on the <code>CircuitBuilder</code> before building. Attempting to use a non-primitive operation that hasn't been enabled will result in a runtime error.</p>
-<h2 id="end-to-end-integration-checklist"><a class="header" href="#end-to-end-integration-checklist">End-to-end integration checklist</a></h2>
+<p>Custom non-primitive operations must be enabled on the <code>CircuitBuilder</code> before use. They
+need matching trace generation, preprocessing, AIR builders, and table provers. The
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/recursion.rs"><code>PcsRecursionBackend</code> interface</a> supplies the
+preprocessor, AIR-builder, and table-prover registration hooks. Prepared owners reuse that
+backend through the <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/prepared/mod.rs">prepared contract</a>.</p>
+<h2 id="integration-checklist"><a class="header" href="#integration-checklist">Integration checklist</a></h2>
 <ol>
-<li>Set up your Plonky3 prover config (field, hash, PCS, FRI params)</li>
-<li>Create a config wrapper implementing <code>FriRecursionConfig</code></li>
-<li>If verifying a custom AIR: implement <code>RecursiveAir</code></li>
-<li>Create a <code>FriRecursionBackend</code> with matching <code>Poseidon2Config</code></li>
-<li>Choose <code>TablePacking</code> values (start with defaults, tune later)</li>
-<li>Call <code>build_and_prove_next_layer</code> or the split build/prove variant</li>
-<li>Chain layers with <code>into_recursion_input::&lt;BatchOnly&gt;()</code></li>
-<li>Verify the final proof with <code>BatchStarkProver::verify_all_tables</code></li>
+<li>Choose a directly integrated built-in suite and matching backend, or implement the recursive PCS contract for a custom config.</li>
+<li>Supply an AIR with a <code>RecursiveAir</code> implementation and fixed public-input width when using a trusted owner.</li>
+<li>Choose a backend with the matching field, permutation, and extension degree.</li>
+<li>Use a prepared owner for reuse; choose a trusted prepared owner when relation and statement authority must be fixed.</li>
+<li>Verify output against an independently retained <code>CircuitVerifier</code> and caller-expected statement.</li>
 </ol>
 
                     </main>

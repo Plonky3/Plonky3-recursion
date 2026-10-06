@@ -177,6 +177,21 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="examples"><a class="header" href="#examples">Examples</a></h1>
+<p>The three recursive examples select their polynomial commitment scheme with
+<code>--pcs fri|whir</code> (default <code>fri</code>). WHIR supports BabyBear, KoalaBear, and Goldilocks
+with either <code>--hash poseidon2</code> or <code>--hash poseidon1</code>, retaining the same base
+computations and configurable recursion depth. KoalaBear also supports its quintic
+challenge extension with <code>--pcs whir --quintic</code> and either hash family. <code>--zk</code>,
+<code>--disable-recompose-npo</code>, and aggregation's <code>--arity4</code> require FRI.</p>
+<pre><code class="language-bash">cargo run --release --example recursive_fibonacci -- --pcs whir --n 1000 --num-recursive-layers 2
+cargo run --release --example recursive_keccak -- --pcs whir --num-hashes 100 --num-recursive-layers 2
+cargo run --release --example recursive_aggregation -- --pcs whir --num-recursive-layers 2
+</code></pre>
+<p>For WHIR, <code>--log-blowup</code> controls the starting inverse rate, <code>--query-pow-bits</code>
+controls the maximum PoW budget, and <code>--whir-folding-factor</code> controls the number
+of variables folded per round (default <code>4</code>). <code>--security-level</code> defaults to
+<code>64</code> for WHIR and <code>124</code> for FRI. FRI's <code>--max-log-arity</code>, <code>--log-final-poly-len</code>,
+and <code>--commit-pow-bits</code> do not configure WHIR.</p>
 <p>This section walks through the three provided examples to illustrate common recursion patterns.</p>
 <h2 id="recursive-keccak--verifying-a-uni-stark-proof"><a class="header" href="#recursive-keccak--verifying-a-uni-stark-proof">Recursive Keccak — verifying a uni-STARK proof</a></h2>
 <p><strong>Source</strong>: <code>recursion/examples/recursive_keccak.rs</code></p>

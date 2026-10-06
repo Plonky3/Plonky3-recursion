@@ -177,120 +177,35 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="low-level-api"><a class="header" href="#low-level-api">Low-Level API</a></h1>
-<p>For fine-grained control over the verification circuit, you can bypass the unified API and build the pipeline manually.</p>
-<h2 id="manual-uni-stark-verification"><a class="header" href="#manual-uni-stark-verification">Manual uni-STARK verification</a></h2>
-<pre><code class="language-rust ignore">use p3_recursion::verifier::verify_p3_uni_proof_circuit;
-use p3_recursion::public_inputs::StarkVerifierInputsBuilder;
-use p3_circuit::CircuitBuilder;
-
-let mut circuit_builder = CircuitBuilder::new();
-
-// Enable Poseidon2 for MMCS verification
-circuit_builder.enable_poseidon2_perm::&lt;MyPoseidon2Config, _&gt;(trace_generator, perm);
-
-// Allocate public input targets and build verification constraints
-let verifier_inputs = StarkVerifierInputsBuilder::allocate(
-    &amp;mut circuit_builder, &amp;proof, preprocessed_commit.as_ref(), num_public_values,
-);
-
-let op_ids = verify_p3_uni_proof_circuit::&lt;
-    MyAir, MyConfig, CommitTargets, InputProofTargets, OpeningProofTargets,
-    WIDTH, RATE,
-&gt;(
-    &amp;config, &amp;air, &amp;mut circuit_builder,
-    &amp;verifier_inputs.proof_targets,
-    &amp;verifier_inputs.air_public_targets,
-    &amp;verifier_inputs.preprocessed_commit,
-    &amp;fri_verifier_params,
-    poseidon2_config,
-)?;
-
-// Build and run
-let circuit = circuit_builder.build()?;
-let mut runner = circuit.runner();
-
-let public_inputs = verifier_inputs.pack_public_values(&amp;pis, &amp;proof, &amp;preprocessed_commit);
-runner.set_public_inputs(&amp;public_inputs)?;
-
-set_fri_mmcs_private_data(&amp;mut runner, &amp;op_ids, &amp;proof.opening_proof)?;
-
-let traces = runner.run()?;</code></pre>
-<h2 id="manual-batch-stark-verification"><a class="header" href="#manual-batch-stark-verification">Manual batch-STARK verification</a></h2>
-<pre><code class="language-rust ignore">use p3_recursion::verifier::verify_p3_batch_proof_circuit;
-
-let mut circuit_builder = CircuitBuilder::new();
-circuit_builder.enable_poseidon2_perm::&lt;MyPoseidon2Config, _&gt;(trace_generator, perm);
-
-let lookup_gadget = LogUpGadget::new();
-
-let (verifier_inputs, op_ids) = verify_p3_batch_proof_circuit::&lt;
-    MyConfig, CommitTargets, InputProofTargets, OpeningProofTargets, LogUpGadget,
-    WIDTH, RATE, TRACE_D,
-&gt;(
-    &amp;config, &amp;mut circuit_builder, &amp;batch_proof,
-    &amp;fri_verifier_params, &amp;common_data, &amp;lookup_gadget, poseidon2_config,
-)?;
-
-let circuit = circuit_builder.build()?;
-let mut runner = circuit.runner();
-
-let public_inputs = verifier_inputs.pack_public_values(
-    &amp;table_public_inputs, &amp;batch_proof.proof, &amp;common_data,
-);
-runner.set_public_inputs(&amp;public_inputs)?;
-
-set_fri_mmcs_private_data(&amp;mut runner, &amp;op_ids, &amp;batch_proof.proof.opening_proof)?;
-
-let traces = runner.run()?;</code></pre>
-<h2 id="proving-the-verification-circuit"><a class="header" href="#proving-the-verification-circuit">Proving the verification circuit</a></h2>
-<p>Once you have traces, prove them with <code>BatchStarkProver</code>. The preprocessing step — which
-commits to constant (preprocessed) columns — is separate from trace-dependent proving and can
-be reused when the circuit shape is stable.</p>
-<pre><code class="language-rust ignore">use p3_circuit_prover::{BatchStarkProver, CircuitProverData, ConstraintProfile};
-use p3_circuit_prover::common::{get_airs_and_degrees_with_prep, NpoPreprocessor, NpoAirBuilder};
-use p3_batch_stark::ProverData;
-
-// Build AIR descriptors and preprocessed columns.
-// Pass NPO preprocessors/air-builders for any non-primitive ops used in the circuit.
-let preprocessors: Vec&lt;Box&lt;dyn NpoPreprocessor&lt;Val&lt;SC&gt;&gt;&gt;&gt; = backend.non_primitive_preprocessors();
-let air_builders: Vec&lt;Box&lt;dyn NpoAirBuilder&lt;SC, D&gt;&gt;&gt; = backend.non_primitive_air_builders();
-
-let (airs_degrees, primitive_columns, non_primitive_columns) =
-    get_airs_and_degrees_with_prep::&lt;SC, SC::Challenge, D&gt;(
-        &amp;circuit,
-        &amp;table_packing,
-        &amp;preprocessors,
-        &amp;air_builders,
-        ConstraintProfile::Standard,
-    )?;
-
-let (airs, degrees): (Vec&lt;_&gt;, Vec&lt;_&gt;) = airs_degrees.into_iter().unzip();
-let ext_degrees: Vec&lt;usize&gt; = degrees.iter().map(|&amp;d| d + config.is_zk()).collect();
-
-let prover_data = ProverData::from_airs_and_degrees(&amp;config, &amp;airs, &amp;ext_degrees);
-let circuit_prover_data = CircuitProverData::new(prover_data, primitive_columns, non_primitive_columns);
-
-// Build the prover; non-primitive table provers must match the ops enabled in the circuit.
-let mut prover = BatchStarkProver::new(config.clone())
-    .with_table_packing(table_packing);
-for np in backend.non_primitive_provers(D) {
-    prover.register_table_prover(np);
-}
-
-let proof = prover.prove_all_tables(&amp;traces, &amp;circuit_prover_data)?;</code></pre>
-<p>For repeated proving, prefer <code>PreparedLayer</code> (unified API) over manually calling
-<code>get_airs_and_degrees_with_prep</code>: it wires up backend preprocessors/air-builders automatically,
-retains the circuit/configuration/prover together, and validates each borrowed native input.
-That validation is shape-only; a prepared owner is not a portable trusted relation verifier and
-does not bind child keys, recursion statements, or public claims. Pin those relations explicitly
-before reusing an owner across trust-boundary changes.</p>
-<h2 id="when-to-use-the-low-level-api"><a class="header" href="#when-to-use-the-low-level-api">When to use the low-level API</a></h2>
-<ul>
-<li>You need to inspect or modify the circuit between building and proving</li>
-<li>You want to share a single <code>CircuitBuilder</code> across multiple verification circuits (custom aggregation patterns beyond 2-to-1)</li>
-<li>You need to inject additional constraints into the verification circuit</li>
-<li>You want to separate circuit construction from execution for caching or serialization</li>
-</ul>
+<p>Use the low-level API when you need to add constraints to a verifier circuit or control its
+construction and execution. The <a href="./api.html">unified API</a> handles the usual recursion flow;
+prepared owners retain the circuit and prover setup for repeated proving.</p>
+<h2 id="build-a-verifier-circuit"><a class="header" href="#build-a-verifier-circuit">Build a verifier circuit</a></h2>
+<p>The expert entry points are
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/verifier/mod.rs"><code>verify_p3_uni_proof_circuit</code> and <code>verify_batch_circuit</code></a>.
+Their target, config, and lookup parameters depend on the native PCS. The
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/backend/fri.rs"><code>FriRecursionBackend</code> implementation</a> is the checked
+reference for allocating targets, enabling the permutation tables, and building a FRI
+verifier circuit. Keep the circuit's permutation and FRI parameters aligned with the native
+proof's suite.</p>
+<h2 id="supply-opening-witnesses"><a class="header" href="#supply-opening-witnesses">Supply opening witnesses</a></h2>
+<p>A FRI proof carries pruned multiproofs; the MMCS circuit needs a path for each query. Replay
+the opening transcript and call
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/pcs/mmcs.rs"><code>restore_fri_query_paths</code></a> before
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/pcs/mmcs.rs"><code>set_fri_mmcs_private_data</code></a>. The
+<a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/recursion/src/builtin_config/fri/recursion.rs">built-in config implementation</a>
+shows the current <code>set_fri_private_data(config, runner, op_ids, opening_proof, transcript)</code>
+contract and the required opened-value observation. A hiding PCS also needs its random
+openings merged into the transcript at the same point as native verification.</p>
+<h2 id="prove-and-verify-the-circuit"><a class="header" href="#prove-and-verify-the-circuit">Prove and verify the circuit</a></h2>
+<p><code>BatchStarkProver::prepare_circuit</code> finalizes the relation and preprocessing once, then
+returns a <code>PreparedCircuitProver</code>. Feed runner traces to <code>prepared.prove(&amp;traces)</code> and verify
+with the independently retained <code>prepared.verifier()</code> and a caller-supplied expected
+statement. The <a href="https://github.com/Plonky3/Plonky3-recursion/blob/main/circuit-prover/src/lib.rs">executable BabyBear example</a> uses this
+path, including a public statement export.</p>
+<p>For ordinary repeated recursion, <code>PreparedLayer</code> and <code>PreparedAggregation</code> also check the
+native input's shape before reuse. <code>TrustedPreparedLayer</code> and <code>TrustedPreparedAggregation</code>
+retain child authority and check statements as described in the <a href="./api.html">API guide</a>.</p>
 
                     </main>
 
