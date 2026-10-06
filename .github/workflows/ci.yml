@@ -63,7 +63,11 @@ jobs:
             profile: --config profile.test.package.p3-recursion.opt-level=0
             feature_args: ''
           - name: boolean
-            targets: --test binary_boolean --test binary_poly --test native_recursion
+            targets: --test binary_boolean
+            profile: ''
+            feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
+          - name: poly
+            targets: --test binary_poly --test native_recursion
             profile: ''
             feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
           - name: stark
