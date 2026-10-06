@@ -268,6 +268,15 @@ impl<F> ExpressionBuilder<F>
 where
     F: PrimeCharacteristicRing + Eq + Hash,
 {
+    /// Release construction-only lookup storage once no more expressions will be added.
+    pub(super) fn release_construction_pools(&mut self) {
+        self.const_pool = HashMap::new();
+        self.cse_pool = HashMap::new();
+        self.mul_add_pool = HashMap::new();
+        self.horner_acc_pool = HashMap::new();
+        self.bool_check_pool = HashMap::new();
+    }
+
     #[inline]
     pub(crate) fn is_const_zero(&self, id: ExprId) -> bool {
         matches!(self.graph.get_expr(id), Expr::Const(val) if *val == F::ZERO)
