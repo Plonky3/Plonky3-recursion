@@ -32,7 +32,19 @@ where
     B: RecursiveBinaryTowerField + BinaryCoordinateField + p3_binary_dft::EncodableLevel,
     F: ExtensionField<B>,
 {
-    let parameters = |n| BinaryNativePcsParameters {
+    spec_with_hashes(prepared, hash, hash)
+}
+
+fn spec_with_hashes<B>(
+    prepared: &NativeBusCircuit<B>,
+    main_hash: ByteHash,
+    preprocessed_hash: ByteHash,
+) -> BinaryNativeVerifierSpec
+where
+    B: RecursiveBinaryTowerField + BinaryCoordinateField + p3_binary_dft::EncodableLevel,
+    F: ExtensionField<B>,
+{
+    let parameters = |n, hash| BinaryNativePcsParameters {
         config: BinaryPcsConfig::try_new::<B, F>(
             n,
             BinaryPcsParams {
@@ -47,8 +59,10 @@ where
         max_query_draws: 128,
     };
     BinaryNativeVerifierSpec {
-        main: parameters(prepared.main_variables()),
-        preprocessed: prepared.preprocessed_variables().map(parameters),
+        main: parameters(prepared.main_variables(), main_hash),
+        preprocessed: prepared
+            .preprocessed_variables()
+            .map(|n| parameters(n, preprocessed_hash)),
         transcript_hash: ByteHash::Keccak256,
         initial_bytes: b"native-folding-verifier-v1".to_vec(),
         sumcheck_pow_bits: 0,
@@ -130,6 +144,69 @@ fn blake3_pcs_child_is_rejected_before_constraints() {
         .verify_native(&mut b, ch, &public, &targets)
         .unwrap_err();
     assert!(unsupported(&error), "{error}");
+    assert_eq!(b.construction_usage().unwrap(), before);
+}
+
+#[test]
+fn blake3_preprocessed_pcs_is_rejected_before_constraints() {
+    let mut b = CircuitBuilder::<F>::new();
+    let input = b.public_input();
+    let expected = b.public_input();
+    let private = b.alloc_private_input("factor");
+    let product = b.mul(input, private);
+    let reused = b.mul(product, input);
+    let c = b.define_const(F::from_raw_coordinates(0x8912).unwrap());
+    let out = b.add(reused, c);
+    b.connect(out, expected);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "native").unwrap();
+    assert!(prepared.preprocessed_variables().is_some());
+    let setup = |preprocessed_hash| {
+        BinaryNativeAuthority::<F, F, _>::setup(
+            prepared.airs().to_vec(),
+            prepared.log_heights().to_vec(),
+            spec_with_hashes(&prepared, ByteHash::Keccak256, preprocessed_hash),
+            &VerifierLimits::default(),
+        )
+        .unwrap()
+        .1
+    };
+    let authority = setup(ByteHash::Blake3);
+    let verifier = authority.recursive_verifier();
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    // Inputs shaped by a Keccak twin: only the preprocessed hash differs.
+    let targets = setup(ByteHash::Keccak256)
+        .recursive_verifier()
+        .input_shape()
+        .allocate_native_targets(&mut b)
+        .unwrap();
+    let ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
+    let public: Vec<Vec<_>> = verifier
+        .input_shape()
+        .public_value_counts()
+        .map(|count| {
+            (0..count)
+                .map(|_| {
+                    let e = b.public_input();
+                    b.native_tower128_from_expr(e)
+                })
+                .collect()
+        })
+        .collect();
+    let before = b.construction_usage().unwrap();
+    let error = verifier
+        .verify_native(&mut b, ch, &public, &targets)
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            VerificationError::CircuitBuilder(
+                CircuitBuilderError::UnsupportedNonPrimitiveOp { .. }
+            )
+        ),
+        "{error}"
+    );
     assert_eq!(b.construction_usage().unwrap(), before);
 }
 

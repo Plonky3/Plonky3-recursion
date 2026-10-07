@@ -5,7 +5,7 @@ use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
 use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::{CircuitBuilder, CircuitConstructionLimits};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
 use p3_field::ExtensionField;
 use p3_recursion::artifact::{
@@ -131,9 +131,12 @@ where
 #[test]
 fn blake3_transcript_child_is_rejected_before_graph_construction() {
     let (_, authority, _, _) = child::<F>(ByteHash::Blake3, 0);
-    assert!(
-        PreparedNativeBinaryLayer::from_native_authority(&authority, options(), &limits()).is_err()
-    );
+    assert!(matches!(
+        PreparedNativeBinaryLayer::from_native_authority(&authority, options(), &limits()),
+        Err(VerificationError::CircuitBuilder(
+            CircuitBuilderError::UnsupportedNonPrimitiveOp { .. }
+        ))
+    ));
 }
 
 #[test]
