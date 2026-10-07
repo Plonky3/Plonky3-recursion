@@ -39,7 +39,10 @@ pub type NativeBinaryFoldingRecursiveProof = MultiStarkProof<BinaryNativeConfig<
 pub struct NativeBinaryFoldingRecursionOptions {
     pub main: BinaryPcsParams,
     pub preprocessed: BinaryPcsParams,
+    /// Must not exceed the output circuit's main and preprocessed variable counts.
     pub log_folding_factor: usize,
+    /// Must not exceed the depth of the smallest committed BaseFold tree;
+    /// `cap_height <= log_inv_rate + 1` is always valid.
     pub cap_height: usize,
     pub query_draw_slack: usize,
     pub initial_bytes: Vec<u8>,
