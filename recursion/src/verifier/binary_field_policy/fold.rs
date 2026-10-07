@@ -184,8 +184,14 @@ where
         value: &NativeTower128Target,
         width: usize,
     ) -> Result<(), VerificationError> {
-        let bytes = <Self as BinaryTowerPolicy<BinaryField128>>::word_bytes::<H>(b, value, width)?;
-        Ok(ch.observe_bytes_with_host::<H, BinaryField128>(b, &bytes)?)
+        if width > 128 || !width.is_multiple_of(16) {
+            let bytes =
+                <Self as BinaryTowerPolicy<BinaryField128>>::word_bytes::<H>(b, value, width)?;
+            return Ok(ch.observe_bytes_with_host::<H, BinaryField128>(b, &bytes)?);
+        }
+        // The refill that hashes these words range-checks each one.
+        let words = b.native_tower128_unchecked_words(value, width / 16)?;
+        Ok(ch.observe_words_with_host::<H, BinaryField128>(b, &words)?)
     }
 }
 
