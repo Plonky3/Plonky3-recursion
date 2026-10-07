@@ -46,5 +46,7 @@ mod native_poly_sumcheck;
 mod native_poly_whir;
 #[path = "../prepared_native_binary.rs"]
 mod prepared_native_binary;
+#[path = "../prepared_native_binary_folding.rs"]
+mod prepared_native_binary_folding;
 #[path = "../prepared_native_poly.rs"]
 mod prepared_native_poly;

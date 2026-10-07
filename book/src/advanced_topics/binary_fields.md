@@ -119,6 +119,14 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
   codeword limits are explicit; codeword counts exclude Merkle trees and
   proving workspaces. Dense Keccak openings currently cause substantial growth
   in later layers. These proofs are non-hiding.
+- **Full native folding recursion.**
+  `prepared::PreparedNativeBinaryLayer` verifies a trusted tower MultiStark
+  authority committed with the BaseFold folding PCS (`BinaryNativeAuthority`)
+  in a Tower128 circuit and proves it with the same folding PCS, product buses
+  and native Keccak. Each output PCS draws its derived query count plus
+  `query_draw_slack` candidates in circuit. The output authority is the next
+  layer's trusted child; grouped, indexed and BLAKE3-hashed children are
+  rejected before graph construction. These proofs are non-hiding.
 - **Full native polynomial recursion.**
   `prepared::PreparedNativeBinaryPolyWhirLayer` verifies a trusted Poly64
   additive-WHIR MultiStark proof in a Poly64 circuit, with Poly192 challenges
