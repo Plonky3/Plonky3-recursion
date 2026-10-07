@@ -270,6 +270,103 @@ fn native_subtree_binds_every_leaf_its_order_and_the_upper_path() {
     }
 }
 
+/// Authenticates row `index` of a width-16 `BinaryField128` p3 tree as one
+/// word leaf: the 256 bytes of a Tower128 fold coset, 128 words absorbed over
+/// two Keccak-f calls. Lanes are given in ascending order, as p3 serializes
+/// the row, and the reversed order must be rejected. With an empty path the
+/// index bits only drive the cap multiplexer, so every flipped bit and a
+/// tampered selected root must be rejected while a tampered unselected root
+/// must still be accepted.
+fn check_coset_leaf<F: BinaryCoordinateField>(log_height: usize, cap_height: usize, index: usize) {
+    const LANES: usize = 16;
+    const WORDS: usize = LANES * 8;
+    let mmcs = keccak::LevelMmcs::<BinaryField128>::new(
+        keccak::FieldHash::new(keccak::byte_hash()),
+        keccak::Compress::new(keccak::byte_hash()),
+        cap_height,
+    );
+    let matrix = RowMajorMatrix::new(
+        (0..LANES << log_height)
+            .map(|i| {
+                BinaryField128::from_repr(
+                    (i as u128 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835),
+                )
+            })
+            .collect(),
+        LANES,
+    );
+    let (commitment, data) = mmcs.commit(vec![matrix]);
+    let opening = mmcs.open_batch(index, &data);
+    let depth = log_height - cap_height;
+    assert_eq!(opening.opening_proof.len(), depth);
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let mut inputs = |count| (0..count).map(|_| b.public_input()).collect::<Vec<_>>();
+    let leaf = inputs(WORDS);
+    let bits = inputs(log_height);
+    let siblings: Vec<_> = (0..depth).map(|_| inputs(16)).collect();
+    let cap: Vec<_> = (0..1 << cap_height).map(|_| inputs(16)).collect();
+    b.verify_byte_hash_mmcs_subtree_words_with_host::<NativeBinaryEncoding>(
+        ByteHash::Keccak256,
+        &[leaf],
+        1 << log_height,
+        &bits,
+        &siblings,
+        &cap,
+    )
+    .unwrap();
+    let circuit = b.build().unwrap();
+    let encode = |word: u16| -> F { NativeBinaryEncoding::encode_u16(word).unwrap() };
+    let lane_words = |lanes: &mut dyn Iterator<Item = &BinaryField128>| -> Vec<F> {
+        let bytes: Vec<u8> = lanes.flat_map(|x| x.to_repr().to_le_bytes()).collect();
+        bytes_to_limbs(&bytes).into_iter().map(encode).collect()
+    };
+    let lanes = &opening.opened_values[0];
+    let mut public = lane_words(&mut lanes.iter());
+    public.extend((0..log_height).map(|bit| F::from_bool(index >> bit & 1 != 0)));
+    for digest in opening.opening_proof.iter().chain(commitment.roots()) {
+        public.extend(bytes_to_limbs(digest).into_iter().map(encode));
+    }
+    let runs = |public: &[F]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let label = format!("log height {log_height}, cap height {cap_height}, index {index}");
+    assert!(runs(&public), "honest coset leaf, {label}");
+    let mut reversed = lane_words(&mut lanes.iter().rev());
+    reversed.extend_from_slice(&public[WORDS..]);
+    assert!(!runs(&reversed), "reversed lanes, {label}");
+    if depth > 0 {
+        return;
+    }
+    for bit in 0..log_height {
+        let mut wrong = public.clone();
+        wrong[WORDS + bit] += F::ONE;
+        assert!(!runs(&wrong), "flipped index bit {bit}, {label}");
+    }
+    let cap_start = WORDS + log_height;
+    for root in 0..1 << cap_height {
+        let mut wrong = public.clone();
+        wrong[cap_start + 16 * root + 5] += F::ONE;
+        assert_eq!(
+            runs(&wrong),
+            root != index,
+            "tampered cap root {root}, {label}"
+        );
+    }
+}
+
+#[test]
+fn single_coset_leaf_layout_matches_a_p3_tree_through_the_cap_multiplexer() {
+    for (log_height, cap_height, index) in [(3, 3, 5), (2, 2, 2), (3, 0, 5)] {
+        check_coset_leaf::<BinaryField128>(log_height, cap_height, index);
+        check_coset_leaf::<Poly64>(log_height, cap_height, index);
+    }
+}
+
 #[test]
 fn native_tower_and_polynomial_mmcs_match_mixed_height_caps_and_zero_depth() {
     for words in [false, true] {
