@@ -76,23 +76,44 @@ fn blake3_pcs_child_is_rejected_before_constraints() {
     b.connect(out, expected);
     let circuit = b.build().unwrap();
     let prepared = NativeBusCircuit::new(&circuit, "native").unwrap();
-    let (_, authority) = BinaryNativeAuthority::<F, F, _>::setup(
-        prepared.airs().to_vec(),
-        prepared.log_heights().to_vec(),
-        spec(&prepared, ByteHash::Blake3),
-        &VerifierLimits::default(),
-    )
-    .unwrap();
+    let setup = |hash| {
+        BinaryNativeAuthority::<F, F, _>::setup(
+            prepared.airs().to_vec(),
+            prepared.log_heights().to_vec(),
+            spec(&prepared, hash),
+            &VerifierLimits::default(),
+        )
+        .unwrap()
+        .1
+    };
+    let unsupported = |error: &VerificationError| {
+        matches!(
+            error,
+            VerificationError::CircuitBuilder(
+                CircuitBuilderError::UnsupportedNonPrimitiveOp { .. }
+            )
+        )
+    };
+    let authority = setup(ByteHash::Blake3);
     let verifier = authority.recursive_verifier();
     let mut b = CircuitBuilder::<F>::new();
     b.enable_native_keccak_f1600().unwrap();
-    let targets = verifier
+    let error = verifier
+        .input_shape()
+        .allocate_native_targets(&mut b)
+        .unwrap_err();
+    assert!(unsupported(&error), "{error}");
+    // Inputs shaped by a Keccak twin still cannot reach any BLAKE3 constraint.
+    let twin = setup(ByteHash::Keccak256);
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let targets = twin
+        .recursive_verifier()
         .input_shape()
         .allocate_native_targets(&mut b)
         .unwrap();
     let ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
-    let public: Vec<Vec<_>> = authority
-        .recursive_verifier()
+    let public: Vec<Vec<_>> = verifier
         .input_shape()
         .public_value_counts()
         .map(|count| {
@@ -108,15 +129,7 @@ fn blake3_pcs_child_is_rejected_before_constraints() {
     let error = verifier
         .verify_native(&mut b, ch, &public, &targets)
         .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            VerificationError::CircuitBuilder(
-                CircuitBuilderError::UnsupportedNonPrimitiveOp { .. }
-            )
-        ),
-        "{error}"
-    );
+    assert!(unsupported(&error), "{error}");
     assert_eq!(b.construction_usage().unwrap(), before);
 }
 

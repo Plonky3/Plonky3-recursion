@@ -261,6 +261,15 @@ macro_rules! check {
         );
 
         let o = offsets(&config, &protocol, $cap_height);
+        let pcs_shape = BinaryPcsShape::new(&config);
+        let bits = pcs_shape.pair_bits;
+        assert_eq!(o.queries + pcs_shape.num_pairs * bits, private.len());
+        assert!(
+            private[o.queries..]
+                .iter()
+                .all(|&bit| bit == F::ZERO || bit == F::ONE),
+            "query index bits are Boolean"
+        );
         let tamper = |index: usize, delta: F| {
             let mut wrong = private.clone();
             wrong[index] += delta;
@@ -274,41 +283,62 @@ macro_rules! check {
         let mut opened = private.clone();
         opened[o.evals] += F::ONE;
         assert!(!run(&circuit, &claimed, &opened), "opened evaluation");
-        if let Some(round) = o.rounds.first() {
-            assert!(!tamper(round.rows, F::ONE), "round oracle row");
-        }
+        let round = o
+            .rounds
+            .first()
+            .expect("every config commits a round oracle");
+        assert!(!tamper(round.rows, F::ONE), "round oracle row");
         assert!(!tamper(o.base.rows, F::ONE), "base row");
         assert!(!tamper(o.base.paths, F::ONE), "Merkle sibling word");
-        if BinaryPcsShape::new(&config).final_codeword_len > 1 {
-            assert!(
-                !tamper(o.final_codeword + 1, F::ONE),
-                "non-uniform final codeword"
-            );
-        }
+        assert!(pcs_shape.final_codeword_len > 1);
+        assert!(
+            !tamper(o.final_codeword + 1, F::ONE),
+            "non-uniform final codeword"
+        );
         if $pow == 0 {
             assert!(!tamper(o.pow, F::ONE), "nonzero PoW witness");
         }
         assert!(!tamper(o.queries, F::ONE), "query index bit");
-        let bits = BinaryPcsShape::new(&config).pair_bits;
-        if BinaryPcsShape::new(&config).num_pairs > 1 {
-            // The second query slot receives the first query's index, rows and
-            // paths, so every authentication and fold check of that slot holds
-            // and only the query index relation can reject.
-            let mut duplicate = private.clone();
-            duplicate.copy_within(o.queries..o.queries + bits, o.queries + bits);
-            for oracle in o.rounds.iter().chain([&o.base]) {
-                let paths = oracle.size * oracle.depth * 16;
-                duplicate.copy_within(
-                    oracle.rows..oracle.rows + oracle.size,
-                    oracle.rows + oracle.size,
-                );
-                duplicate.copy_within(oracle.paths..oracle.paths + paths, oracle.paths + paths);
-            }
-            assert!(
-                !run(&circuit, &public, &duplicate),
-                "duplicated query index"
+        assert!(pcs_shape.num_pairs > 1);
+        // The second query slot receives the first query's index, rows and
+        // paths, so every authentication and fold check of that slot holds
+        // and only the query index relation can reject.
+        let mut duplicate = private.clone();
+        duplicate.copy_within(o.queries..o.queries + bits, o.queries + bits);
+        for oracle in o.rounds.iter().chain([&o.base]) {
+            let paths = oracle.size * oracle.depth * 16;
+            duplicate.copy_within(
+                oracle.rows..oracle.rows + oracle.size,
+                oracle.rows + oracle.size,
             );
+            duplicate.copy_within(oracle.paths..oracle.paths + paths, oracle.paths + paths);
         }
+        assert!(
+            !run(&circuit, &public, &duplicate),
+            "duplicated query index"
+        );
+        let index = |slot: usize| {
+            (0..bits).fold(0usize, |acc, bit| {
+                acc | usize::from(private[o.queries + slot * bits + bit] == F::ONE) << bit
+            })
+        };
+        assert!(
+            index(0) < index(1),
+            "honest query slots are strictly sorted"
+        );
+        // Swapping two whole query slots keeps every per-slot authentication,
+        // fold and membership check intact, so only strict ordering can reject.
+        let swap = |values: &mut [F], start: usize, len: usize| {
+            let (left, right) = values[start..start + 2 * len].split_at_mut(len);
+            left.swap_with_slice(right);
+        };
+        let mut swapped = private.clone();
+        swap(&mut swapped, o.queries, bits);
+        for oracle in o.rounds.iter().chain([&o.base]) {
+            swap(&mut swapped, oracle.rows, oracle.size);
+            swap(&mut swapped, oracle.paths, oracle.size * oracle.depth * 16);
+        }
+        assert!(!run(&circuit, &public, &swapped), "unsorted query indices");
         if <$base as RecursiveBinaryTowerField>::RAW_BITS < 128 {
             let high = F::from_repr(1u128 << <$base as RecursiveBinaryTowerField>::RAW_BITS);
             assert!(!tamper(o.base.rows, high), "base row above its alphabet");

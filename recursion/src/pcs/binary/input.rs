@@ -9,6 +9,7 @@ use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::{BinaryPcsShape, BinaryPcsVerifierTranscript};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64};
@@ -93,6 +94,8 @@ impl BinaryPcsInputShape {
 
     /// Allocates proof witnesses as native Tower128 scalars, one private
     /// input per field value, in the order of [`Self::allocate_targets`].
+    /// Grouped codewords and hashes the native host cannot evaluate are
+    /// rejected before any input is allocated.
     pub fn allocate_native_targets(
         &self,
         circuit: &mut CircuitBuilder<BinaryField128>,
@@ -102,6 +105,7 @@ impl BinaryPcsInputShape {
                 "native scalar binary PCS verifier does not support grouped codewords",
             ));
         }
+        <NativeBinaryEncoding as BinaryCircuitHost<BinaryField128>>::check_hash(self.hash)?;
         self.allocate_with(circuit, |b| {
             let value = b.alloc_private_input("native binary PCS field");
             b.check_construction_limits()?;
