@@ -343,9 +343,14 @@ fn grouped_layer_rejects_a_token_of_another_child_authority() {
     let foreign = foreign_authority
         .verify_native(&foreign_proof, &public)
         .unwrap();
+    // A cap equal to both output log inverse rates is the largest accepted.
+    let mut at_rate = options();
+    assert_eq!(at_rate.main.log_inv_rate, 1);
+    assert_eq!(at_rate.preprocessed.log_inv_rate, 1);
+    at_rate.cap_height = 1;
     let layer = PreparedNativeGroupedBinaryLayer::from_native_authority_with_construction_limits(
         &authority,
-        options(),
+        at_rate,
         &limits(),
         &construction(),
     )
@@ -354,10 +359,20 @@ fn grouped_layer_rejects_a_token_of_another_child_authority() {
         layer.prove_verified(&foreign),
         Err(VerificationError::PreparedInputMismatch { .. })
     ));
+    // The output commits coset leaves, so the next grouped layer can
+    // allocate its native targets.
+    let mut builder = CircuitBuilder::<F>::new();
+    assert!(
+        layer
+            .authority()
+            .recursive_verifier()
+            .input_shape()
+            .allocate_native_targets(&mut builder)
+            .is_ok()
+    );
 }
 
 #[test]
-#[ignore = "proves a full grouped native folding verifier; run explicitly"]
 fn grouped_folding_layer_proves_and_binds_the_original_statement() {
     let (prover, authority, public, trace) = grouped_child::<F>(0);
     let proof = prover.prove(&public, vec![trace]).unwrap();
@@ -393,14 +408,4 @@ fn grouped_folding_layer_proves_and_binds_the_original_statement() {
     wrong[0][1] += F::ONE;
     assert!(layer.verify(&outer, &wrong).is_err());
     assert!(layer.verify(&outer, &[]).is_err());
-    // The grouped output closes in the next grouped layer.
-    let mut builder = CircuitBuilder::<F>::new();
-    assert!(
-        layer
-            .authority()
-            .recursive_verifier()
-            .input_shape()
-            .allocate_native_targets(&mut builder)
-            .is_ok()
-    );
 }

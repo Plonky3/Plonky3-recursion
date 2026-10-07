@@ -2,9 +2,9 @@
 
 use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
-use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::{ByteHash, NativeTower128Target};
 use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError};
 use p3_circuit_prover::native_bus::NativeBusCircuit;
 use p3_field::{ExtensionField, PrimeCharacteristicRing};
@@ -481,6 +481,7 @@ where
                 .unwrap(),
         )
         .unwrap();
+    assert!(proof.bus.is_some());
     let token = authority.verify_native(&proof, &public).unwrap();
     let verifier = authority.recursive_verifier();
     let shape = verifier.input_shape();
@@ -499,7 +500,7 @@ where
         })
         .collect();
     let targets = shape.allocate_native_targets(&mut b).unwrap();
-    assert!(targets.preprocessed_opening.is_some());
+    let preprocessed = targets.preprocessed_opening.as_ref().unwrap();
     let initial: Vec<_> = authority
         .initial_bytes()
         .iter()
@@ -525,9 +526,37 @@ where
     let mut wrong = flat.clone();
     wrong[1] += F::ONE;
     assert!(!run(&recursive, &wrong, &private));
+    if B::RAW_BITS < 128 {
+        let mut high = flat.clone();
+        high[0] += F::from_repr(1u128 << B::RAW_BITS);
+        assert!(!run(&recursive, &high, &private));
+    }
     for index in [0, 16, private.len() / 2, private.len() - 1] {
         let mut wrong = private.clone();
         wrong[index] += F::ONE;
         assert!(!run(&recursive, &flat, &wrong), "private input {index}");
+    }
+    // The first base and round rows of the trusted preprocessing opening,
+    // located by their allocated targets. That opening is checked after the
+    // main opening's queries, through the continuation.
+    let private_index = |row: &NativeTower128Target| {
+        let witness = recursive.expr_to_widx[&row.as_expr()];
+        recursive
+            .private_input_rows
+            .iter()
+            .position(|&row| row == witness)
+            .unwrap()
+    };
+    let rows = [
+        ("base", &preprocessed.base_rows[0]),
+        ("round", &preprocessed.rounds[0].rows[0]),
+    ];
+    for (name, row) in rows {
+        let mut wrong = private.clone();
+        wrong[private_index(row)] += F::ONE;
+        assert!(
+            !run(&recursive, &flat, &wrong),
+            "first preprocessed {name} row"
+        );
     }
 }
