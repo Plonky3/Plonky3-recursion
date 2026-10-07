@@ -10,7 +10,9 @@ use p3_binary_field::BinaryField128;
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsProof};
 use p3_bus::{BusPlan, BusPlanInput, BusSymbolicBuilder};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryTower128Target, ByteHash, bytes_to_limbs};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::MultilinearPcs;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeField64};
@@ -27,6 +29,7 @@ use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use relation::{BinaryMultiStarkRelation, BinaryMultiStarkRelationShape, BinaryRelationProof};
 
 use super::binary_bus::{BinaryBusInputShape, BinaryBusVerifier};
+use super::binary_field_policy::NativeTower128Relation;
 use super::binary_indexed::{
     BinaryIndexedLookupProofTargets, BinaryIndexedVerifier, BinaryOpeningSchedule,
     IndexedInputShape, NativeIndexedInput, schedule,
@@ -83,16 +86,38 @@ impl PreprocessedInputShape {
             })
             .collect()
     }
+
+    fn constant_cap_with_host<H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+    ) -> Result<Vec<Vec<ExprId>>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+    {
+        H::check_carrier()?;
+        self.commitment
+            .iter()
+            .map(|root| {
+                let digest = bytes_to_limbs(root)
+                    .into_iter()
+                    .map(|word| Ok(b.define_const(H::encode_u16(word)?)))
+                    .collect::<Result<Vec<_>, VerificationError>>()?;
+                b.check_construction_limits()?;
+                Ok(digest)
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct BinaryMultiStarkProofTargets {
+pub struct BinaryMultiStarkProofTargets<T = BinaryTower128Target> {
     pub commitment: Vec<Vec<ExprId>>,
-    pub bus: Option<BinaryProductGkrProofTargets>,
-    pub sumcheck: BinaryGenericSumcheckProofTargets,
+    pub bus: Option<BinaryProductGkrProofTargets<T>>,
+    pub sumcheck: BinaryGenericSumcheckProofTargets<T>,
     pub indexed: Option<BinaryIndexedLookupProofTargets>,
-    pub opening: BinaryPcs128ProofTargets,
-    pub preprocessed_opening: Option<BinaryPcs128ProofTargets>,
+    pub opening: BinaryPcs128ProofTargets<T>,
+    pub preprocessed_opening: Option<BinaryPcs128ProofTargets<T>>,
 }
 
 impl<F: RecursiveBinaryTowerField, E: RecursiveBinaryChallengeField>
@@ -745,4 +770,241 @@ where
 
 fn invalid(message: &'static str) -> VerificationError {
     VerificationError::InvalidProofShape(message.into())
+}
+
+impl<F: RecursiveBinaryTowerField> BinaryMultiStarkInputShape<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
+    /// Scalar input traversal for the bus/AIR native backend. Indexed plans
+    /// require a different native reduction and are rejected before allocation.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<BinaryMultiStarkProofTargets<NativeTower128Target>, VerificationError> {
+        if self.relation.indexed.is_some() {
+            return Err(invalid(
+                "native scalar binary verifier does not support indexed relations",
+            ));
+        }
+        let commitment = (0..1usize << self.cap_height)
+            .map(|_| {
+                let digest = b
+                    .alloc_private_input_array::<16>("native binary MultiStark commitment")
+                    .to_vec();
+                b.check_construction_limits()?;
+                Ok(digest)
+            })
+            .collect::<Result<_, VerificationError>>()?;
+        let bus = self
+            .relation
+            .bus
+            .as_ref()
+            .map(|bus| bus.product.allocate_native_targets(b))
+            .transpose()?;
+        let sumcheck = self.relation.sumcheck.allocate_native_targets(b)?;
+        let opening = self.opening.allocate_native_targets(b)?;
+        let preprocessed_opening = self
+            .preprocessed
+            .as_ref()
+            .map(|pp| pp.opening.allocate_native_targets(b))
+            .transpose()?;
+        Ok(BinaryMultiStarkProofTargets {
+            commitment,
+            bus,
+            sumcheck,
+            indexed: None,
+            opening,
+            preprocessed_opening,
+        })
+    }
+}
+
+impl<F: RecursiveBinaryTowerField> NativeBinaryMultiStarkInput<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
+    /// Packs exactly the private input order of `allocate_native_targets`.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryMultiStarkInputShape<F, BinaryField128>,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary MultiStark input belongs to another verifier",
+            ));
+        }
+        if expected.relation.indexed.is_some() || self.indexed.is_some() {
+            return Err(invalid(
+                "native scalar binary verifier does not support indexed relations",
+            ));
+        }
+        let mut values: Vec<_> = self
+            .commitment
+            .iter()
+            .flat_map(|root| {
+                bytes_to_limbs(root)
+                    .into_iter()
+                    .map(NativeBinaryEncoding::encode_u16)
+            })
+            .collect::<Result<_, _>>()?;
+        match (&expected.relation.bus, &self.bus) {
+            (Some(shape), Some(input)) => {
+                values.extend(input.private_native_values(&shape.product)?);
+            }
+            (None, None) => {}
+            _ => return Err(invalid("binary MultiStark bus input shape mismatch")),
+        }
+        values.extend(
+            self.sumcheck
+                .private_native_values(&expected.relation.sumcheck)?,
+        );
+        values.extend(self.opening.private_native_values(&expected.opening)?);
+        match (&expected.preprocessed, &self.preprocessed_opening) {
+            (Some(shape), Some(input)) => {
+                values.extend(input.private_native_values(&shape.opening)?);
+            }
+            (None, None) => {}
+            _ => {
+                return Err(invalid(
+                    "binary MultiStark preprocessing input shape mismatch",
+                ));
+            }
+        }
+        Ok(values)
+    }
+}
+
+impl<F: RecursiveBinaryTowerField> BinaryMultiStarkVerifier<F, BinaryField128>
+where
+    BinaryField128: ExtensionField<F>,
+{
+    pub(crate) fn check_native_circuit_support(&self) -> Result<(), VerificationError> {
+        if self.relation.indexed.is_some() {
+            return Err(invalid(
+                "native scalar binary verifier does not support indexed relations",
+            ));
+        }
+        self.opening.check_native_support()?;
+        if let Some(pp) = &self.preprocessed {
+            pp.check_native_support()?;
+        }
+        Ok(())
+    }
+
+    /// Complete native Tower128 relation, including product buses and trusted
+    /// preprocessing. Caller-supplied public scalars bind the expected statement.
+    pub fn verify_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        mut ch: BinaryTower128Challenger,
+        public: &[Vec<NativeTower128Target>],
+        proof: &BinaryMultiStarkProofTargets<NativeTower128Target>,
+    ) -> Result<BinaryQueryContinuation, VerificationError> {
+        self.check_native_circuit_support()?;
+        if proof.indexed.is_some() {
+            return Err(invalid(
+                "native scalar binary verifier does not support indexed relations",
+            ));
+        }
+        let common = BinaryRelationProof {
+            bus: proof.bus.as_ref(),
+            sumcheck: &proof.sumcheck,
+            indexed: None,
+        };
+        self.relation.check_targets(public, &common)?;
+        let zero = b.native_tower128_constant(0);
+        let points = self.relation.zero_points(false, zero);
+        self.opening
+            .check_targets(&proof.commitment, &points, &proof.opening)?;
+        let preprocessed_cap = match (
+            &self.preprocessed,
+            &self.input.preprocessed,
+            &proof.preprocessed_opening,
+        ) {
+            (Some(verifier), Some(shape), Some(proof)) => {
+                let cap =
+                    shape.constant_cap_with_host::<NativeBinaryEncoding, BinaryField128>(b)?;
+                let points = self.relation.zero_points(true, zero);
+                verifier.check_targets(&cap, &points, proof)?;
+                Some(cap)
+            }
+            (None, None, None) => None,
+            _ => {
+                return Err(invalid(
+                    "binary MultiStark preprocessed opening shape mismatch",
+                ));
+            }
+        };
+        self.relation
+            .observe_prefix_with_host::<NativeBinaryEncoding, BinaryField128>(
+                b,
+                &mut ch,
+                preprocessed_cap.as_deref(),
+            )?;
+        self.opening
+            .observe_commitment_with_host::<NativeBinaryEncoding, BinaryField128>(
+                b,
+                &mut ch,
+                &proof.commitment,
+            )?;
+        let mut reduction = self
+            .relation
+            .reduce_common::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
+                b, ch, public, &common,
+            )?;
+        let heights: Vec<_> = self
+            .relation
+            .input
+            .airs
+            .iter()
+            .map(|air| air.log_height())
+            .collect();
+        reduction.main_points =
+            self.relation
+                .input
+                .main_schedule
+                .points(&heights, &reduction.point, None);
+        reduction.preprocessed_points = self
+            .relation
+            .input
+            .preprocessed_schedule
+            .as_ref()
+            .map(|schedule| schedule.points(&heights, &reduction.point, None));
+        let mut continuation = self.opening.verify_at_native(
+            b,
+            reduction.challenger.clone(),
+            &proof.commitment,
+            &reduction.main_points,
+            &proof.opening,
+        )?;
+        if let (Some(verifier), Some(cap), Some(proof)) = (
+            &self.preprocessed,
+            &preprocessed_cap,
+            &proof.preprocessed_opening,
+        ) {
+            continuation = verifier.verify_at_native_after_queries(
+                b,
+                continuation,
+                cap,
+                reduction
+                    .preprocessed_points
+                    .as_ref()
+                    .expect("checked preprocessing points"),
+                proof,
+            )?;
+        }
+        self.relation
+            .finish_common::<NativeTower128Relation<F>, BinaryField128>(
+                b,
+                public,
+                &reduction,
+                &proof.opening.evals,
+                proof
+                    .preprocessed_opening
+                    .as_ref()
+                    .map(|p| p.evals.as_slice()),
+            )?;
+        Ok(continuation)
+    }
 }
