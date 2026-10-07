@@ -466,6 +466,44 @@ where
         )
     }
 
+    /// [`Self::verify_byte_hash_mmcs_subtree_bytes_with_host`] for leaves of
+    /// low-first sixteen-bit words.
+    ///
+    /// `leaves[i]` serializes as two little-endian bytes per word, so a leaf
+    /// of any even byte length hashes with [`BinaryCircuitHost::hash_words`]
+    /// and its digest words are used directly. The host's word hash
+    /// range-checks every leaf word; a native host absorbs each one as a raw
+    /// Keccak limb. A single leaf authenticates one row under its full index
+    /// and path.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_subtree_bytes`] and the host's hash.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_subtree_words_with_host<H>(
+        &mut self,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<F>,
+    {
+        H::check_hash(hash)?;
+        self.verify_byte_hash_mmcs_subtree_with(
+            leaves,
+            height,
+            index_bits,
+            siblings,
+            cap,
+            |builder, words| H::hash_words(builder, hash, words),
+            |builder, left, right| H::compress(builder, hash, left, right),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn verify_byte_hash_mmcs_subtree_with(
         &mut self,

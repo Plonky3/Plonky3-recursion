@@ -682,19 +682,35 @@ where
                 if self.grouping.is_none() && subtree.is_some() {
                     // Leaf `offset` sits at position `upper << arity | offset`,
                     // so the coset is the subtree at the query's upper bits.
-                    let leaves = coset
+                    let words = coset
                         .iter()
-                        .map(|row| P::leaf_bytes::<H>(circuit, row, width))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    H::authenticate_subtree(
-                        circuit,
-                        self.hash,
-                        &leaves,
-                        1usize << (log_domain - start),
-                        &index[start + arity..],
-                        &paths[q],
-                        cap,
-                    )?;
+                        .map(|row| P::leaf_words(circuit, row, width))
+                        .collect::<Result<Option<Vec<_>>, _>>()?;
+                    if let Some(leaves) = words {
+                        H::authenticate_subtree_words(
+                            circuit,
+                            self.hash,
+                            &leaves,
+                            1usize << (log_domain - start),
+                            &index[start + arity..],
+                            &paths[q],
+                            cap,
+                        )?;
+                    } else {
+                        let leaves = coset
+                            .iter()
+                            .map(|row| P::leaf_bytes::<H>(circuit, row, width))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        H::authenticate_subtree(
+                            circuit,
+                            self.hash,
+                            &leaves,
+                            1usize << (log_domain - start),
+                            &index[start + arity..],
+                            &paths[q],
+                            cap,
+                        )?;
+                    }
                 }
                 for (offset, row) in coset
                     .iter()
@@ -705,16 +721,28 @@ where
                     for (b, bit) in leaf_index[..arity].iter_mut().enumerate() {
                         *bit = if offset >> b & 1 == 1 { one } else { zero };
                     }
-                    let bytes = P::leaf_bytes::<H>(circuit, row, width)?;
-                    H::authenticate_leaf(
-                        circuit,
-                        self.hash,
-                        bytes,
-                        1usize << (log_domain - start),
-                        &leaf_index,
-                        &paths[q * size + offset],
-                        cap,
-                    )?;
+                    if let Some(words) = P::leaf_words(circuit, row, width)? {
+                        H::authenticate_subtree_words(
+                            circuit,
+                            self.hash,
+                            &[words],
+                            1usize << (log_domain - start),
+                            &leaf_index,
+                            &paths[q * size + offset],
+                            cap,
+                        )?;
+                    } else {
+                        let bytes = P::leaf_bytes::<H>(circuit, row, width)?;
+                        H::authenticate_leaf(
+                            circuit,
+                            self.hash,
+                            bytes,
+                            1usize << (log_domain - start),
+                            &leaf_index,
+                            &paths[q * size + offset],
+                            cap,
+                        )?;
+                    }
                 }
                 let mut folded = coset.to_vec();
                 for j in 0..arity {
@@ -907,6 +935,27 @@ pub(crate) trait BinaryPcsMmcsHost<CF: Field + Eq + Hash>: BinaryCircuitHost<CF>
         path: &[Vec<ExprId>],
         cap: &[Vec<ExprId>],
     ) -> Result<(), VerificationError>;
+
+    /// [`Self::authenticate_subtree`] for leaves given as low-first sixteen-bit
+    /// words, each standing for its two little-endian bytes. A single leaf is
+    /// one symbol under its full index and path. Every word must already be
+    /// bound to its symbol; this method range-checks it.
+    #[allow(clippy::too_many_arguments)]
+    fn authenticate_subtree_words(
+        b: &mut CircuitBuilder<CF>,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index: &[ExprId],
+        path: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        let leaves = leaves
+            .iter()
+            .map(|words| Self::bytes_from_words(b, words))
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::authenticate_subtree(b, hash, &leaves, height, index, path, cap)
+    }
 }
 
 impl<BF, EF> BinaryPcsMmcsHost<EF> for PrimeBinaryEncoding<BF>
@@ -990,6 +1039,27 @@ impl BinaryPcsMmcsHost<BinaryField128> for NativeBinaryEncoding {
             <Self as BinaryCircuitEncoding<BinaryField128>>::decompose_word(b, limb, 16)?;
         }
         b.verify_byte_hash_mmcs_subtree_bytes_with_host::<Self>(
+            hash, leaves, height, index, path, cap,
+        )?;
+        b.check_construction_limits()?;
+        Ok(())
+    }
+
+    fn authenticate_subtree_words(
+        b: &mut CircuitBuilder<BinaryField128>,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index: &[ExprId],
+        path: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        for &limb in path.iter().flatten() {
+            <Self as BinaryCircuitEncoding<BinaryField128>>::decompose_word(b, limb, 16)?;
+        }
+        // Each leaf word is absorbed as a raw Keccak limb, which the native
+        // Keccak AIR constrains to sixteen coordinates.
+        b.verify_byte_hash_mmcs_subtree_words_with_host::<Self>(
             hash, leaves, height, index, path, cap,
         )?;
         b.check_construction_limits()?;
