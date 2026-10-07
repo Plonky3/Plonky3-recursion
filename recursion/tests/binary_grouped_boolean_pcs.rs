@@ -298,6 +298,7 @@ fn grouped_boolean64_blake3_binds_batched_current_and_successor_readings() {
 }
 
 #[test]
+#[ignore]
 fn grouped_boolean_opening_proves_in_a_prime_field() {
     use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{

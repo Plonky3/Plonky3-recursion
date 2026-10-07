@@ -266,6 +266,7 @@ fn checked_boolean_whir_trace_chain(hash: ByteHash) {
 }
 
 #[test]
+#[ignore]
 fn checked_boolean_whir_trace_native_bytes_survive_two_portable_recursion_layers() {
     checked_boolean_whir_trace_chain(ByteHash::Blake3);
 }

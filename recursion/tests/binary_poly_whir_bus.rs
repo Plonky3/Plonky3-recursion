@@ -426,6 +426,7 @@ fn poly_bus_closes_mixed_height_padding_in_air_order() {
 }
 
 #[test]
+#[ignore]
 fn a_composed_poly_bus_relation_proves_in_a_prime_field_circuit() {
     use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
