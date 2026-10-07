@@ -140,6 +140,106 @@ fn check<F: BinaryCoordinateField>(
     }
 }
 
+/// Opens the `2^arity` rows of the aligned subtree at `upper` in a native tree
+/// and checks that the subtree gadget alone binds every leaf, their order,
+/// the upper index bits, every sibling above the subtree and the cap root.
+fn check_subtree<F: BinaryCoordinateField>(
+    log_height: usize,
+    arity: usize,
+    cap_height: usize,
+    upper: usize,
+) {
+    let mmcs = keccak::LevelMmcs::<BinaryField8>::new(
+        keccak::FieldHash::new(keccak::byte_hash()),
+        keccak::Compress::new(keccak::byte_hash()),
+        cap_height,
+    );
+    let matrix = RowMajorMatrix::new(
+        (0..3 << log_height)
+            .map(|i| BinaryField8::from_repr((i * 37 + 129) as u8))
+            .collect(),
+        3,
+    );
+    let (commitment, data) = mmcs.commit(vec![matrix]);
+    let size = 1 << arity;
+    let openings: Vec<_> = (0..size)
+        .map(|offset| mmcs.open_batch(upper << arity | offset, &data))
+        .collect();
+    let upper_bits = log_height - arity;
+    let depth = upper_bits - cap_height;
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let mut inputs = |count| (0..count).map(|_| b.public_input()).collect::<Vec<_>>();
+    let leaves: Vec<_> = (0..size).map(|_| inputs(3)).collect();
+    let bits = inputs(upper_bits);
+    let siblings: Vec<_> = (0..depth).map(|_| inputs(16)).collect();
+    let cap: Vec<_> = (0..1 << cap_height).map(|_| inputs(16)).collect();
+    b.verify_byte_hash_mmcs_subtree_bytes_with_host::<NativeBinaryEncoding>(
+        ByteHash::Keccak256,
+        &leaves,
+        1 << log_height,
+        &bits,
+        &siblings,
+        &cap,
+    )
+    .unwrap();
+    let circuit = b.build().unwrap();
+    let encode = |word: u16| -> F { NativeBinaryEncoding::encode_u16(word).unwrap() };
+    let mut public: Vec<F> = openings
+        .iter()
+        .flat_map(|opening| &opening.opened_values[0])
+        .map(|x| encode(u16::from(x.to_repr())))
+        .collect();
+    public.extend((0..upper_bits).map(|bit| F::from_bool(upper >> bit & 1 != 0)));
+    for digest in openings[0].opening_proof[arity..]
+        .iter()
+        .chain(commitment.roots())
+    {
+        public.extend(bytes_to_limbs(digest).into_iter().map(encode));
+    }
+    let runs = |public: &[F]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    assert!(runs(&public), "honest subtree");
+    let bits_start = 3 * size;
+    let siblings_start = bits_start + upper_bits;
+    let root = siblings_start + 16 * depth + 16 * (upper >> depth);
+    let changed = (0..size)
+        .map(|offset| 3 * offset + 2)
+        .chain(bits_start..siblings_start)
+        .chain((0..depth).map(|level| siblings_start + 16 * level + 7))
+        .chain([root]);
+    for changed in changed {
+        let mut wrong = public.clone();
+        wrong[changed] += F::ONE;
+        assert!(
+            !runs(&wrong),
+            "log height {log_height}, arity {arity}, input {changed}"
+        );
+    }
+    for (a, c) in [(0, 1), (size - 2, size - 1)] {
+        let mut swapped = public.clone();
+        for i in 0..3 {
+            swapped.swap(3 * a + i, 3 * c + i);
+        }
+        assert!(!runs(&swapped), "leaves {a} and {c} swapped");
+    }
+}
+
+#[test]
+fn native_subtree_binds_every_leaf_its_order_and_the_upper_path() {
+    for (log_height, arity, cap_height, upper) in
+        [(5, 2, 1, 5), (4, 1, 0, 6), (3, 3, 0, 0), (4, 2, 2, 3)]
+    {
+        check_subtree::<BinaryField128>(log_height, arity, cap_height, upper);
+        check_subtree::<Poly64>(log_height, arity, cap_height, upper);
+    }
+}
+
 #[test]
 fn native_tower_and_polynomial_mmcs_match_mixed_height_caps_and_zero_depth() {
     for words in [false, true] {

@@ -43,12 +43,14 @@ fn protocol(rows: usize, width: usize) -> OpeningProtocol {
 }
 
 /// Private-input offsets of one authenticated oracle: `size` rows per query,
-/// then each row's `depth` sibling digests of sixteen words.
+/// then `path_words` path words per query. A coset below the cap layer has
+/// one path, the siblings above its Merkle subtree; otherwise each row has a
+/// full path.
 struct Oracle {
     rows: usize,
     paths: usize,
     size: usize,
-    depth: usize,
+    path_words: usize,
 }
 
 /// Private-input offsets of each witness class, in `allocate_native_targets` order.
@@ -72,17 +74,19 @@ fn offsets(config: &BinaryPcsConfig, protocol: &OpeningProtocol, cap_height: usi
     let mut cursor = 2 * n;
     let evals = cursor;
     cursor += claims;
-    let oracle = |cursor: &mut usize, arity: usize, depth: usize| {
+    let oracle = |cursor: &mut usize, start: usize, arity: usize| {
         let size = 1usize << arity;
+        let depth = log_domain - start - cap_height;
+        let path_words = 16 * depth.checked_sub(arity).unwrap_or(size * depth);
         let rows = *cursor;
         *cursor += shape.num_pairs * size;
         let paths = *cursor;
-        *cursor += shape.num_pairs * size * depth * 16;
+        *cursor += shape.num_pairs * path_words;
         Oracle {
             rows,
             paths,
             size,
-            depth,
+            path_words,
         }
     };
     let mut rounds = Vec::new();
@@ -90,10 +94,10 @@ fn offsets(config: &BinaryPcsConfig, protocol: &OpeningProtocol, cap_height: usi
     while start < n {
         let arity = k.min(n - start);
         cursor += 16 << cap_height;
-        rounds.push(oracle(&mut cursor, arity, log_domain - start - cap_height));
+        rounds.push(oracle(&mut cursor, start, arity));
         start += k;
     }
-    let base = oracle(&mut cursor, k, log_domain - cap_height);
+    let base = oracle(&mut cursor, 0, k);
     let final_codeword = cursor;
     cursor += shape.final_codeword_len;
     let pow = cursor;
@@ -288,7 +292,13 @@ macro_rules! check {
             .first()
             .expect("every config commits a round oracle");
         assert!(!tamper(round.rows, F::ONE), "round oracle row");
+        assert!(
+            !tamper(round.rows + round.size - 1, F::ONE),
+            "round oracle row at a nonzero coset offset"
+        );
         assert!(!tamper(o.base.rows, F::ONE), "base row");
+        // The base coset lies below the cap, so its path starts above the subtree.
+        assert!(o.base.path_words > 0);
         assert!(!tamper(o.base.paths, F::ONE), "Merkle sibling word");
         assert!(pcs_shape.final_codeword_len > 1);
         assert!(
@@ -306,7 +316,7 @@ macro_rules! check {
         let mut duplicate = private.clone();
         duplicate.copy_within(o.queries..o.queries + bits, o.queries + bits);
         for oracle in o.rounds.iter().chain([&o.base]) {
-            let paths = oracle.size * oracle.depth * 16;
+            let paths = oracle.path_words;
             duplicate.copy_within(
                 oracle.rows..oracle.rows + oracle.size,
                 oracle.rows + oracle.size,
@@ -336,7 +346,7 @@ macro_rules! check {
         swap(&mut swapped, o.queries, bits);
         for oracle in o.rounds.iter().chain([&o.base]) {
             swap(&mut swapped, oracle.rows, oracle.size);
-            swap(&mut swapped, oracle.paths, oracle.size * oracle.depth * 16);
+            swap(&mut swapped, oracle.paths, oracle.path_words);
         }
         assert!(!run(&circuit, &public, &swapped), "unsorted query indices");
         if <$base as RecursiveBinaryTowerField>::RAW_BITS < 128 {
@@ -378,6 +388,13 @@ fn native_basefold_batched_folds_with_cap_and_grinding() {
 #[test]
 fn native_basefold_fold_arity_four() {
     check!(F, 8, 4, 0, 0, false);
+}
+#[test]
+fn native_basefold_cosets_at_and_into_the_cap_layer() {
+    // Log domain 7, cap height 3: the base coset has two siblings above its
+    // subtree, the first round's subtree root is a cap root, and the second
+    // round's cosets reach into the cap, so each symbol meets its own cap root.
+    check!(F, 6, 2, 3, 0, false);
 }
 #[test]
 fn tower32_basefold_rows_stay_narrow() {

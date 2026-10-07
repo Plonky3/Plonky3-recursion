@@ -390,6 +390,128 @@ where
         )
     }
 
+    /// Constrains every leaf of one complete aligned subtree of a single-matrix
+    /// byte-hash MMCS commitment of `height` rows.
+    ///
+    /// `leaves[i]` is the exact byte row at position `(upper << k) | i`, where
+    /// `leaves.len() = 2^k` divides `height` and `index_bits` are the
+    /// little-endian bits of `upper`. Leaves hash as in
+    /// [`Self::verify_byte_hash_mmcs_opening_bytes`] and compress pairwise, even
+    /// position on the left, for `k` levels. The subtree root then takes the
+    /// `siblings` above it to the cap root selected by the high index bits, as
+    /// a leaf of a tree of `height / 2^k` rows.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitBuilderError::NonPrimitiveOpArity`] if the leaf count is not a
+    /// power of two dividing `height`, or as
+    /// [`Self::verify_byte_hash_mmcs_opening_bytes`] at the reduced height.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_subtree_bytes<BF>(
+        &mut self,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.verify_byte_hash_mmcs_subtree_with(
+            leaves,
+            height,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| builder.byte_hash_bytes::<BF>(hash, row),
+            |builder, left, right| builder.byte_hash_compress::<BF>(hash, left, right),
+        )
+    }
+
+    /// [`Self::verify_byte_hash_mmcs_subtree_bytes`] under an explicit circuit
+    /// host, hashing and compressing as
+    /// [`Self::verify_byte_hash_mmcs_opening_bytes_with_host`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_subtree_bytes`] and the host's hash.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_subtree_bytes_with_host<H>(
+        &mut self,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<F>,
+    {
+        H::check_hash(hash)?;
+        self.verify_byte_hash_mmcs_subtree_with(
+            leaves,
+            height,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| {
+                let digest = H::hash_bytes(builder, hash, row)?;
+                H::words_from_bytes(builder, &digest)
+            },
+            |builder, left, right| H::compress(builder, hash, left, right),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_byte_hash_mmcs_subtree_with(
+        &mut self,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+        mut hash_leaf: impl FnMut(&mut Self, &[ExprId]) -> Result<Vec<ExprId>, CircuitBuilderError>,
+        compress: impl Fn(&mut Self, &[ExprId], &[ExprId]) -> Result<Vec<ExprId>, CircuitBuilderError>
+        + Copy,
+    ) -> Result<(), CircuitBuilderError> {
+        if !leaves.len().is_power_of_two() || !height.is_multiple_of(leaves.len()) {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "MmcsSubtreeOpening",
+                expected: format!("a power-of-two leaf count dividing the height {height}"),
+                got: leaves.len(),
+            });
+        }
+        // The subtree root is the single leaf digest of the reduced tree, so
+        // every shape check at that height precedes any leaf hashing.
+        self.verify_byte_hash_mmcs_opening_with(
+            &[Vec::new()],
+            &[height / leaves.len()],
+            index_bits,
+            siblings,
+            cap,
+            |builder, _| {
+                let mut layer = leaves
+                    .iter()
+                    .map(|leaf| hash_leaf(builder, leaf))
+                    .collect::<Result<Vec<_>, _>>()?;
+                while layer.len() > 1 {
+                    layer = layer
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|[left, right]| compress(builder, left, right))
+                        .collect::<Result<_, _>>()?;
+                }
+                Ok(layer.pop().expect("a power-of-two leaf count is nonempty"))
+            },
+            compress,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn verify_byte_hash_mmcs_opening_with(
         &mut self,

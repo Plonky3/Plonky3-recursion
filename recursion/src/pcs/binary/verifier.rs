@@ -37,7 +37,9 @@ use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 /// One authenticated folded oracle. Digests are sixteen natural-order u16
 /// limbs. Rows and paths have native query order, including projected duplicates.
-/// Each row contains one checked binary symbol and each path belongs to that row.
+/// Each row contains one checked binary symbol. A query coset below the cap
+/// layer has one path, the siblings above its Merkle subtree; otherwise each
+/// path belongs to one row.
 #[derive(Clone, Debug)]
 pub struct BinaryOracleOpeningTargets<T = BinaryTower128Target> {
     pub cap: Vec<Vec<ExprId>>,
@@ -675,12 +677,34 @@ where
                 };
                 let size = 1usize << arity;
                 let coset = &rows[q * size..(q + 1) * size];
-                for (offset, row) in coset.iter().enumerate().filter(|_| self.grouping.is_none()) {
+                let width = if batch == 0 { F::RAW_BITS } else { E::RAW_BITS };
+                let subtree = coset_subtree_depth(&self.config, self.cap_height, start, arity);
+                if self.grouping.is_none() && subtree.is_some() {
+                    // Leaf `offset` sits at position `upper << arity | offset`,
+                    // so the coset is the subtree at the query's upper bits.
+                    let leaves = coset
+                        .iter()
+                        .map(|row| P::leaf_bytes::<H>(circuit, row, width))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    H::authenticate_subtree(
+                        circuit,
+                        self.hash,
+                        &leaves,
+                        1usize << (log_domain - start),
+                        &index[start + arity..],
+                        &paths[q],
+                        cap,
+                    )?;
+                }
+                for (offset, row) in coset
+                    .iter()
+                    .enumerate()
+                    .filter(|_| self.grouping.is_none() && subtree.is_none())
+                {
                     let mut leaf_index = index[start..].to_vec();
                     for (b, bit) in leaf_index[..arity].iter_mut().enumerate() {
                         *bit = if offset >> b & 1 == 1 { one } else { zero };
                     }
-                    let width = if batch == 0 { F::RAW_BITS } else { E::RAW_BITS };
                     let bytes = P::leaf_bytes::<H>(circuit, row, width)?;
                     H::authenticate_leaf(
                         circuit,
@@ -772,7 +796,6 @@ where
                 ));
             }
         }
-        let log_domain = self.config.num_variables() + self.config.log_inv_rate();
         for (batch, (start, arity)) in batches(&self.config).enumerate() {
             let (rows, paths) = if batch == 0 {
                 (&proof.base_rows, &proof.base_paths)
@@ -784,13 +807,15 @@ where
                 )
             };
             let count = shape.num_pairs << arity;
-            let depth = if self.grouping.is_some() {
-                0
-            } else {
-                log_domain - start - self.cap_height
-            };
+            let (per_query, depth) = coset_path_shape(
+                &self.config,
+                self.cap_height,
+                self.grouping.is_some(),
+                start,
+                arity,
+            );
             if rows.len() != count
-                || paths.len() != count
+                || paths.len() != shape.num_pairs * per_query
                 || paths
                     .iter()
                     .any(|p| p.len() != depth || p.iter().any(|d| d.len() != 16))
@@ -856,13 +881,27 @@ where
     }
 }
 
-/// Byte-tree authentication of one serialized BaseFold symbol under a circuit host.
+/// Byte-tree authentication of serialized BaseFold symbols under a circuit host.
 pub(crate) trait BinaryPcsMmcsHost<CF: Field + Eq + Hash>: BinaryCircuitHost<CF> {
     #[allow(clippy::too_many_arguments)]
     fn authenticate_leaf(
         b: &mut CircuitBuilder<CF>,
         hash: ByteHash,
         bytes: Vec<ExprId>,
+        height: usize,
+        index: &[ExprId],
+        path: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError>;
+
+    /// Byte-tree authentication of the serialized symbols at positions
+    /// `upper << k | i`, `i < 2^k = leaves.len()`, as one Merkle subtree;
+    /// `index` holds the bits of `upper` and `path` the siblings above it.
+    #[allow(clippy::too_many_arguments)]
+    fn authenticate_subtree(
+        b: &mut CircuitBuilder<CF>,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
         height: usize,
         index: &[ExprId],
         path: &[Vec<ExprId>],
@@ -893,6 +932,24 @@ where
         b.verify_byte_hash_mmcs_opening_bytes::<BF>(hash, &[bytes], &[height], index, path, cap)?;
         Ok(())
     }
+
+    fn authenticate_subtree(
+        b: &mut CircuitBuilder<EF>,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index: &[ExprId],
+        path: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        // Range checks also give each private sibling limb an ALU creator on
+        // the witness bus. Digests inside the subtree are hash outputs.
+        for &limb in path.iter().flatten() {
+            let _ = b.decompose_to_bits::<BF>(limb, 16)?;
+        }
+        b.verify_byte_hash_mmcs_subtree_bytes::<BF>(hash, leaves, height, index, path, cap)?;
+        Ok(())
+    }
 }
 
 impl BinaryPcsMmcsHost<BinaryField128> for NativeBinaryEncoding {
@@ -919,6 +976,25 @@ impl BinaryPcsMmcsHost<BinaryField128> for NativeBinaryEncoding {
         b.check_construction_limits()?;
         Ok(())
     }
+
+    fn authenticate_subtree(
+        b: &mut CircuitBuilder<BinaryField128>,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index: &[ExprId],
+        path: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        for &limb in path.iter().flatten() {
+            <Self as BinaryCircuitEncoding<BinaryField128>>::decompose_word(b, limb, 16)?;
+        }
+        b.verify_byte_hash_mmcs_subtree_bytes_with_host::<Self>(
+            hash, leaves, height, index, path, cap,
+        )?;
+        b.check_construction_limits()?;
+        Ok(())
+    }
 }
 
 pub(super) fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, usize)> + '_ {
@@ -932,6 +1008,40 @@ pub(super) fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, 
                     .min(config.num_variables() - start),
             )
         })
+}
+
+/// Siblings above the Merkle subtree of an ungrouped query coset at fold
+/// batch `(start, arity)`, or `None` when its `2^arity` leaves reach into the
+/// cap layer and each symbol is authenticated by its own full path.
+pub(super) const fn coset_subtree_depth(
+    config: &BinaryPcsConfig,
+    cap_height: usize,
+    start: usize,
+    arity: usize,
+) -> Option<usize> {
+    (config.num_variables() + config.log_inv_rate() - start - cap_height).checked_sub(arity)
+}
+
+/// Authentication paths per query and siblings per path of the oracle at
+/// fold batch `(start, arity)`. Grouped oracles carry empty paths here.
+pub(super) const fn coset_path_shape(
+    config: &BinaryPcsConfig,
+    cap_height: usize,
+    grouped: bool,
+    start: usize,
+    arity: usize,
+) -> (usize, usize) {
+    match (
+        grouped,
+        coset_subtree_depth(config, cap_height, start, arity),
+    ) {
+        (true, _) => (1 << arity, 0),
+        (false, Some(depth)) => (1, depth),
+        (false, None) => (
+            1 << arity,
+            config.num_variables() + config.log_inv_rate() - start - cap_height,
+        ),
+    }
 }
 
 pub(crate) fn observe_seed<F, BF, EF>(

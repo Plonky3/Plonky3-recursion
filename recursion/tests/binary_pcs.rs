@@ -46,6 +46,24 @@ fn batches(config: &BinaryPcsConfig) -> impl Iterator<Item = (usize, usize)> + '
 
 type RoundOpening = (Vec<[u8; 32]>, Vec<Native>, Vec<Vec<[u8; 32]>>);
 
+/// Circuit path layout of one restored oracle: a query coset below the cap
+/// layer keeps only its offset-0 siblings above the coset's subtree.
+fn circuit_paths(
+    config: &BinaryPcsConfig,
+    cap_height: usize,
+    (start, arity): (usize, usize),
+    paths: &[Vec<[u8; 32]>],
+) -> Vec<Vec<[u8; 32]>> {
+    let depth = config.num_variables() + config.log_inv_rate() - start - cap_height;
+    if arity > depth {
+        return paths.to_vec();
+    }
+    paths
+        .chunks(1 << arity)
+        .map(|coset| coset[0][arity..].to_vec())
+        .collect()
+}
+
 struct Fixture {
     imported: NativeBinaryPcsInput,
     config: BinaryPcsConfig,
@@ -390,7 +408,8 @@ where
     let rounds = fixture
         .rounds
         .iter()
-        .map(|(cap, rows, paths)| BinaryOracleOpeningTargets {
+        .zip(batches(&fixture.config).skip(1))
+        .map(|((cap, rows, paths), batch)| BinaryOracleOpeningTargets {
             cap: cap
                 .iter()
                 .map(|d| digest(&mut builder, &mut values, d))
@@ -399,7 +418,7 @@ where
                 .iter()
                 .map(|&x| field(&mut builder, &mut values, x))
                 .collect(),
-            paths: paths
+            paths: circuit_paths(&fixture.config, cap_height, batch, paths)
                 .iter()
                 .map(|p| {
                     p.iter()
@@ -414,8 +433,8 @@ where
         .iter()
         .map(|&x| field(&mut builder, &mut values, x))
         .collect();
-    let base_paths = fixture
-        .base_paths
+    let base_batch = (0, fixture.config.log_folding_factor());
+    let base_paths = circuit_paths(&fixture.config, cap_height, base_batch, &fixture.base_paths)
         .iter()
         .map(|p| {
             p.iter()
@@ -556,7 +575,7 @@ fn malformed_geometry_and_target_shapes_return_errors() {
         evals: vec![OpeningBatch::new(vec![zero.clone()], vec![zero.clone()])],
         rounds: vec![],
         base_rows: vec![zero.clone(); 4],
-        base_paths: vec![vec![vec![ExprId::ZERO; 16]; 2]; 4],
+        base_paths: vec![vec![vec![ExprId::ZERO; 16]; 1]; 2],
         final_codeword: vec![zero.clone(); 2],
         pow_witness: zero,
         query_indices: vec![vec![ExprId::ZERO]; 2],

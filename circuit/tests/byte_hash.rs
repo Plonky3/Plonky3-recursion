@@ -144,6 +144,98 @@ fn odd_width_binary_byte_leaves_match_native_mmcs() {
 }
 
 #[test]
+fn prime_subtree_binds_every_leaf_its_order_and_the_upper_path() {
+    // Height 16, cap height 1: the 4-leaf subtree at upper index 1 is a right
+    // child with one sibling above it and meets the first cap root.
+    let (log_height, arity, cap_height, upper) = (4, 2, 1, 1);
+    let size = 1 << arity;
+    for hash in [ByteHash::Keccak256, ByteHash::Blake3] {
+        macro_rules! opening {
+            ($params:ident) => {{
+                let mmcs = $params::LevelMmcs::<BinaryField8>::new(
+                    $params::FieldHash::new($params::byte_hash()),
+                    $params::Compress::new($params::byte_hash()),
+                    cap_height,
+                );
+                let matrix = RowMajorMatrix::new(
+                    (0..3 << log_height)
+                        .map(|i| BinaryField8::from_repr((i * 19 + 7) as u8))
+                        .collect(),
+                    3,
+                );
+                let (commitment, data) = mmcs.commit(vec![matrix]);
+                let openings: Vec<_> = (0..size)
+                    .map(|offset| mmcs.open_batch(upper << arity | offset, &data))
+                    .collect();
+                let mut values: Vec<_> = openings
+                    .iter()
+                    .flat_map(|opening| &opening.opened_values[0])
+                    .map(|x| EF::from_u8(x.to_repr()))
+                    .collect();
+                values.extend(
+                    (0..log_height - arity).map(|bit| EF::from_bool(upper >> bit & 1 == 1)),
+                );
+                for digest in openings[0].opening_proof[arity..]
+                    .iter()
+                    .chain(commitment.roots())
+                {
+                    values.extend(bytes_to_limbs(digest).into_iter().map(EF::from_u16));
+                }
+                values
+            }};
+        }
+        let mut builder = CircuitBuilder::<EF>::new();
+        match hash {
+            ByteHash::Keccak256 => builder.enable_keccak_f1600::<BabyBear>(),
+            ByteHash::Blake3 => builder.enable_blake3_compress::<BabyBear>(),
+        }
+        let mut inputs = |count| {
+            (0..count)
+                .map(|_| builder.public_input())
+                .collect::<Vec<_>>()
+        };
+        let leaves: Vec<_> = (0..size).map(|_| inputs(3)).collect();
+        let bits = inputs(log_height - arity);
+        let siblings = vec![inputs(16)];
+        let cap: Vec<_> = (0..1 << cap_height).map(|_| inputs(16)).collect();
+        builder
+            .verify_byte_hash_mmcs_subtree_bytes::<BabyBear>(
+                hash,
+                &leaves,
+                1 << log_height,
+                &bits,
+                &siblings,
+                &cap,
+            )
+            .unwrap();
+        let circuit = builder.build().unwrap();
+        let values = match hash {
+            ByteHash::Keccak256 => opening!(keccak),
+            ByteHash::Blake3 => opening!(blake3),
+        };
+        let runs = |values: &[EF]| {
+            let mut runner = circuit.runner();
+            runner.set_public_inputs(values).is_ok() && runner.run().is_ok()
+        };
+        assert!(runs(&values), "{hash:?} honest subtree");
+        // Each leaf, both upper index bits, the sibling and the selected root.
+        let changed = (0..size)
+            .map(|offset| 3 * offset + 1)
+            .chain([12, 13, 14 + 5, 30]);
+        for changed in changed {
+            let mut wrong = values.clone();
+            wrong[changed] += EF::ONE;
+            assert!(!runs(&wrong), "{hash:?}, input {changed}");
+        }
+        let mut swapped = values.clone();
+        for i in 0..3 {
+            swapped.swap(3 + i, 6 + i);
+        }
+        assert!(!runs(&swapped), "{hash:?}, middle leaves swapped");
+    }
+}
+
+#[test]
 fn unrepresentable_merkle_height_returns_an_error_without_panicking() {
     let mut builder = CircuitBuilder::<EF>::new();
     let leaf = builder.public_input();

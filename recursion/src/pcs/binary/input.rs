@@ -21,7 +21,7 @@ use p3_sumcheck::strategy::Basis;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, SumcheckData};
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 
-use super::verifier::batches;
+use super::verifier::{batches, coset_path_shape, coset_subtree_depth};
 use super::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcsVerifier,
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
@@ -140,7 +140,16 @@ impl BinaryPcsInputShape {
                 ))
             })
             .collect::<Result<_, VerificationError>>()?;
-        let log_domain = self.config.num_variables() + self.config.log_inv_rate();
+        let paths = |start: usize, arity: usize| {
+            let (per_query, depth) = coset_path_shape(
+                &self.config,
+                self.cap_height,
+                self.grouping.is_some(),
+                start,
+                arity,
+            );
+            (shape.num_pairs * per_query, depth)
+        };
         let mut rounds = Vec::new();
         for (start, arity) in batches(&self.config).skip(1) {
             let cap = (0..1usize << self.cap_height)
@@ -149,11 +158,7 @@ impl BinaryPcsInputShape {
             let (rows, paths) = alloc_oracle(
                 circuit,
                 shape.num_pairs << arity,
-                if self.grouping.is_some() {
-                    0
-                } else {
-                    log_domain - start - self.cap_height
-                },
+                paths(start, arity),
                 &mut field,
             )?;
             rounds.push(BinaryOracleOpeningTargets { cap, rows, paths });
@@ -161,11 +166,7 @@ impl BinaryPcsInputShape {
         let (base_rows, base_paths) = alloc_oracle(
             circuit,
             shape.num_pairs << self.config.log_folding_factor(),
-            if self.grouping.is_some() {
-                0
-            } else {
-                log_domain - self.cap_height
-            },
+            paths(0, self.config.log_folding_factor()),
             &mut field,
         )?;
         let final_codeword = (0..shape.final_codeword_len)
@@ -225,6 +226,32 @@ impl NativeBinaryPcsInput {
         &self.queries
     }
 
+    /// Path digests of the oracle at fold batch `(start, arity)` in circuit
+    /// input order. A query coset authenticated as one Merkle subtree takes
+    /// its offset-0 siblings above the subtree; otherwise every restored path.
+    fn circuit_path_digests<'a>(
+        &self,
+        paths: &'a [Vec<[u8; 32]>],
+        start: usize,
+        arity: usize,
+    ) -> Result<Vec<&'a [u8; 32]>, VerificationError> {
+        if self.shape.grouping.is_some()
+            || coset_subtree_depth(&self.shape.config, self.shape.cap_height, start, arity)
+                .is_none()
+        {
+            return Ok(paths.iter().flatten().collect());
+        }
+        let mut digests = Vec::new();
+        for coset in paths.chunks(1usize << arity) {
+            digests.extend(
+                coset[0]
+                    .get(arity..)
+                    .ok_or_else(|| invalid("binary PCS restored path is shorter than its coset"))?,
+            );
+        }
+        Ok(digests)
+    }
+
     /// Packs exactly the private input order of `shape().allocate_targets()`.
     /// A different verifier shape is rejected before packing.
     pub fn private_values<EF: Field>(
@@ -251,21 +278,22 @@ impl NativeBinaryPcsInput {
                 push_field(&mut values, raw);
             }
         }
-        for round in &self.rounds {
+        for (round, (start, arity)) in self.rounds.iter().zip(batches(&self.shape.config).skip(1)) {
             for digest in &round.cap {
                 push_digest(&mut values, digest);
             }
             for &raw in &round.rows {
                 push_field(&mut values, raw);
             }
-            for digest in round.paths.iter().flatten() {
+            for digest in self.circuit_path_digests(&round.paths, start, arity)? {
                 push_digest(&mut values, digest);
             }
         }
         for &raw in &self.base_rows {
             push_field(&mut values, raw);
         }
-        for digest in self.base_paths.iter().flatten() {
+        let base_arity = self.shape.config.log_folding_factor();
+        for digest in self.circuit_path_digests(&self.base_paths, 0, base_arity)? {
             push_digest(&mut values, digest);
         }
         for &raw in &self.final_codeword {
@@ -321,12 +349,12 @@ impl NativeBinaryPcsInput {
                     .map(|&raw| BinaryField128::from_repr(raw)),
             );
         }
-        for round in &self.rounds {
+        for (round, (start, arity)) in self.rounds.iter().zip(batches(&self.shape.config).skip(1)) {
             for digest in &round.cap {
                 push_digest(&mut values, digest)?;
             }
             values.extend(round.rows.iter().map(|&raw| BinaryField128::from_repr(raw)));
-            for digest in round.paths.iter().flatten() {
+            for digest in self.circuit_path_digests(&round.paths, start, arity)? {
                 push_digest(&mut values, digest)?;
             }
         }
@@ -335,7 +363,8 @@ impl NativeBinaryPcsInput {
                 .iter()
                 .map(|&raw| BinaryField128::from_repr(raw)),
         );
-        for digest in self.base_paths.iter().flatten() {
+        let base_arity = self.shape.config.log_folding_factor();
+        for digest in self.circuit_path_digests(&self.base_paths, 0, base_arity)? {
             push_digest(&mut values, digest)?;
         }
         values.extend(
@@ -727,13 +756,13 @@ pub(super) fn alloc_digest<EF: Field + Eq + Hash>(circuit: &mut CircuitBuilder<E
 fn alloc_oracle<T, CF: Field + Eq + Hash>(
     circuit: &mut CircuitBuilder<CF>,
     count: usize,
-    depth: usize,
+    (paths, depth): (usize, usize),
     field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
 ) -> Result<super::OracleOpeningTargets<T>, VerificationError> {
     let rows = (0..count)
         .map(|_| field(circuit))
         .collect::<Result<_, _>>()?;
-    let paths = (0..count)
+    let paths = (0..paths)
         .map(|_| (0..depth).map(|_| alloc_digest(circuit)).collect())
         .collect();
     Ok((rows, paths))
