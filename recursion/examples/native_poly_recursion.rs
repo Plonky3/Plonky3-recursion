@@ -33,6 +33,11 @@ use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryP
 use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
+/// Freed codewords and traces go back to the OS promptly, which keeps peak footprint near
+/// the live working set between the large proving buffers.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 type F = Poly64;
 #[derive(Parser)]
 struct Args {
