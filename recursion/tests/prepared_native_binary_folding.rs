@@ -15,8 +15,8 @@ use p3_recursion::artifact::{
 };
 use p3_recursion::pcs::binary::{BinaryCodewordGrouping, RecursiveBinaryTowerField};
 use p3_recursion::prepared::{
-    NativeBinaryFoldingRecursionOptions, PreparedNativeBinaryLayer,
-    PreparedNativeGroupedBinaryLayer,
+    NativeBinaryFoldingRecursionOptions, PreparedNativeBinaryGroupedLayer,
+    PreparedNativeBinaryLayer,
 };
 use p3_recursion::verifier::{VerificationError, VerifierLimits};
 
@@ -320,7 +320,7 @@ fn grouped_cap_above_log_inv_rate_is_rejected_before_graph_construction() {
         wide.preprocessed.log_inv_rate = preprocessed;
         wide.cap_height = 2;
         let error =
-            PreparedNativeGroupedBinaryLayer::from_native_authority_with_construction_limits(
+            PreparedNativeBinaryGroupedLayer::from_native_authority_with_construction_limits(
                 &authority,
                 wide,
                 &limits(),
@@ -348,7 +348,7 @@ fn grouped_layer_rejects_a_token_of_another_child_authority() {
     assert_eq!(at_rate.main.log_inv_rate, 1);
     assert_eq!(at_rate.preprocessed.log_inv_rate, 1);
     at_rate.cap_height = 1;
-    let layer = PreparedNativeGroupedBinaryLayer::from_native_authority_with_construction_limits(
+    let layer = PreparedNativeBinaryGroupedLayer::from_native_authority_with_construction_limits(
         &authority,
         at_rate,
         &limits(),
@@ -377,7 +377,7 @@ fn grouped_folding_layer_proves_and_binds_the_original_statement() {
     let (prover, authority, public, trace) = grouped_child::<F>(0);
     let proof = prover.prove(&public, vec![trace]).unwrap();
     let checked = authority.verify_native(&proof, &public).unwrap();
-    let layer = PreparedNativeGroupedBinaryLayer::from_native_authority_with_construction_limits(
+    let layer = PreparedNativeBinaryGroupedLayer::from_native_authority_with_construction_limits(
         &authority,
         options(),
         &limits(),

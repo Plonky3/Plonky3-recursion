@@ -54,8 +54,8 @@ use p3_recursion::artifact::{
 };
 use p3_recursion::pcs::binary::BinaryCodewordGrouping;
 use p3_recursion::prepared::{
-    NativeBinaryFoldingRecursionOptions, NativeBinaryRecursionOptions, PreparedNativeBinaryLayer,
-    PreparedNativeBinaryWhirLayer, PreparedNativeGroupedBinaryLayer,
+    NativeBinaryFoldingRecursionOptions, NativeBinaryRecursionOptions,
+    PreparedNativeBinaryGroupedLayer, PreparedNativeBinaryLayer, PreparedNativeBinaryWhirLayer,
 };
 use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -461,7 +461,7 @@ fn run_grouped_folding(args: &Args) -> Result<(), Box<dyn Error>> {
     let (limits, construction_limits) = circuit_limits(args);
     println!("Preparing native recursion layer 1...");
     let mut layer =
-        PreparedNativeGroupedBinaryLayer::from_native_authority_with_construction_limits(
+        PreparedNativeBinaryGroupedLayer::from_native_authority_with_construction_limits(
             &authority,
             folding_options(1, args),
             &limits,
@@ -495,7 +495,7 @@ fn run_grouped_folding(args: &Args) -> Result<(), Box<dyn Error>> {
             println!("Preparing native recursion layer {}...", depth + 1);
             let authority = layer.into_authority();
             layer =
-                PreparedNativeGroupedBinaryLayer::from_native_authority_with_construction_limits(
+                PreparedNativeBinaryGroupedLayer::from_native_authority_with_construction_limits(
                     &authority,
                     folding_options(depth + 1, args),
                     &limits,

@@ -517,7 +517,7 @@ where
 /// leaf (`BinaryCodewordGrouping::Folding` for base and rounds, main and
 /// preprocessed). Retains the child authority's identity, native verifier
 /// graph, product-bus relation, and matched proving/verification keys.
-pub struct PreparedNativeGroupedBinaryLayer<Base = F>
+pub struct PreparedNativeBinaryGroupedLayer<Base = F>
 where
     Base: RecursiveBinaryTowerField,
 {
@@ -526,7 +526,7 @@ where
     authority: BinaryNativeGroupedAuthority<F, F, OutputAir>,
 }
 
-impl<Base: RecursiveBinaryTowerField> PreparedNativeGroupedBinaryLayer<Base>
+impl<Base: RecursiveBinaryTowerField> PreparedNativeBinaryGroupedLayer<Base>
 where
     F: ExtensionField<Base>,
 {
@@ -624,7 +624,7 @@ where
         &self.core.circuit
     }
     /// Output authority, suitable as the independently trusted child of another
-    /// `PreparedNativeGroupedBinaryLayer`. Its statement uses output AIR order.
+    /// `PreparedNativeBinaryGroupedLayer`. Its statement uses output AIR order.
     pub const fn authority(&self) -> &BinaryNativeGroupedAuthority<F, F, OutputAir> {
         &self.authority
     }
