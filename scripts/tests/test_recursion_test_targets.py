@@ -57,7 +57,7 @@ class RecursionTestTargetsTests(unittest.TestCase):
     def test_ci_build_groups_cover_every_workspace_target_once(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
         job = workflow["jobs"]["workspace_tests"]
-        groups = job["strategy"]["matrix"]["shard"]
+        groups = job["strategy"]["matrix"]["include"]
         selected = []
         kinds = []
         for group in groups:
@@ -79,6 +79,31 @@ class RecursionTestTargetsTests(unittest.TestCase):
         self.assertEqual(set(selected), expected)
         self.assertEqual(set(Counter(selected).values()), {1})
         self.assertEqual(Counter(kinds), Counter({"--lib": 1, "--bins": 1, "--examples": 1, "--benches": 1}))
+
+    def test_ci_partitions_cover_each_build_group_once_per_architecture(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+        matrix = workflow["jobs"]["workspace_tests"]["strategy"]["matrix"]
+        self.assertIn("partition", matrix)
+        self.assertEqual(
+            Counter(group["shard"] for group in matrix["include"]),
+            Counter(matrix["shard"]),
+        )
+        for group in matrix["include"]:
+            for os in matrix["os"]:
+                for features in matrix["features"]:
+                    with self.subTest(shard=group["shard"], os=os, features=features):
+                        partitions = []
+                        for partition in matrix["partition"]:
+                            row = dict(
+                                shard=group["shard"], os=os,
+                                features=features, partition=partition,
+                            )
+                            if not any(excluded.items() <= row.items() for excluded in matrix["exclude"]):
+                                partitions.append(partition)
+                        self.assertEqual(
+                            Counter(partitions),
+                            Counter(range(1, group["partition_count"] + 1)),
+                        )
 
 
 if __name__ == "__main__":
