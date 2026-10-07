@@ -127,6 +127,19 @@ jobs:
           du -sh target || true
           du -sh ~/.cargo/registry ~/.cargo/git || true
 
+      # Single binary verifier tests peak close to the runner's 16 GB of RAM.
+      # Swap absorbs a short overshoot instead of losing the runner.
+      - name: Add swap
+        if: ${{ matrix.shard.name != 'core' }}
+        run: |
+          set -eux
+          sudo fallocate -l 16G /extra.swap
+          sudo chmod 600 /extra.swap
+          sudo mkswap /extra.swap
+          sudo swapon /extra.swap
+          swapon --show
+          free -h
+
       - name: Test shard (workspace)
         run: >-
           cargo nextest run --locked --workspace --timings
