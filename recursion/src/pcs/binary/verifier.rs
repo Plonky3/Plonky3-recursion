@@ -448,7 +448,13 @@ where
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.verify_at_using::<TowerRelation<F, E>, PrimeBinaryEncoding<BF>, EF>(
-            circuit, challenger, cap, points, proof, false,
+            circuit,
+            challenger,
+            cap,
+            points,
+            proof,
+            false,
+            self.ordinary_leaves(),
         )
     }
 
@@ -473,10 +479,12 @@ where
             cap,
             points,
             proof,
+            self.ordinary_leaves(),
         )
     }
 
-    /// Same post-query opening under an explicit scalar policy and circuit host.
+    /// Same post-query opening under an explicit scalar policy, circuit host
+    /// and coset leaf mode.
     pub(crate) fn after_queries_using<P, H, CF>(
         &self,
         circuit: &mut CircuitBuilder<CF>,
@@ -484,23 +492,29 @@ where
         cap: &[Vec<ExprId>],
         points: &[Vec<P::ChallengeTarget>],
         proof: &BinaryPcs128ProofTargets<P::ChallengeTarget>,
+        leaves: CosetLeaves,
     ) -> Result<BinaryQueryContinuation, VerificationError>
     where
         CF: Field + Eq + Hash,
         H: BinaryPcsMmcsHost<CF>,
         P: BinaryFoldPolicy<CF, Base = F, Challenge = E>,
     {
-        self.check_targets(cap, points, proof)?;
+        self.check_targets_with(cap, points, proof, leaves)?;
         let seed = self.opening_seeds.first().cloned().unwrap_or_else(|| {
             domain_separator_seed(&BinaryPcsShape::new(&self.config).domain_separator::<F, E>())
         });
         let bytes = seed_bytes_with_host::<F, H, CF>(circuit, &seed)?;
         let challenger =
             continuation.resume_with_observation_with_host::<H, CF>(circuit, &bytes)?;
-        self.verify_at_using::<P, H, CF>(circuit, challenger, cap, points, proof, true)
+        self.verify_at_using::<P, H, CF>(circuit, challenger, cap, points, proof, true, leaves)
     }
 
-    /// Same opening relation under an explicit scalar policy and circuit host.
+    /// Same opening relation under an explicit scalar policy, circuit host
+    /// and coset leaf mode.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The verifier keeps protocol inputs explicit."
+    )]
     pub(crate) fn verify_at_using<P, H, CF>(
         &self,
         circuit: &mut CircuitBuilder<CF>,
@@ -509,13 +523,14 @@ where
         points: &[Vec<P::ChallengeTarget>],
         proof: &BinaryPcs128ProofTargets<P::ChallengeTarget>,
         first_seed_observed: bool,
+        leaves: CosetLeaves,
     ) -> Result<BinaryQueryContinuation, VerificationError>
     where
         CF: Field + Eq + Hash,
         H: BinaryPcsMmcsHost<CF>,
         P: BinaryFoldPolicy<CF, Base = F, Challenge = E>,
     {
-        self.check_targets(cap, points, proof)?;
+        self.check_targets_with(cap, points, proof, leaves)?;
         H::check_hash(self.hash)?;
         for value in points
             .iter()
@@ -679,7 +694,7 @@ where
                 let coset = &rows[q * size..(q + 1) * size];
                 let width = if batch == 0 { F::RAW_BITS } else { E::RAW_BITS };
                 let subtree = coset_subtree_depth(&self.config, self.cap_height, start, arity);
-                if self.grouping.is_none() && subtree.is_some() {
+                if leaves == CosetLeaves::Symbols && subtree.is_some() {
                     // Leaf `offset` sits at position `upper << arity | offset`,
                     // so the coset is the subtree at the query's upper bits.
                     let words = coset
@@ -712,10 +727,38 @@ where
                         )?;
                     }
                 }
+                if leaves == CosetLeaves::Coset {
+                    // The grouped leaf at `upper` holds the symbols at
+                    // `upper << arity | offset` in ascending offset order.
+                    let words = coset
+                        .iter()
+                        .map(|row| P::leaf_words(circuit, row, width))
+                        .collect::<Result<Option<Vec<_>>, _>>()?;
+                    let leaf = if let Some(words) = words {
+                        words.concat()
+                    } else {
+                        // Narrow symbols straddle words, so the whole leaf's
+                        // bytes are packed together.
+                        let mut bytes = Vec::new();
+                        for row in coset {
+                            bytes.extend(P::leaf_bytes::<H>(circuit, row, width)?);
+                        }
+                        H::words_from_bytes(circuit, &bytes)?
+                    };
+                    H::authenticate_subtree_words(
+                        circuit,
+                        self.hash,
+                        &[leaf],
+                        1usize << (log_domain - start - arity),
+                        &index[start + arity..],
+                        &paths[q],
+                        cap,
+                    )?;
+                }
                 for (offset, row) in coset
                     .iter()
                     .enumerate()
-                    .filter(|_| self.grouping.is_none() && subtree.is_none())
+                    .filter(|_| leaves == CosetLeaves::Symbols && subtree.is_none())
                 {
                     let mut leaf_index = index[start..].to_vec();
                     for (b, bit) in leaf_index[..arity].iter_mut().enumerate() {
@@ -789,12 +832,31 @@ where
         Ok(())
     }
 
+    /// Leaf mode of every ordinary caller: grouped trees are authenticated by
+    /// the caller's grouped openings, ungrouped trees one symbol per leaf.
+    pub(super) const fn ordinary_leaves(&self) -> CosetLeaves {
+        CosetLeaves::ordinary(self.grouping.is_some())
+    }
+
     pub(crate) fn check_targets<T>(
         &self,
         cap: &[Vec<ExprId>],
         points: &[Vec<T>],
         proof: &BinaryPcs128ProofTargets<T>,
     ) -> Result<(), VerificationError> {
+        self.check_targets_with(cap, points, proof, self.ordinary_leaves())
+    }
+
+    /// Target shapes for the authentication paths of `leaves`, which must
+    /// match the committed trees.
+    pub(super) fn check_targets_with<T>(
+        &self,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<T>],
+        proof: &BinaryPcs128ProofTargets<T>,
+        leaves: CosetLeaves,
+    ) -> Result<(), VerificationError> {
+        check_coset_leaves(&self.config, self.cap_height, self.grouping, leaves)?;
         self.check_cap(cap)?;
         let shape = BinaryPcsShape::new(&self.config);
         if proof.sumcheck.len() != self.config.num_variables()
@@ -835,13 +897,8 @@ where
                 )
             };
             let count = shape.num_pairs << arity;
-            let (per_query, depth) = coset_path_shape(
-                &self.config,
-                self.cap_height,
-                self.grouping.is_some(),
-                start,
-                arity,
-            );
+            let (per_query, depth) =
+                coset_path_shape(&self.config, self.cap_height, leaves, start, arity);
             if rows.len() != count
                 || paths.len() != shape.num_pairs * per_query
                 || paths
@@ -885,7 +942,13 @@ where
     ) -> Result<BinaryQueryContinuation, VerificationError> {
         self.check_native_support()?;
         self.verify_at_using::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
-            b, ch, cap, points, proof, false,
+            b,
+            ch,
+            cap,
+            points,
+            proof,
+            false,
+            CosetLeaves::Symbols,
         )
     }
 
@@ -905,6 +968,7 @@ where
             cap,
             points,
             proof,
+            CosetLeaves::Symbols,
         )
     }
 }
@@ -1092,22 +1156,83 @@ pub(super) const fn coset_subtree_depth(
     (config.num_variables() + config.log_inv_rate() - start - cap_height).checked_sub(arity)
 }
 
+/// How the opening relation authenticates the rows of each query coset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CosetLeaves {
+    /// Ungrouped trees: one leaf per symbol, so a coset below the cap layer
+    /// is one Merkle subtree and otherwise each symbol has its own path.
+    Symbols,
+    /// Grouped trees authenticated by the caller's grouped openings; the
+    /// ordinary paths are empty.
+    External,
+    /// Grouped trees whose leaf is exactly one fold coset: the coset rows,
+    /// in offset order, hash as one leaf with one path per query.
+    Coset,
+}
+
+impl CosetLeaves {
+    pub(super) const fn ordinary(grouped: bool) -> Self {
+        if grouped {
+            Self::External
+        } else {
+            Self::Symbols
+        }
+    }
+}
+
+/// Rejects a leaf mode the committed trees do not support. `Coset` needs
+/// grouped trees whose effective group size at every fold batch
+/// `(start, arity)` is exactly `2^arity`, with the leaf layer at or below
+/// the cap; the size is checked, not the grouping policy.
+pub(super) fn check_coset_leaves(
+    config: &BinaryPcsConfig,
+    cap_height: usize,
+    grouping: Option<[super::grouped_pcs::BinaryCodewordGrouping; 2]>,
+    leaves: CosetLeaves,
+) -> Result<(), VerificationError> {
+    match (leaves, grouping) {
+        (CosetLeaves::Symbols, None) | (CosetLeaves::External, Some(_)) => Ok(()),
+        (CosetLeaves::Coset, Some(grouping)) => {
+            let log_domain = config.num_variables() + config.log_inv_rate();
+            for (batch, (start, arity)) in batches(config).enumerate() {
+                let group =
+                    grouping[usize::from(batch != 0)].effective(config, log_domain - start)?;
+                if group != 1usize << arity
+                    || coset_subtree_depth(config, cap_height, start, arity).is_none()
+                {
+                    return Err(shape_error(
+                        "binary grouped leaf is not one fold coset below the cap",
+                    ));
+                }
+            }
+            Ok(())
+        }
+        (CosetLeaves::Symbols, Some(_)) | (CosetLeaves::External | CosetLeaves::Coset, None) => {
+            Err(shape_error(
+                "binary PCS coset leaf mode does not match the committed trees",
+            ))
+        }
+    }
+}
+
 /// Authentication paths per query and siblings per path of the oracle at
-/// fold batch `(start, arity)`. Grouped oracles carry empty paths here.
+/// fold batch `(start, arity)`. External grouped openings leave these paths
+/// empty. A whole-coset leaf has one path per query, the siblings above that
+/// grouped leaf; [`check_coset_leaves`] keeps the leaf layer below the cap.
 pub(super) const fn coset_path_shape(
     config: &BinaryPcsConfig,
     cap_height: usize,
-    grouped: bool,
+    leaves: CosetLeaves,
     start: usize,
     arity: usize,
 ) -> (usize, usize) {
     match (
-        grouped,
+        leaves,
         coset_subtree_depth(config, cap_height, start, arity),
     ) {
-        (true, _) => (1 << arity, 0),
-        (false, Some(depth)) => (1, depth),
-        (false, None) => (
+        (CosetLeaves::External, _) => (1 << arity, 0),
+        (CosetLeaves::Symbols | CosetLeaves::Coset, Some(depth)) => (1, depth),
+        (CosetLeaves::Symbols | CosetLeaves::Coset, None) => (
             1 << arity,
             config.num_variables() + config.log_inv_rate() - start - cap_height,
         ),

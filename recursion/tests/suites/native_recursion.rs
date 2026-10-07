@@ -8,6 +8,8 @@ mod native_binary_circuit;
 mod native_binary_folding_pcs;
 #[path = "../native_binary_folding_verifier.rs"]
 mod native_binary_folding_verifier;
+#[path = "../native_binary_grouped_folding_pcs.rs"]
+mod native_binary_grouped_folding_pcs;
 #[path = "../native_binary_interpolation.rs"]
 mod native_binary_interpolation;
 #[path = "../native_binary_nonzero.rs"]

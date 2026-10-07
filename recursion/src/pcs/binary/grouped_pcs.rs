@@ -3,20 +3,24 @@
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_binary_field::BinaryField128;
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::BinaryPcsShape;
-use p3_circuit::ops::{BinaryTower128Target, ByteHash};
+use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{ExtensionField, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_sumcheck::OpeningProtocol;
 
-use super::input::{alloc_digest, alloc_field};
-use super::verifier::batches;
+use super::input::{alloc_digest, alloc_field, alloc_native_field};
+use super::verifier::{CosetLeaves, batches, check_coset_leaves};
 use super::whir_plan::invalid;
 use super::{
     BinaryGroupedOraclePlan, BinaryPcs128ProofTargets, BinaryPcsInputShape, BinaryPcsVerifier,
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
 };
+use crate::verifier::binary_field_policy::NativeTower128Relation;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
@@ -136,6 +140,21 @@ impl BinaryGroupedPcsInputShape {
             })
             .collect::<Result<_, VerificationError>>()?;
         Ok(BinaryGroupedPcsProofTargets { opening, oracles })
+    }
+
+    /// Allocates native Tower128 witnesses for openings whose grouped leaf
+    /// is exactly one fold coset, in the order of
+    /// [`super::NativeBinaryGroupedPcsInput::private_native_values`]. Leaves
+    /// are not inputs: the circuit hashes each coset's rows as its leaf, under
+    /// one path per query. Hashes the native host cannot evaluate and groups
+    /// of any other size are rejected before any input is allocated.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<BinaryPcs128ProofTargets<NativeTower128Target>, VerificationError> {
+        <NativeBinaryEncoding as BinaryCircuitHost<BinaryField128>>::check_hash(self.core.hash)?;
+        self.core
+            .allocate_with(b, CosetLeaves::Coset, alloc_native_field)
     }
 }
 
@@ -262,6 +281,20 @@ where
         EF: ExtensionField<BF> + Eq + Hash,
     {
         self.inner.observe_commitment::<BF, EF>(b, ch, cap)
+    }
+
+    /// Same commitment observation under an explicit circuit host.
+    pub fn observe_commitment_with_host<H, CF>(
+        &self,
+        b: &mut CircuitBuilder<CF>,
+        ch: &mut BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+    {
+        self.inner.observe_commitment_with_host::<H, CF>(b, ch, cap)
     }
 
     pub fn sample_challenge<BF, EF>(
@@ -413,5 +446,83 @@ where
             }
         }
         Ok(())
+    }
+}
+
+impl<F> BinaryGroupedPcsVerifier<F, BinaryField128>
+where
+    F: RecursiveBinaryTowerField,
+    BinaryField128: ExtensionField<F>,
+{
+    /// Rejects hashes the native host cannot evaluate and any commitment
+    /// whose effective group at some fold batch is not exactly that batch's
+    /// query coset, including the short last batch.
+    pub(crate) fn check_native_support(&self) -> Result<(), VerificationError> {
+        let inner = &self.inner;
+        check_coset_leaves(
+            &inner.config,
+            inner.cap_height,
+            inner.grouping,
+            CosetLeaves::Coset,
+        )?;
+        <NativeBinaryEncoding as BinaryCircuitHost<BinaryField128>>::check_hash(inner.hash)?;
+        Ok(())
+    }
+
+    /// Complete opening relation over native Tower128 scalars, hashing each
+    /// query coset's rows in offset order as its one grouped leaf. The caller
+    /// binds the commitment and prescribed points to its statement.
+    pub fn verify_at_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<NativeTower128Target>],
+        proof: &BinaryPcs128ProofTargets<NativeTower128Target>,
+    ) -> Result<BinaryQueryContinuation, VerificationError> {
+        self.check_native_support()?;
+        self.inner
+            .verify_at_using::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
+                b,
+                ch,
+                cap,
+                points,
+                proof,
+                false,
+                CosetLeaves::Coset,
+            )
+    }
+
+    /// Native grouped opening immediately after another opening's query phase.
+    pub fn verify_at_native_after_queries(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        continuation: BinaryQueryContinuation,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<NativeTower128Target>],
+        proof: &BinaryPcs128ProofTargets<NativeTower128Target>,
+    ) -> Result<BinaryQueryContinuation, VerificationError> {
+        self.check_native_support()?;
+        self.inner
+            .after_queries_using::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
+                b,
+                continuation,
+                cap,
+                points,
+                proof,
+                CosetLeaves::Coset,
+            )
+    }
+
+    /// Checks native targets against the one-leaf-per-coset shape of
+    /// [`BinaryGroupedPcsInputShape::allocate_native_targets`].
+    pub fn check_native_targets<T>(
+        &self,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<T>],
+        proof: &BinaryPcs128ProofTargets<T>,
+    ) -> Result<(), VerificationError> {
+        self.inner
+            .check_targets_with(cap, points, proof, CosetLeaves::Coset)
     }
 }

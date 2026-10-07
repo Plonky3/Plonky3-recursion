@@ -4,6 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use p3_binary_field::BinaryField128;
 use p3_binary_pcs::GroupedCodewordMmcs;
 use p3_binary_pcs::transcript::BinaryPcsShape;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
@@ -18,7 +19,7 @@ use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 
 use super::grouped_pcs::{BinaryGroupedPcsInputShape, BinaryGroupedPcsVerifier};
 use super::input::{NativeBinaryPcsInput, NativeOracle};
-use super::verifier::batches;
+use super::verifier::{CosetLeaves, batches};
 use super::whir_plan::invalid;
 use super::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
@@ -67,6 +68,36 @@ impl NativeBinaryGroupedPcsInput {
             }
         }
         Ok(values)
+    }
+
+    /// Packs exactly the private input order of
+    /// `shape().allocate_native_targets()`: the logical rows, then one
+    /// grouped path per query coset. Leaves are dropped because the circuit
+    /// hashes the rows themselves. A different verifier shape, or groups
+    /// that are not exactly one fold coset, are rejected before packing.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryGroupedPcsInputShape,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary grouped input belongs to a different verifier",
+            ));
+        }
+        let Some((base, rounds)) = self.oracles.split_first() else {
+            return Err(invalid("binary grouped input has no base oracle"));
+        };
+        if rounds.len() != self.opening.rounds.len() {
+            return Err(invalid(
+                "binary grouped input oracle count does not match its rounds",
+            ));
+        }
+        let mut opening = self.opening.clone();
+        opening.base_paths.clone_from(&base.paths);
+        for (round, oracle) in opening.rounds.iter_mut().zip(rounds) {
+            round.paths.clone_from(&oracle.paths);
+        }
+        opening.pack_native(CosetLeaves::Coset)
     }
 }
 
