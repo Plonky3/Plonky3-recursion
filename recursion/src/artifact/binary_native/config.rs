@@ -34,10 +34,35 @@ use crate::verifier::VerificationError;
 #[derive(Clone, Copy, Debug)]
 pub struct BinaryNativeHash(pub(super) ByteHash);
 impl CryptographicHasher<u8, [u8; 32]> for BinaryNativeHash {
+    /// Batches are grouped for the wider of the two hashes; a whole number of
+    /// its lane groups is also a whole number of the narrower one's.
+    const LANES: usize = {
+        let keccak = <p3_keccak::Keccak256Hash as CryptographicHasher<u8, [u8; 32]>>::LANES;
+        let blake3 = <p3_blake3::Blake3 as CryptographicHasher<u8, [u8; 32]>>::LANES;
+        if keccak > blake3 { keccak } else { blake3 }
+    };
+
     fn hash_iter<I: IntoIterator<Item = u8>>(&self, input: I) -> [u8; 32] {
         match self.0 {
             ByteHash::Keccak256 => p3_keccak::Keccak256Hash.hash_iter(input),
             ByteHash::Blake3 => p3_blake3::Blake3.hash_iter(input),
+        }
+    }
+
+    fn hash_iter_slices<'a, I>(&self, input: I) -> [u8; 32]
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        match self.0 {
+            ByteHash::Keccak256 => p3_keccak::Keccak256Hash.hash_iter_slices(input),
+            ByteHash::Blake3 => p3_blake3::Blake3.hash_iter_slices(input),
+        }
+    }
+
+    fn hash_many(&self, input: &[u8], out: &mut [[u8; 32]]) {
+        match self.0 {
+            ByteHash::Keccak256 => p3_keccak::Keccak256Hash.hash_many(input, out),
+            ByteHash::Blake3 => p3_blake3::Blake3.hash_many(input, out),
         }
     }
 }
@@ -348,4 +373,36 @@ pub(super) const fn tree<F>(hash: ByteHash, cap_height: usize) -> NativeMmcs<F> 
         CompressionFunctionFromHasher::new(BinaryNativeHash(hash)),
         cap_height,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use p3_circuit::ops::ByteHash;
+    use p3_symmetric::CryptographicHasher;
+
+    use super::BinaryNativeHash;
+
+    /// Merkle trees hash rows and node pairs in batches, while the recursive
+    /// verifier recomputes every digest one message at a time. Both must agree.
+    #[test]
+    fn batched_digests_match_single_message_digests() {
+        // Seven messages leave a partial final lane group for every lane count.
+        const MESSAGES: usize = 7;
+        for hash in [ByteHash::Keccak256, ByteHash::Blake3] {
+            let hasher = BinaryNativeHash(hash);
+            // Lengths straddle the Keccak rate of 136 bytes and a Blake3 block.
+            for len in [0, 1, 32, 64, 135, 136, 137, 256, 1100] {
+                let input: Vec<u8> = (0..len * MESSAGES).map(|i| (i * 31 + len) as u8).collect();
+                let mut batched = alloc::vec![[0u8; 32]; MESSAGES];
+                hasher.hash_many(&input, &mut batched);
+                for (index, digest) in batched.iter().enumerate() {
+                    let message = &input[index * len..(index + 1) * len];
+                    assert_eq!(*digest, hasher.hash_iter(message.iter().copied()));
+                    assert_eq!(*digest, hasher.hash_iter_slices([message]));
+                }
+            }
+        }
+    }
 }

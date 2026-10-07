@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 #[path = "common/poseidon1_whir_config.rs"]
+#[allow(clippy::duplicate_mod)]
 mod poseidon1_whir_config;
 
 use p3_circuit::ops::{NpoTypeId, Poseidon1Config};

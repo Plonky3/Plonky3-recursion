@@ -1,5 +1,3 @@
-mod common;
-
 use p3_circuit::ops::NpoTypeId;
 use p3_circuit_prover::{BatchStarkProver, ConstraintProfile, TablePacking};
 use p3_recursion::profile::{

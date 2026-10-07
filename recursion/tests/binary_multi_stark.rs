@@ -402,12 +402,12 @@ fn a_tower64_native_proof_verifies_in_a_prime_field_proof() {
 }
 
 fn prove_bound_statement(circuit: &Circuit<BabyBear>, private: &[BabyBear], public: Vec<BabyBear>) {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
         StatementAirBuilder, StatementPreprocessor, StatementProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     let schema = circuit.statement_schema().unwrap().clone();
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
     prover.register_table_prover(Box::new(StatementProver::<1>::new(schema.clone())));

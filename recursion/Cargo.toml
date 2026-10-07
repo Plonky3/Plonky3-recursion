@@ -9,6 +9,9 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+# Share integration fixture types across a small number of test crates.
+autotests = false
+
 [dependencies]
 p3-maybe-rayon.workspace = true
 
@@ -81,6 +84,46 @@ parallel = [
     "p3-circuit-prover/parallel",
     "p3-poseidon2-circuit-air/parallel",
 ]
+
+[[test]]
+name = "binary_boolean"
+path = "tests/suites/binary_boolean.rs"
+
+[[test]]
+name = "binary_components"
+path = "tests/suites/binary_components.rs"
+
+[[test]]
+name = "binary_poly"
+path = "tests/suites/binary_poly.rs"
+
+[[test]]
+name = "binary_stark"
+path = "tests/suites/binary_stark.rs"
+
+[[test]]
+name = "fri_recursion"
+path = "tests/suites/fri_recursion.rs"
+
+[[test]]
+name = "native_recursion"
+path = "tests/suites/native_recursion.rs"
+
+[[test]]
+name = "prepared_recursion"
+path = "tests/suites/prepared_recursion.rs"
+
+[[test]]
+name = "protocol_contracts"
+path = "tests/suites/protocol_contracts.rs"
+
+[[test]]
+name = "whir_recursion"
+path = "tests/suites/whir_recursion.rs"
+
+[[test]]
+name = "whir_quintic"
+path = "tests/whir_quintic.rs"
 
 [lints]
 workspace = true

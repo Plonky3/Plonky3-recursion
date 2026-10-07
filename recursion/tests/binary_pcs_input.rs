@@ -303,10 +303,10 @@ fn allocated_native_inputs_authenticate_and_reuse_one_circuit() {
 
 #[test]
 fn consecutive_openings_preserve_native_transcript_for_both_entry_seeds() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config as host_config};
 
     for (num_variables, cap_height, prove) in [(5usize, 1usize, false), (1, 0, true)] {
         let config = || {
@@ -556,7 +556,7 @@ fn consecutive_openings_preserve_native_transcript_for_both_entry_seeds() {
                 wrong[last] += Host::ONE;
                 assert!(!run(&wrong, &private));
                 if prove && seed == 7 {
-                    let mut prover = BatchStarkProver::new(host_config::baby_bear());
+                    let mut prover = BatchStarkProver::new(crate::proof_config());
                     prover.register_table_prover(Box::new(KeccakF1600Prover::<4>));
                     let prepared = prover
                         .prepare_circuit::<Host, 4>(

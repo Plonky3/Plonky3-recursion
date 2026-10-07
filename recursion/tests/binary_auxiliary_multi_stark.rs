@@ -313,8 +313,10 @@ macro_rules! check {
             .map(|(height, preprocessed)| AuxiliaryAir::new(height, preprocessed)).collect();
         let refs: Vec<_> = airs.iter().collect();
         let heights: Vec<_> = airs.iter().map(|air| air.height).collect();
+        // The 40-bit target exhausts this fixture's small query domain.
+        // Eight bits also exercises sampled queries on the mixed-height case.
         let make_config = |cells| BinaryPcsConfig::try_new::<F, E>(p3_util::log2_ceil_usize(cells),
-            BinaryPcsParams { log_inv_rate: 2, pow_bits: 0, security_level: 40 })
+            BinaryPcsParams { log_inv_rate: 2, pow_bits: 0, security_level: 8 })
             .unwrap().try_with_folding(2).unwrap();
         let main_config = make_config(airs.iter().map(|air| 2usize << air.height).sum());
         let preprocessed_config = make_config(airs.iter().filter(|air| air.preprocessed)
@@ -333,12 +335,16 @@ macro_rules! check {
         let tables = airs.iter().filter(|air| air.preprocessed)
             .map(|air| Table::new(air.preprocessed_trace().unwrap().transpose())).collect();
         let (pre_cap, _) = native.preprocessing.commit(native.build_witness(tables), &mut make()).unwrap();
+        // These fixed transcripts complete query sampling within these bounds.
+        // A larger bound unrolls unused sampler work into the verifier circuit.
+        let max_query_draws = 64;
+        let preprocessed_query_draws = 64;
         let verifier_for = |cap| BinaryMultiStarkVerifier::<F, E>::with_preprocessing(
             &refs, &heights, main_config, $hash, 0, 0, heights.iter().max().unwrap() + 4,
-            if main_config.num_variables() > 2 { 256 } else { 64 },
+            max_query_draws,
             BinaryMultiStarkPreprocessing {
                 config: preprocessed_config, hash: $hash, cap_height: 1,
-                max_query_draws: if preprocessed_config.num_variables() > 3 { 256 } else { 128 }, commitment: cap,
+                max_query_draws: preprocessed_query_draws, commitment: cap,
             }, &VerifierLimits::default(),
         ).unwrap();
         let verifier = verifier_for(pre_cap.clone());
@@ -480,11 +486,11 @@ fn filtered_preprocessing_slots_follow_mixed_height_air_order() {
 
 #[test]
 fn a_complete_preprocessed_binary_air_proof_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
         StatementAirBuilder, StatementPreprocessor, StatementProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, private, public) = check!(
         BinaryField8,
         BinaryField64,
@@ -493,7 +499,7 @@ fn a_complete_preprocessed_binary_air_proof_proves_in_a_prime_field_circuit() {
         vec![(1, true)]
     );
     let schema = circuit.statement_schema().unwrap().clone();
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
     prover.register_table_prover(Box::new(StatementProver::<1>::new(schema.clone())));
     let prepared = prover

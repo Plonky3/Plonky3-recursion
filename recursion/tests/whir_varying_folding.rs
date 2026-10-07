@@ -1,7 +1,5 @@
 //! Real varying-fold WHIR proofs through a trusted prepared recursion layer.
 
-mod common;
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -22,6 +20,8 @@ use p3_recursion::{
 use p3_uni_stark::{Proof, StarkGenericConfig, prove, verify};
 use p3_whir::parameters::{FoldingFactor, WhirConfig};
 use p3_whir::transcript::WhirShape;
+
+use crate::common;
 
 fn fibonacci_output(a: u64, b: u64, n: usize) -> BbF {
     let (mut a, mut b) = (BbF::from_u64(a), BbF::from_u64(b));

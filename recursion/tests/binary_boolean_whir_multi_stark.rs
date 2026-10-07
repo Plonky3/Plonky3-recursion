@@ -475,11 +475,13 @@ fn boolean_whir_trace_multi_stark_binds_air_and_independent_preprocessing() {
 }
 
 #[test]
+#[ignore = "builds a BF128 WHIR bus and indexed verifier above hosted runner memory; run explicitly"]
 fn boolean_whir_trace_multi_stark_closes_bus_and_indexed_reductions() {
     check(true, 6);
 }
 
 #[test]
+#[ignore = "proves a BF128 WHIR trace verifier above hosted runner memory; run explicitly"]
 fn prepared_boolean_whir_trace_multi_stark_proves_its_bound_statement() {
     use p3_field::PrimeField64;
     use p3_recursion::ProveNextLayerParams;
@@ -560,6 +562,7 @@ fn prepared_boolean_whir_trace_multi_stark_proves_its_bound_statement() {
 }
 
 #[test]
+#[ignore = "builds a height-eight BF128 WHIR bus and indexed verifier above hosted runner memory; run explicitly"]
 fn boolean_whir_trace_multi_stark_retains_successor_tensors_and_final_sumchecks() {
     check(true, 8);
 }

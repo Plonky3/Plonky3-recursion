@@ -358,16 +358,16 @@ fn combined_resource_limit_accounts_for_both_the_ring_and_whir() {
 
 #[test]
 fn complete_boolean_whir_readings_prove_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let specs = [BinaryRingClaimSpec {
         current: true,
         next_rows: None,
     }];
     let (circuit, values, _) = fixture!(keccak, ByteHash::Keccak256, specs, 1, 11, false, 1);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

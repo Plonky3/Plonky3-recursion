@@ -22,7 +22,7 @@ use p3_circuit::ops::NpoTypeId;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::types::WitnessId;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::PrimeCharacteristicRing;
 use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
 use p3_matrix::dense::RowMajorMatrix;
 use thiserror::Error;
@@ -57,10 +57,34 @@ pub enum NativeBusCircuitError {
     PublicLength { expected: usize, actual: usize },
 }
 
+/// Sorted witness reads, one fanout row each, in a table of `height` rows.
+#[derive(Debug)]
+struct Fanout {
+    ids: Vec<usize>,
+    height: usize,
+}
+
+/// One primitive gate: its slot IDs, frozen selector and constant.
+#[derive(Clone, Copy, Debug)]
+struct GateRow<F> {
+    ids: [usize; 5],
+    selector: usize,
+    constant: F,
+}
+
+/// Primitive gates, one row each, in a table of `height` rows.
+#[derive(Debug)]
+struct Gates<F> {
+    rows: Vec<GateRow<F>>,
+    height: usize,
+}
+
+/// The fanout and gate tables keep their rows and expand preprocessing only
+/// when a setup asks for it; the dense matrices are the largest part of it.
 #[derive(Clone, Debug)]
 enum Table<F> {
-    Witness(Arc<RowMajorMatrix<F>>),
-    Gates(Arc<RowMajorMatrix<F>>),
+    Witness(Arc<Fanout>),
+    Gates(Arc<Gates<F>>),
     Public(Vec<F>),
     Keccak {
         pp: Arc<RowMajorMatrix<F>>,
@@ -78,10 +102,11 @@ pub struct NativeBusCircuitAir<F> {
 
 #[derive(Clone, Debug)]
 pub struct NativeBusCircuit<F> {
-    plan: PrimitivePlan<F>,
+    width: usize,
+    public: Vec<usize>,
     calls: Vec<KeccakCall>,
-    occurrences: Vec<usize>,
-    gate_positions: Vec<[usize; 5]>,
+    fanout: Arc<Fanout>,
+    gates: Arc<Gates<F>>,
     airs: Vec<NativeBusCircuitAir<F>>,
     log_heights: Vec<usize>,
     main_variables: usize,
@@ -206,18 +231,25 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let main_variables = variables(main_cells)?;
         let preprocessed_variables = variables(pp_cells)?;
 
-        let gate_positions: Vec<_> = plan
+        let gate_rows: Vec<_> = plan
             .constraints
             .iter()
-            .map(|constraint| gate(constraint).0)
+            .map(|constraint| {
+                let (ids, selector, constant) = gate(constraint);
+                GateRow {
+                    ids,
+                    selector,
+                    constant,
+                }
+            })
             .collect();
         let mut occurrences = Vec::with_capacity(n);
-        for (ids, constraint) in gate_positions.iter().zip(&plan.constraints) {
-            let (_, selector, _) = gate(constraint);
+        for row in &gate_rows {
             occurrences.extend(
-                ids.iter()
+                row.ids
+                    .iter()
                     .enumerate()
-                    .filter_map(|(slot, &id)| gate_slot_used(selector, slot).then_some(id)),
+                    .filter_map(|(slot, &id)| gate_slot_used(row.selector, slot).then_some(id)),
             );
         }
         occurrences.extend(plan.public.iter().map(|&w| w + 1));
@@ -225,30 +257,18 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             occurrences.extend(call.input.iter().chain(&call.output).map(|&w| w + 1));
         }
         occurrences.sort_unstable();
-        let mut pp = vec![F::ZERO; cells(witness_height, 4)?];
-        for (i, &id) in occurrences.iter().enumerate() {
-            let row = &mut pp[4 * i..4 * (i + 1)];
-            row[0] = label::<F>(id)?;
-            row[1] = F::ONE;
-            row[2] = F::from_bool(occurrences.get(i + 1) == Some(&id));
-            row[3] = F::from_bool(id == 0);
-        }
-        let mut airs = vec![air(Table::Witness(Arc::new(RowMajorMatrix::new(pp, 4))))];
+        let fanout = Arc::new(Fanout {
+            ids: occurrences,
+            height: witness_height,
+        });
+        let gates = Arc::new(Gates {
+            rows: gate_rows,
+            height: gate_height,
+        });
+        let mut airs = vec![air(Table::Witness(fanout.clone()))];
         let mut log_heights = vec![witness_height.ilog2() as usize];
         if gate_height != 0 {
-            let mut pp = vec![F::ZERO; cells(gate_height, GATE_PP)?];
-            for (i, constraint) in plan.constraints.iter().enumerate() {
-                let (ids, selector, constant) = gate(constraint);
-                let row = &mut pp[GATE_PP * i..GATE_PP * (i + 1)];
-                for j in 0..5 {
-                    row[j] = label::<F>(ids[j])?;
-                }
-                row[5] = constant;
-                row[6 + selector] = F::ONE;
-            }
-            airs.push(air(Table::Gates(Arc::new(RowMajorMatrix::new(
-                pp, GATE_PP,
-            )))));
+            airs.push(air(Table::Gates(gates.clone())));
             log_heights.push(gate_height.ilog2() as usize);
         }
         if !plan.public.is_empty() {
@@ -294,10 +314,11 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             log_heights.push(bridge_height.ilog2() as usize);
         }
         Ok(Self {
-            plan,
+            width: plan.width,
+            public: plan.public,
             calls,
-            occurrences,
-            gate_positions,
+            fanout,
+            gates,
             airs,
             log_heights,
             main_variables,
@@ -319,9 +340,9 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
     }
 
     pub fn public_values(&self, public: &[F]) -> Result<Vec<Vec<F>>, NativeBusCircuitError> {
-        if public.len() != self.plan.public.len() {
+        if public.len() != self.public.len() {
             return Err(NativeBusCircuitError::PublicLength {
-                expected: self.plan.public.len(),
+                expected: self.public.len(),
                 actual: public.len(),
             });
         }
@@ -342,9 +363,9 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         &self,
         witness: &WitnessTrace<F>,
     ) -> Result<Vec<RowMajorMatrix<F>>, NativeBusCircuitError> {
-        if witness.num_rows() != self.plan.width {
+        if witness.num_rows() != self.width {
             return Err(DirectCircuitError::WitnessLength {
-                expected: self.plan.width,
+                expected: self.width,
                 actual: witness.num_rows(),
             }
             .into());
@@ -363,29 +384,29 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             let height = 1usize << log;
             let trace = match &air.table {
                 Table::Witness(_) => {
-                    let mut values: Vec<_> = self.occurrences.iter().map(|&id| read(id)).collect();
+                    let mut values: Vec<_> = self.fanout.ids.iter().map(|&id| read(id)).collect();
                     values.resize(height, F::ZERO);
                     RowMajorMatrix::new(values, 1)
                 }
                 Table::Gates(_) => {
                     let mut values = vec![F::ZERO; cells(height, 5)?];
-                    for (row, ids) in values
+                    for (row, gate) in values
                         .as_chunks_mut::<5>()
                         .0
                         .iter_mut()
-                        .zip(&self.gate_positions)
+                        .zip(&self.gates.rows)
                     {
-                        for i in 0..5 {
-                            row[i] = read(ids[i]);
+                        for (cell, &id) in row.iter_mut().zip(&gate.ids) {
+                            *cell = read(id);
                         }
                     }
                     RowMajorMatrix::new(values, 5)
                 }
                 Table::Public(_) => {
                     let values: Vec<_> = (0..height)
-                        .flat_map(|_| self.plan.public.iter().map(|&w| read(w + 1)))
+                        .flat_map(|_| self.public.iter().map(|&w| read(w + 1)))
                         .collect();
-                    RowMajorMatrix::new(values, self.plan.public.len())
+                    RowMajorMatrix::new(values, self.public.len())
                 }
                 Table::Keccak { .. } => keccak_bit_trace(&self.calls, witness, height)?,
                 Table::Bridge(_) => {
@@ -409,6 +430,46 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         }
         Ok(traces)
     }
+}
+
+impl Fanout {
+    /// Columns: label, active, same ID as the next row, zero sentinel.
+    fn preprocessed<F: BinaryCoordinateField>(&self) -> RowMajorMatrix<F> {
+        let mut pp = vec![F::ZERO; 4 * self.height];
+        for ((i, row), &id) in pp
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+            .zip(&self.ids)
+        {
+            row[0] = checked_label(id);
+            row[1] = F::ONE;
+            row[2] = F::from_bool(self.ids.get(i + 1) == Some(&id));
+            row[3] = F::from_bool(id == 0);
+        }
+        RowMajorMatrix::new(pp, 4)
+    }
+}
+
+impl<F: BinaryCoordinateField> Gates<F> {
+    /// Columns: five slot labels, constant, one-hot selector.
+    fn preprocessed(&self) -> RowMajorMatrix<F> {
+        let mut pp = vec![F::ZERO; GATE_PP * self.height];
+        for (row, gate) in pp.as_chunks_mut::<GATE_PP>().0.iter_mut().zip(&self.rows) {
+            for (cell, &id) in row.iter_mut().zip(&gate.ids) {
+                *cell = checked_label(id);
+            }
+            row[5] = gate.constant;
+            row[6 + gate.selector] = F::ONE;
+        }
+        RowMajorMatrix::new(pp, GATE_PP)
+    }
+}
+
+/// Construction checks the widest label against the carrier, so every ID fits.
+fn checked_label<F: BinaryCoordinateField>(id: usize) -> F {
+    label(id).expect("construction checks the widest label")
 }
 
 fn add(a: usize, b: usize) -> Result<usize, IndexedCircuitError> {
@@ -436,7 +497,7 @@ fn gate_slot_used(selector: usize, slot: usize) -> bool {
     }
 }
 
-impl<F: Field> BaseAir<F> for NativeBusCircuitAir<F> {
+impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
     fn width(&self) -> usize {
         match &self.table {
             Table::Witness(_) => 1,
@@ -463,10 +524,9 @@ impl<F: Field> BaseAir<F> for NativeBusCircuitAir<F> {
     }
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         match &self.table {
-            Table::Witness(pp)
-            | Table::Gates(pp)
-            | Table::Bridge(pp)
-            | Table::Keccak { pp, .. } => Some(pp.as_ref().clone()),
+            Table::Witness(fanout) => Some(fanout.preprocessed()),
+            Table::Gates(gates) => Some(gates.preprocessed()),
+            Table::Bridge(pp) | Table::Keccak { pp, .. } => Some(pp.as_ref().clone()),
             Table::Public(_) => None,
         }
     }
@@ -484,7 +544,7 @@ impl<F: Field> BaseAir<F> for NativeBusCircuitAir<F> {
 
 impl<AB: AirBuilder + BusInteractionBuilder> Air<AB> for NativeBusCircuitAir<AB::F>
 where
-    AB::F: Field,
+    AB::F: BinaryCoordinateField,
 {
     fn eval(&self, b: &mut AB) {
         if let Table::Keccak { .. } = &self.table {

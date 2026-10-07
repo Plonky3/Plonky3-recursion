@@ -393,11 +393,11 @@ fn grouped_multi_stark_matches_both_hashes_and_mixed_heights() {
 
 #[test]
 fn grouped_multi_stark_proves_an_independently_bound_statement() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, Blake3CompressAirBuilder, Blake3CompressPreprocessor,
         Blake3CompressProver, StatementAirBuilder, StatementPreprocessor, StatementProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, private, public) = check!(
         BinaryField8,
         BinaryField64,
@@ -409,7 +409,7 @@ fn grouped_multi_stark_proves_an_independently_bound_statement() {
         0
     );
     let schema = circuit.statement_schema().unwrap().clone();
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(Blake3CompressProver::<1>));
     prover.register_table_prover(Box::new(StatementProver::<1>::new(schema.clone())));
     let prepared = prover

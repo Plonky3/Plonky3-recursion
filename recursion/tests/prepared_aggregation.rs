@@ -1,5 +1,3 @@
-mod common;
-
 use std::boxed::Box;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -47,6 +45,8 @@ use p3_test_utils::koala_bear_params::{
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, Val, prove, verify};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+
+use crate::common;
 
 fn fibonacci_output<Fld: PrimeCharacteristicRing + Copy>(
     start_a: u64,

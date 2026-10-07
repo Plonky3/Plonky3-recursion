@@ -1,7 +1,5 @@
 //! Real Suffix-stacked WHIR leaves and parents through one trusted prepared layer.
 
-mod common;
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -35,6 +33,8 @@ use p3_sumcheck::layout::{Layout, SuffixProver};
 use p3_uni_stark::{Proof, StarkGenericConfig, prove, verify};
 use p3_whir::parameters::{FoldingFactor, WhirConfig};
 use p3_whir::pcs::proof::QueryOpenings;
+
+use crate::common;
 
 type SuffixPcs = WhirUniPcs<BbEF, BbF, BbDft, BbMmcs, BbChallenger, SuffixProver<BbF, BbEF>>;
 

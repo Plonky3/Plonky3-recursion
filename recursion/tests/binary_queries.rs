@@ -242,16 +242,16 @@ fn malformed_query_shape_reports_the_offending_count() {
 
 #[test]
 fn a_bounded_query_relation_proves() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
 
     let seed = [17; 7];
     let (queries, draws) = native(&seed, 3, 5);
     // Include one ignored draw after native completion in the real proof.
     let circuit = continuing_circuit(3, 5, draws + 1);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<4>));
     let prepared = prover
         .prepare_circuit::<EF, 4>(

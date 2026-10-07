@@ -126,14 +126,33 @@ where
     }
 }
 
-fn field<E: RecursiveBinaryChallengeField>(
-    builder: &mut CircuitBuilder<BabyBear>,
-    values: &mut Vec<BabyBear>,
-    raw: E,
-) -> BinaryTower128Target {
+fn field(builder: &mut CircuitBuilder<BabyBear>) -> BinaryTower128Target {
     let limbs = builder.alloc_private_input_array::<8>("ring field");
-    values.extend((0..8).map(|i| BabyBear::from_u16((raw.raw_coordinates() >> (16 * i)) as u16)));
     builder.binary128_from_limbs::<BabyBear>(limbs).unwrap()
+}
+
+fn private_values<E: RecursiveBinaryChallengeField>(
+    specs: &[BinaryRingClaimSpec],
+    fixture: &Fixture<E>,
+) -> Vec<BabyBear> {
+    let verifier = BinaryBitRingVerifier::<E>::new(
+        fixture.survivor.len() + E::RAW_BITS.ilog2() as usize,
+        specs.to_vec(),
+    )
+    .unwrap();
+    let mut values = fixture
+        .imported
+        .private_values::<BabyBear>(&verifier.input_shape())
+        .unwrap();
+    for raw in fixture
+        .survivor
+        .iter()
+        .chain(core::iter::once(&fixture.next_challenge))
+    {
+        values
+            .extend((0..8).map(|i| BabyBear::from_u16((raw.raw_coordinates() >> (16 * i)) as u16)));
+    }
+    values
 }
 
 fn build<E: RecursiveBinaryChallengeField>(
@@ -149,7 +168,7 @@ fn build<E: RecursiveBinaryChallengeField>(
         ByteHash::Blake3 => builder.enable_blake3_compress::<BabyBear>(),
     }
     let shape = verifier.input_shape();
-    let mut values = fixture.imported.private_values::<BabyBear>(&shape).unwrap();
+    let values = private_values(specs, fixture);
     let proof = shape
         .allocate_targets::<BabyBear, BabyBear>(&mut builder)
         .unwrap();
@@ -175,13 +194,8 @@ fn build<E: RecursiveBinaryChallengeField>(
             .copy_from_slice(&builder.decompose_to_bits::<BabyBear>(byte, 8).unwrap());
     }
     let next_challenge = builder.binary128_from_bits(bits).unwrap();
-    for (actual, expected) in output
-        .point
-        .iter()
-        .zip(&fixture.survivor)
-        .chain(core::iter::once((&next_challenge, &fixture.next_challenge)))
-    {
-        let expected = field(&mut builder, &mut values, *expected);
+    for actual in output.point.iter().chain(core::iter::once(&next_challenge)) {
+        let expected = field(&mut builder);
         for (&a, &b) in actual.bits().iter().zip(expected.bits()) {
             let difference = builder.sub(a, b);
             builder.assert_zero(difference);
@@ -207,7 +221,7 @@ fn single_claim_prefix_round_counts_reuse_one_circuit() {
     assert!(run(&circuit, &values));
     for high in [vec![Native::ONE, val(2)], vec![Native::ZERO, Native::ONE]] {
         let second = native(&specs, vec![high], 97);
-        let (_, values) = build(&specs, &second);
+        let values = private_values(&specs, &second);
         assert!(run(&circuit, &values));
         let mut wrong = values.clone();
         wrong[8 * (9 + 1 + 128) + 16] += BabyBear::ONE;
@@ -240,8 +254,8 @@ fn multiple_claims_match_native_common_and_individual_prefixes() {
         vec![vec![Native::ZERO, Native::ONE], vec![Native::ONE, val(4)]],
     ] {
         let fixture = native(&specs, highs, 7);
-        let (circuit, values) = build(&specs, &fixture);
-        let circuit = shared_circuit.get_or_insert(circuit);
+        let circuit = shared_circuit.get_or_insert_with(|| build(&specs, &fixture).0);
+        let values = private_values(&specs, &fixture);
         assert!(run(circuit, &values));
         let mut wrong = values.clone();
         wrong[values.len() / 2] += BabyBear::ONE;
@@ -326,8 +340,8 @@ fn eight_byte_challenges_and_dynamic_continuations_match_both_hashes() {
                 ByteHash::Keccak256 => native_hash(&specs, vec![high], 7, &Keccak256Hash, hash),
                 ByteHash::Blake3 => native_hash(&specs, vec![high], 7, &Blake3, hash),
             };
-            let (circuit, values) = build(&specs, &fixture);
-            let circuit = shared_circuit.get_or_insert(circuit);
+            let circuit = shared_circuit.get_or_insert_with(|| build(&specs, &fixture).0);
+            let values = private_values(&specs, &fixture);
             assert!(run(circuit, &values));
             let mut wrong = values.clone();
             wrong[4] += BabyBear::ONE;

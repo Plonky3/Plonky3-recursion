@@ -1,7 +1,5 @@
 //! Independent native-verifier versus transcript-replay assurance.
 
-mod common;
-
 use std::sync::{Arc, Mutex};
 
 use common::transcript_snapshot::{DuplexSnapshot, RecordingDuplexChallenger};
@@ -43,6 +41,8 @@ use p3_test_utils::koala_bear_params::{
 use p3_uni_stark::{StarkConfig, StarkGenericConfig, prove, verify};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
+
+use crate::common;
 
 type RecordingChallenger = RecordingDuplexChallenger<F, Perm, WIDTH, RATE>;
 type RecordingConfig = StarkConfig<MyPcs, Challenge, RecordingChallenger>;

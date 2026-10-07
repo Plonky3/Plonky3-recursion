@@ -457,12 +457,10 @@ fn compiled_dedup_retains_both_distinct_add_sources() {
     let lhs = builder.alloc_public_input("lhs");
     let lhs_alias = builder.alloc_public_input("lhs_alias");
     let rhs = builder.alloc_const(BabyBear::from_u64(9), "rhs");
-    let supplied_output = builder.alloc_private_input("supplied_output");
     builder.connect(lhs, lhs_alias);
     let canonical = builder.alloc_add(lhs, rhs, "canonical_add");
     let duplicate = builder.alloc_add(lhs_alias, rhs, "duplicate_add");
     assert_ne!(canonical, duplicate);
-    builder.connect(supplied_output, duplicate);
     let circuit = builder.build().unwrap();
 
     let add_indices: Vec<_> = circuit

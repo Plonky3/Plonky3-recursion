@@ -743,14 +743,14 @@ fn bus_and_indexed_reductions_share_the_native_transcript_and_air_point() {
 
 #[test]
 fn a_complete_indexed_binary_air_proof_verifies_in_a_prime_field_proof() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, Blake3CompressAirBuilder, Blake3CompressPreprocessor,
         Blake3CompressProver, StatementAirBuilder, StatementPreprocessor, StatementProver,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, private, public) =
         check!(BinaryField8, BinaryField64, blake3, ByteHash::Blake3, true);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     let schema = circuit.statement_schema().unwrap().clone();
     prover.register_table_prover(Box::new(Blake3CompressProver::<1>));
     prover.register_table_prover(Box::new(StatementProver::<1>::new(schema.clone())));

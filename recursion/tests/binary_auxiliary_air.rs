@@ -232,10 +232,10 @@ fn auxiliary_constants_and_declarations_are_bounded_before_compilation() {
 
 #[test]
 fn auxiliary_air_arithmetic_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::BatchStarkProver;
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, values) = compare!(BinaryField8, BinaryField64);
-    let prover = BatchStarkProver::new(config::baby_bear());
+    let prover = BatchStarkProver::new(crate::proof_config());
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(&circuit, &[], &[], ConstraintProfile::Standard)
         .unwrap();

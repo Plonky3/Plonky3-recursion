@@ -6,9 +6,8 @@
 //! must reconstruct each Merkle leaf as `[opened_row | salt]` exactly like the native
 //! `MerkleTreeHidingMmcs::verify_batch`.
 
-mod common;
-
 #[path = "common/rejection_oracle.rs"]
+#[allow(clippy::duplicate_mod)]
 mod rejection_oracle;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};

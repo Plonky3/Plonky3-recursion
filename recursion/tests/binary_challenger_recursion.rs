@@ -1,7 +1,5 @@
 //! Bound byte-transcript statements, a real hash-table proof, and a trusted recursive layer.
 
-mod common;
-
 use p3_binary_field::{BinaryChallenger, BinaryField128, TowerLevel};
 use p3_blake3::Blake3;
 use p3_challenger::{CanObserve, CanSample, CanSampleBits, GrindingChallenger};
@@ -22,6 +20,8 @@ use p3_recursion::{
 };
 use p3_symmetric::Hash;
 use p3_test_utils::koala_bear_params::F;
+
+use crate::common;
 
 const OBSERVED_RAW: u128 = 0x21bade026a6ae768f2ed66ffdcc99396;
 const INITIAL: [u16; 2] = [0x1234, 0xabcd];

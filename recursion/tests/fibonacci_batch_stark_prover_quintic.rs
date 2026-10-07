@@ -2,8 +2,6 @@
 //! with in-circuit FRI MMCS (`with_mmcs` + `set_fri_mmcs_private_data`), then outer-prove the
 //! verifier circuit traces with D=5 and native-verify the resulting proof.
 
-mod common;
-
 use p3_batch_stark::ProverData;
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{
@@ -36,10 +34,10 @@ fn init_logger() {
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
 
-    Registry::default()
+    let _ = Registry::default()
         .with(env_filter)
         .with(ForestLayer::default())
-        .init();
+        .try_init();
 }
 
 fn fibonacci_challenge(n: usize) -> Challenge {

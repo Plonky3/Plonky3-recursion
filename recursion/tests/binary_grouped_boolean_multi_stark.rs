@@ -421,6 +421,7 @@ fn grouped_boolean_trace_multi_stark_closes_bus_and_indexed_reductions() {
 }
 
 #[test]
+#[ignore = "proves a grouped BF128 trace verifier above hosted runner memory; run explicitly"]
 fn prepared_grouped_boolean_trace_multi_stark_proves_its_bound_statement() {
     use p3_field::PrimeField64;
     use p3_recursion::ProveNextLayerParams;

@@ -462,16 +462,16 @@ fn trusted_trace_geometry_and_combined_limits_reject_before_allocation() {
 
 #[test]
 fn whir_trace_opening_proves_in_a_prime_field_circuit() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let protocol = OpeningProtocol::new(vec![TableSpec::new(
         TableShape::new(8, 1),
         vec![OpeningBatch::new(vec![0], vec![])],
     )]);
     let (circuit, values, _) = check!(keccak, ByteHash::Keccak256, protocol);
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(

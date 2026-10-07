@@ -1,5 +1,6 @@
 #[macro_use]
 #[path = "common/builtin_fri_lifecycle.rs"]
+#[allow(clippy::duplicate_mod)]
 mod builtin_fri_lifecycle;
 
 use p3_baby_bear::BabyBear;

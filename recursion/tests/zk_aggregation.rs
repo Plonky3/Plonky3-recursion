@@ -5,8 +5,6 @@
 //! query positions.  Their recursive verification circuits are then composed into
 //! a single aggregation circuit and the aggregated proof is verified.
 
-mod common;
-
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_batch_stark::{
     BatchProof, CommonData, ProverData, StarkInstance, prove_batch, verify_batch,

@@ -1,5 +1,3 @@
-mod common;
-
 use p3_baby_bear::default_babybear_poseidon2_16;
 use p3_challenger::{CanObserve, CanSampleBits, FieldChallenger, GrindingChallenger};
 use p3_circuit::CircuitBuilder;

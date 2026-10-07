@@ -51,4 +51,4 @@ jobs:
           cargo nextest run --locked --offline -p p3-circuit-prover --test assurance_algebraic -E 'test(/(^|::)assurance_/)'
           cargo nextest run --locked --offline -p p3-circuit-prover --test trusted_statement -E 'test(/(^|::)assurance_/)'
           cargo nextest run --locked --offline -p p3-recursion --lib -E 'test(/(^|::)assurance_/)'
-          cargo nextest run --locked --offline -p p3-recursion --test assurance_transcript --test assurance_backend -E 'test(/(^|::)assurance_/)'
+          cargo nextest run --locked --offline -p p3-recursion --test protocol_contracts -E 'test(/^assurance_(transcript|backend)::assurance_/)'

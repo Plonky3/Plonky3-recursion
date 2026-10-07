@@ -4,8 +4,6 @@
 //! digests — all distinct from the BabyBear/KoalaBear D=4, width-16, 8-element
 //! configurations tested elsewhere.
 
-mod common;
-
 use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{GoldilocksD2Width8, generate_poseidon2_trace, generate_recompose_trace};
 use p3_circuit::test_utils::{FibonacciAir, generate_trace_rows};

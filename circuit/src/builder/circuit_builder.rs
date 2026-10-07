@@ -1443,6 +1443,7 @@ where
         for data in &self.non_primitive_ops {
             self.ensure_op_enabled(&data.op_type)?;
         }
+        self.expr_builder.release_construction_pools();
         let lowerer = ExpressionLowerer::new(
             self.expr_builder.graph(),
             &self.non_primitive_ops,
@@ -1466,6 +1467,12 @@ where
             witness_count,
         } = lowered;
 
+        #[cfg(feature = "debugging")]
+        let allocations = self.expr_builder.take_allocation_log();
+        // Lowered operations own their data; release construction buffers before optimization.
+        drop(self.expr_builder);
+        drop(self.non_primitive_ops);
+
         // Stage 2: IR transformations and optimizations
         #[cfg(feature = "debugging")]
         let (ops, rewrite, origins) =
@@ -1486,7 +1493,6 @@ where
         circuit.ops = ops;
         #[cfg(feature = "debugging")]
         {
-            let allocations = self.expr_builder.take_allocation_log();
             circuit.provenance = Some(Arc::new(CircuitProvenance::new(
                 allocations,
                 origins,

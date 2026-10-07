@@ -393,10 +393,10 @@ macro_rules! check {
 
 #[test]
 fn polynomial_prefix_whir_verifies_and_proves_in_a_prime_field() {
+    use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    use p3_circuit_prover::{ConstraintProfile, config};
     let (circuit, values) = check!(
         keccak,
         ByteHash::Keccak256,
@@ -406,7 +406,7 @@ fn polynomial_prefix_whir_verifies_and_proves_in_a_prime_field() {
         0,
         0
     );
-    let mut prover = BatchStarkProver::new(config::baby_bear());
+    let mut prover = BatchStarkProver::new(crate::proof_config());
     prover.register_table_prover(Box::new(KeccakF1600Prover::<1>));
     let prepared = prover
         .prepare_circuit::<BabyBear, 1>(
