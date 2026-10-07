@@ -493,7 +493,7 @@ mod native_query_tests {
         );
     }
 
-    fn circuit(bits: usize, count: usize, max_draws: usize) -> Circuit<F> {
+    fn relation_circuit(bits: usize, count: usize, max_draws: usize) -> Circuit<F> {
         let mut b = CircuitBuilder::<F>::new();
         b.enable_native_keccak_f1600().unwrap();
         let initial: Vec<_> = (0..SEED_BYTES).map(|_| b.public_input()).collect();
@@ -530,7 +530,7 @@ mod native_query_tests {
     #[test]
     fn native_relation_accepts_every_completion_point_and_rejects_reordering() {
         let (bits, count, budget) = (3, 5, 48);
-        let circuit = circuit(bits, count, budget);
+        let circuit = relation_circuit(bits, count, budget);
         let mut completions = Vec::new();
         for value in 0..12 {
             let seed = [value; SEED_BYTES];
@@ -560,7 +560,7 @@ mod native_query_tests {
     #[test]
     fn native_membership_rejects_a_set_that_skips_an_earlier_candidate() {
         let (bits, count, budget) = (3, 3, 24);
-        let circuit = circuit(bits, count, budget);
+        let circuit = relation_circuit(bits, count, budget);
         let mut checked = 0;
         for value in 0..16 {
             let seed = [value; SEED_BYTES];
@@ -585,18 +585,16 @@ mod native_query_tests {
 
     #[test]
     fn native_strict_ordering_blocks_an_odd_multiplicity_membership_forgery() {
-        let (bits, budget) = (3, 8);
+        let (bits, count, budget) = (3, 3, 24);
         let seed = [5; SEED_BYTES];
-        let first = native_draws(&seed, bits, 1)[0];
+        let draws = native_draws(&seed, bits, budget);
+        let circuit = relation_circuit(bits, count, budget);
+        let (honest, _) = first_distinct(&draws, count);
+        assert!(accepts(&circuit, &seed, bits, &honest));
         // In characteristic 2 the first draw's three equal events sum to one,
         // so membership, `seen` and completion all hold at that draw; only
         // strict ordering rejects the repeated index.
-        assert!(!accepts(
-            &circuit(bits, 3, budget),
-            &seed,
-            bits,
-            &[first; 3]
-        ));
+        assert!(!accepts(&circuit, &seed, bits, &[draws[0]; 3]));
     }
 
     #[test]
@@ -608,9 +606,14 @@ mod native_query_tests {
             used > count,
             "the seed repeats a candidate before completion"
         );
-        assert!(accepts(&circuit(bits, count, used), &seed, bits, &queries));
+        assert!(accepts(
+            &relation_circuit(bits, count, used),
+            &seed,
+            bits,
+            &queries
+        ));
         assert!(!accepts(
-            &circuit(bits, count, used - 1),
+            &relation_circuit(bits, count, used - 1),
             &seed,
             bits,
             &queries
