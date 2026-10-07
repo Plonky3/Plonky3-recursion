@@ -1075,8 +1075,8 @@ impl BinaryPcsMmcsHost<BinaryField128> for NativeBinaryEncoding {
         path: &[Vec<ExprId>],
         cap: &[Vec<ExprId>],
     ) -> Result<(), VerificationError> {
-        for &limb in path.iter().flatten() {
-            <Self as BinaryCircuitEncoding<BinaryField128>>::decompose_word(b, limb, 16)?;
+        for sibling in path {
+            <Self as BinaryCircuitHost<BinaryField128>>::constrain_sibling(b, sibling)?;
         }
         b.verify_byte_hash_mmcs_opening_bytes_with_host::<Self>(
             hash,
@@ -1099,8 +1099,8 @@ impl BinaryPcsMmcsHost<BinaryField128> for NativeBinaryEncoding {
         path: &[Vec<ExprId>],
         cap: &[Vec<ExprId>],
     ) -> Result<(), VerificationError> {
-        for &limb in path.iter().flatten() {
-            <Self as BinaryCircuitEncoding<BinaryField128>>::decompose_word(b, limb, 16)?;
+        for sibling in path {
+            <Self as BinaryCircuitHost<BinaryField128>>::constrain_sibling(b, sibling)?;
         }
         b.verify_byte_hash_mmcs_subtree_bytes_with_host::<Self>(
             hash, leaves, height, index, path, cap,
@@ -1118,8 +1118,8 @@ impl BinaryPcsMmcsHost<BinaryField128> for NativeBinaryEncoding {
         path: &[Vec<ExprId>],
         cap: &[Vec<ExprId>],
     ) -> Result<(), VerificationError> {
-        for &limb in path.iter().flatten() {
-            <Self as BinaryCircuitEncoding<BinaryField128>>::decompose_word(b, limb, 16)?;
+        for sibling in path {
+            <Self as BinaryCircuitHost<BinaryField128>>::constrain_sibling(b, sibling)?;
         }
         // Each leaf word is absorbed as a raw Keccak limb, which the native
         // Keccak AIR constrains to sixteen coordinates.

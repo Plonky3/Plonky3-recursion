@@ -699,6 +699,151 @@ fn native_keccak_lanes_range_check_tower32_leaf_words() {
     reject_wide_leaf_words(&values, 2, 1, &[(0, 0, 16, 0, 0), (15, 1, 32, 0, 31)]);
 }
 
+/// A proof-supplied Merkle sibling reaches the hash only through a level's
+/// `select`: under a constant index bit the sibling limb itself is a native
+/// Keccak input lane, and under a private bit the lane is a gate output equal
+/// to it. A prover who claims the honest digests for a sibling limb with a
+/// seventeenth coordinate satisfies every fanout, gate and bridge row, but the
+/// hash bus pairs that bridge lane with a sum of Keccak state cells. Those
+/// cells cannot reach the wide value while staying Boolean.
+#[test]
+fn native_keccak_lanes_range_check_merkle_siblings() {
+    let leaf_bytes: Vec<[u8; 4]> = (0..4u8)
+        .map(|k| [k, 0x80 | k, 0x5a ^ k, 0xff - k])
+        .collect();
+    let hash = |bytes: &[u8]| Keccak256Hash.hash_iter(bytes.iter().copied());
+    let compress = |left: &[u8; 32], right: &[u8; 32]| hash(&[*left, *right].concat());
+    let leaves: Vec<_> = leaf_bytes.iter().map(|bytes| hash(bytes)).collect();
+    let nodes = [
+        compress(&leaves[0], &leaves[1]),
+        compress(&leaves[2], &leaves[3]),
+    ];
+    let root = compress(&nodes[0], &nodes[1]);
+    let words = |bytes: &[u8]| -> Vec<F> {
+        bytes_to_limbs(bytes)
+            .into_iter()
+            .map(|word| F::from_raw_coordinates(word.into()).unwrap())
+            .collect()
+    };
+
+    // Leaf 1 of four: a constant low index bit, as for a per-symbol leaf of a
+    // coset, and a private high bit.
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let leaf = b.alloc_public_input_array::<2>("leaf words");
+    let cap = b.alloc_public_input_array::<16>("root");
+    let low = b.define_const(F::ONE);
+    let high = b.alloc_private_input("high index bit");
+    let siblings: Vec<_> = (0..2)
+        .map(|_| b.alloc_private_inputs(16, "sibling"))
+        .collect();
+    b.verify_byte_hash_mmcs_subtree_words_with_host::<NativeBinaryEncoding>(
+        ByteHash::Keccak256,
+        &[leaf.to_vec()],
+        4,
+        &[low, high],
+        &siblings,
+        &[cap.to_vec()],
+    )
+    .unwrap();
+    let circuit = b.build().unwrap();
+    let statement = [words(&leaf_bytes[1]), words(&root)].concat();
+    let private = [vec![F::ZERO], words(&leaves[0]), words(&nodes[1])].concat();
+
+    let prepared = NativeBusCircuit::new(&circuit, "merkle").unwrap();
+    let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec(&prepared),
+        &VerifierLimits {
+            max_rounds: 256,
+            max_metadata_entries: 1 << 20,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    runner.set_private_inputs(&private).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest: Vec<F> = witness
+        .index
+        .iter()
+        .map(|&id| *witness.get_value(id).unwrap())
+        .collect();
+    let traces = prepared.traces(&witness).unwrap();
+    let proof = prover.prove(&public, traces.clone()).unwrap();
+    authority.verify_native(&proof, &public).unwrap();
+    let rejects = |traces: Vec<RowMajorMatrix<F>>| {
+        let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
+        if let Ok(Ok(proof)) = attempt {
+            assert!(authority.verify_native(&proof, &public).is_err());
+        }
+    };
+
+    let calls: Vec<_> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor { inputs, .. } => Some(&inputs[0]),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 3, "one leaf hash and two compressions");
+    let keccak = prepared
+        .airs()
+        .iter()
+        .position(|air| air.width() == NUM_KECCAK_BINARY_COLS)
+        .unwrap();
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    // (private input, its Keccak call and lane, whether gates read it)
+    for (input, call, lane, through_gates) in [(1 + 3, 1, 3, false), (1 + 16 + 5, 2, 16 + 5, true)]
+    {
+        let mut forged_private = private.clone();
+        forged_private[input] += wide;
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&statement).unwrap();
+        runner.set_private_inputs(&forged_private).unwrap();
+        assert!(runner.run().is_err(), "the runner refuses a wide lane");
+
+        let forged = replay(&circuit, &honest, &statement, &forged_private);
+        let lanes: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .flat_map(|(c, ids)| {
+                ids.iter()
+                    .enumerate()
+                    .filter(|&(_, id)| forged[id.0 as usize] != honest[id.0 as usize])
+                    .map(move |(l, _)| (c, l))
+            })
+            .collect();
+        assert_eq!(lanes, [(call, lane)], "exactly one wide Keccak input lane");
+        let mut traces = traces.clone();
+        let [fanout, gates, bridge] =
+            patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
+        assert!(fanout > 0 && bridge == 1 && (gates > 0) == through_gates);
+        // Only the hash bus can reject this: every table holds locally.
+        for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+            check_constraints(air, trace, public);
+        }
+        rejects(traces.clone());
+
+        // Lifting the Keccak lane to the wide value through its unit-weight
+        // bit balances the hash bus but leaves a state cell outside {0, 1}.
+        assert_eq!(F::from_raw_coordinates(1), Some(F::ONE));
+        let cell = call * KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS
+            + KECCAK_BINARY_ROWS_PER_PERM
+            + 16 * lane;
+        traces[keccak].values[cell] += wide;
+        let local = catch_unwind(AssertUnwindSafe(|| {
+            check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
+        }));
+        assert!(local.is_err(), "a wide Keccak lane needs a non-Boolean bit");
+        rejects(traces);
+    }
+}
+
 /// A native WHIR verifier gives proof-supplied Merkle siblings no range check
 /// of their own. Each level selects its compression inputs from the current
 /// digest and the sibling under a Boolean index bit, sampled or a constant

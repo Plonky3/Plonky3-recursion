@@ -73,8 +73,10 @@ pub trait BinaryCircuitHost<F: Field + Eq + Hash>: BinaryCircuitEncoding<F> + Si
     /// index bit to form the inputs of [`Self::compress`].
     ///
     /// Callers must pass the same sibling to
-    /// [`CircuitBuilder::verify_byte_hash_mmcs_opening_words_with_host`] or
-    /// [`CircuitBuilder::verify_byte_hash_mmcs_opening_bytes_with_host`] and
+    /// [`CircuitBuilder::verify_byte_hash_mmcs_opening_words_with_host`],
+    /// [`CircuitBuilder::verify_byte_hash_mmcs_opening_bytes_with_host`],
+    /// [`CircuitBuilder::verify_byte_hash_mmcs_subtree_words_with_host`] or
+    /// [`CircuitBuilder::verify_byte_hash_mmcs_subtree_bytes_with_host`] and
     /// read it nowhere else: a host whose [`Self::compress`] range-checks its
     /// inputs relies on that opening and adds no constraint here.
     fn constrain_sibling(
