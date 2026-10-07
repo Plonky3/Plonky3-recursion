@@ -236,6 +236,32 @@ fn prime_subtree_binds_every_leaf_its_order_and_the_upper_path() {
 }
 
 #[test]
+fn malformed_subtree_leaf_counts_return_errors_without_panicking() {
+    // Three leaves under a 4-root cap, and four leaves over six rows: every
+    // other shape fits the reduced tree, so only the leaf-count check rejects.
+    for (count, height, bits, roots) in [(3, 12, 2, 4), (4, 6, 0, 1)] {
+        let mut builder = CircuitBuilder::<EF>::new();
+        builder.enable_keccak_f1600::<BabyBear>();
+        let leaves: Vec<_> = (0..count).map(|_| vec![builder.public_input()]).collect();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            builder.verify_byte_hash_mmcs_subtree_bytes::<BabyBear>(
+                ByteHash::Keccak256,
+                &leaves,
+                height,
+                &vec![ExprId::ZERO; bits],
+                &[],
+                &vec![vec![ExprId::ZERO; 16]; roots],
+            )
+        }));
+        assert!(
+            result.is_ok(),
+            "{count} leaves of {height} rows must not panic"
+        );
+        assert!(result.unwrap().is_err(), "{count} leaves of {height} rows");
+    }
+}
+
+#[test]
 fn unrepresentable_merkle_height_returns_an_error_without_panicking() {
     let mut builder = CircuitBuilder::<EF>::new();
     let leaf = builder.public_input();

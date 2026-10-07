@@ -140,7 +140,7 @@ impl BinaryPcsInputShape {
                 ))
             })
             .collect::<Result<_, VerificationError>>()?;
-        let paths = |start: usize, arity: usize| {
+        let path_shape = |start: usize, arity: usize| {
             let (per_query, depth) = coset_path_shape(
                 &self.config,
                 self.cap_height,
@@ -158,7 +158,7 @@ impl BinaryPcsInputShape {
             let (rows, paths) = alloc_oracle(
                 circuit,
                 shape.num_pairs << arity,
-                paths(start, arity),
+                path_shape(start, arity),
                 &mut field,
             )?;
             rounds.push(BinaryOracleOpeningTargets { cap, rows, paths });
@@ -166,7 +166,7 @@ impl BinaryPcsInputShape {
         let (base_rows, base_paths) = alloc_oracle(
             circuit,
             shape.num_pairs << self.config.log_folding_factor(),
-            paths(0, self.config.log_folding_factor()),
+            path_shape(0, self.config.log_folding_factor()),
             &mut field,
         )?;
         let final_codeword = (0..shape.final_codeword_len)

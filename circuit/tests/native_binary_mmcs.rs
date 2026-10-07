@@ -255,6 +255,32 @@ fn native_tower_and_polynomial_mmcs_match_mixed_height_caps_and_zero_depth() {
 }
 
 #[test]
+fn malformed_subtree_leaf_counts_return_errors_without_panicking() {
+    // Three leaves under a 4-root cap, and four leaves over six rows: every
+    // other shape fits the reduced tree, so only the leaf-count check rejects.
+    for (count, height, bits, roots) in [(3, 12, 2, 4), (4, 6, 0, 1)] {
+        let mut b = CircuitBuilder::<BinaryField128>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let leaves: Vec<_> = (0..count).map(|_| vec![b.public_input()]).collect();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            b.verify_byte_hash_mmcs_subtree_bytes_with_host::<NativeBinaryEncoding>(
+                ByteHash::Keccak256,
+                &leaves,
+                height,
+                &vec![ExprId::ZERO; bits],
+                &[],
+                &vec![vec![ExprId::ZERO; 16]; roots],
+            )
+        }));
+        assert!(
+            result.is_ok(),
+            "{count} leaves of {height} rows must not panic"
+        );
+        assert!(result.unwrap().is_err(), "{count} leaves of {height} rows");
+    }
+}
+
+#[test]
 fn unrepresentable_index_width_is_rejected_before_builder_mutation() {
     let mut b = CircuitBuilder::<BinaryField128>::new();
     let input = b.public_input();
