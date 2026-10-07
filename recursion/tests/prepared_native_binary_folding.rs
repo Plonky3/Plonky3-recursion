@@ -104,7 +104,7 @@ where
             .unwrap(),
             hash: ByteHash::Keccak256,
             cap_height: 0,
-            max_query_draws: 64,
+            max_query_draws: 512,
         },
         preprocessed: None,
         transcript_hash,
