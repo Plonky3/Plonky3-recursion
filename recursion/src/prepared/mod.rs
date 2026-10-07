@@ -31,7 +31,8 @@ pub use native_binary::{
 };
 pub use native_binary_folding::{
     NativeBinaryFoldingRecursionOptions, NativeBinaryFoldingRecursiveProof,
-    PreparedNativeBinaryLayer,
+    NativeBinaryGroupedFoldingRecursiveProof, PreparedNativeBinaryLayer,
+    PreparedNativeGroupedBinaryLayer,
 };
 pub use native_poly::{NativeBinaryPolyRecursiveProof, PreparedNativeBinaryPolyWhirLayer};
 pub use p3_circuit::VerifiedStatementTargets;

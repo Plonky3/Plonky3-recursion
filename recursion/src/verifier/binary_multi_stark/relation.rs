@@ -311,6 +311,24 @@ where
         schedule.zero_points(&heights, zero)
     }
 
+    /// Sets the main and preprocessing PCS points of a reduction whose
+    /// relation has no indexed reads.
+    pub(in crate::verifier) fn set_unindexed_points<T: Clone>(
+        &self,
+        reduction: &mut BinaryMultiStarkReduction<T>,
+    ) {
+        let heights: Vec<_> = self.input.airs.iter().map(|air| air.log_height()).collect();
+        reduction.main_points = self
+            .input
+            .main_schedule
+            .points(&heights, &reduction.point, None);
+        reduction.preprocessed_points = self
+            .input
+            .preprocessed_schedule
+            .as_ref()
+            .map(|schedule| schedule.points(&heights, &reduction.point, None));
+    }
+
     pub(in crate::verifier) fn reduce<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,

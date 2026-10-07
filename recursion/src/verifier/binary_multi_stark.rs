@@ -953,24 +953,7 @@ where
             .reduce_common::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
                 b, ch, public, &common,
             )?;
-        let heights: Vec<_> = self
-            .relation
-            .input
-            .airs
-            .iter()
-            .map(|air| air.log_height())
-            .collect();
-        reduction.main_points =
-            self.relation
-                .input
-                .main_schedule
-                .points(&heights, &reduction.point, None);
-        reduction.preprocessed_points = self
-            .relation
-            .input
-            .preprocessed_schedule
-            .as_ref()
-            .map(|schedule| schedule.points(&heights, &reduction.point, None));
+        self.relation.set_unindexed_points(&mut reduction);
         let mut continuation = self.opening.verify_at_native(
             b,
             reduction.challenger.clone(),
