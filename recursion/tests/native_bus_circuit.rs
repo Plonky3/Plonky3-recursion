@@ -842,6 +842,27 @@ fn native_keccak_lanes_range_check_merkle_siblings() {
         assert!(local.is_err(), "a wide Keccak lane needs a non-Boolean bit");
         rejects(traces);
     }
+
+    // A padding output row after another output row is read by no round map
+    // and no active bus row, so only Booleanity constrains its state cells.
+    let mut padded = traces;
+    let height = padded[keccak].values.len() / NUM_KECCAK_BINARY_COLS;
+    let row = (calls.len() * KECCAK_BINARY_ROWS_PER_PERM + height) / 2;
+    assert!(calls.len() * KECCAK_BINARY_ROWS_PER_PERM < row && row < height);
+    let schedule = prepared.airs()[keccak].preprocessed_trace().unwrap();
+    assert_eq!(schedule.values[3 * row..3 * row + 3], [F::ZERO; 3]);
+    for r in [row - 1, row] {
+        let flags =
+            &padded[keccak].values[r * NUM_KECCAK_BINARY_COLS..][..KECCAK_BINARY_ROWS_PER_PERM];
+        let (round, output) = flags.split_at(KECCAK_BINARY_ROWS_PER_PERM - 1);
+        assert!(round.iter().all(|&flag| flag == F::ZERO) && output == [F::ONE]);
+    }
+    padded[keccak].values[row * NUM_KECCAK_BINARY_COLS + KECCAK_BINARY_ROWS_PER_PERM] = wide;
+    rejects(padded.clone());
+    let local = catch_unwind(AssertUnwindSafe(|| {
+        check_constraints(&prepared.airs()[keccak], &padded[keccak], &[]);
+    }));
+    assert!(local.is_err(), "a padding state cell outside {{0, 1}}");
 }
 
 /// A native WHIR verifier gives proof-supplied Merkle siblings no range check
