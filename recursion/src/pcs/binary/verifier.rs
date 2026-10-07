@@ -12,7 +12,7 @@ use p3_circuit::ops::binary_encoding::{
     BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding,
 };
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
-use p3_circuit::ops::{BinaryTower128Target, ByteHash};
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
@@ -29,7 +29,9 @@ use super::{
     verify_binary_pcs_query_indices_with_host,
 };
 use crate::transcript::{SeedTap, domain_separator_seed};
-use crate::verifier::binary_field_policy::{BinaryFoldPolicy, TowerRelation};
+use crate::verifier::binary_field_policy::{
+    BinaryFoldPolicy, NativeTower128Relation, TowerRelation,
+};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
@@ -798,6 +800,58 @@ where
             }
         }
         Ok(())
+    }
+}
+
+impl<F> BinaryPcsVerifier<F, BinaryField128>
+where
+    F: RecursiveBinaryTowerField,
+    BinaryField128: ExtensionField<F>,
+{
+    /// Rejects grouped codewords and hashes the native host cannot evaluate.
+    pub(crate) fn check_native_support(&self) -> Result<(), VerificationError> {
+        if self.grouping.is_some() {
+            return Err(shape_error(
+                "native scalar binary PCS verifier does not support grouped codewords",
+            ));
+        }
+        <NativeBinaryEncoding as BinaryCircuitHost<BinaryField128>>::check_hash(self.hash)?;
+        Ok(())
+    }
+
+    /// Complete opening relation over native Tower128 scalars. The caller
+    /// binds the commitment and prescribed points to its statement.
+    pub fn verify_at_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<NativeTower128Target>],
+        proof: &BinaryPcs128ProofTargets<NativeTower128Target>,
+    ) -> Result<BinaryQueryContinuation, VerificationError> {
+        self.check_native_support()?;
+        self.verify_at_using::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
+            b, ch, cap, points, proof, false,
+        )
+    }
+
+    /// Native opening immediately after another opening's query phase.
+    pub fn verify_at_native_after_queries(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        continuation: BinaryQueryContinuation,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<NativeTower128Target>],
+        proof: &BinaryPcs128ProofTargets<NativeTower128Target>,
+    ) -> Result<BinaryQueryContinuation, VerificationError> {
+        self.check_native_support()?;
+        self.after_queries_using::<NativeTower128Relation<F>, NativeBinaryEncoding, BinaryField128>(
+            b,
+            continuation,
+            cap,
+            points,
+            proof,
+        )
     }
 }
 

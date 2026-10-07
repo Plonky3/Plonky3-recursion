@@ -4,12 +4,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::{BinaryPcsShape, BinaryPcsVerifierTranscript};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryTower128Target, ByteHash, bytes_to_limbs};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{ExtensionField, Field, PackedValue, PrimeField64};
+use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64};
 use p3_matrix::Dimensions;
 use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs, PrunedMerklePaths};
 use p3_multilinear_util::point::Point;
@@ -86,14 +88,39 @@ impl BinaryPcsInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.allocate_with(circuit, alloc_field::<BF, EF>)
+    }
+
+    /// Allocates proof witnesses as native Tower128 scalars, one private
+    /// input per field value, in the order of [`Self::allocate_targets`].
+    pub fn allocate_native_targets(
+        &self,
+        circuit: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<BinaryPcs128ProofTargets<NativeTower128Target>, VerificationError> {
+        if self.grouping.is_some() {
+            return Err(invalid(
+                "native scalar binary PCS verifier does not support grouped codewords",
+            ));
+        }
+        self.allocate_with(circuit, |b| {
+            let value = b.alloc_private_input("native binary PCS field");
+            b.check_construction_limits()?;
+            Ok(b.native_tower128_from_expr(value))
+        })
+    }
+
+    /// Proof witness allocation order shared by every scalar representation.
+    pub(super) fn allocate_with<T, CF>(
+        &self,
+        circuit: &mut CircuitBuilder<CF>,
+        mut field: impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+    ) -> Result<BinaryPcs128ProofTargets<T>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+    {
         let shape = BinaryPcsShape::new(&self.config);
         let sumcheck = (0..self.config.num_variables())
-            .map(|_| {
-                Ok([
-                    alloc_field::<BF, EF>(circuit)?,
-                    alloc_field::<BF, EF>(circuit)?,
-                ])
-            })
+            .map(|_| Ok([field(circuit)?, field(circuit)?]))
             .collect::<Result<_, VerificationError>>()?;
         let evals = self
             .protocol
@@ -101,10 +128,10 @@ impl BinaryPcsInputShape {
             .map(|(_, batch)| {
                 Ok(OpeningBatch::new(
                     (0..batch.current().len())
-                        .map(|_| alloc_field::<BF, EF>(circuit))
+                        .map(|_| field(circuit))
                         .collect::<Result<_, _>>()?,
                     (0..batch.next().len())
-                        .map(|_| alloc_field::<BF, EF>(circuit))
+                        .map(|_| field(circuit))
                         .collect::<Result<_, _>>()?,
                 ))
             })
@@ -115,7 +142,7 @@ impl BinaryPcsInputShape {
             let cap = (0..1usize << self.cap_height)
                 .map(|_| alloc_digest(circuit))
                 .collect();
-            let (rows, paths) = alloc_oracle::<BF, EF>(
+            let (rows, paths) = alloc_oracle(
                 circuit,
                 shape.num_pairs << arity,
                 if self.grouping.is_some() {
@@ -123,10 +150,11 @@ impl BinaryPcsInputShape {
                 } else {
                     log_domain - start - self.cap_height
                 },
+                &mut field,
             )?;
             rounds.push(BinaryOracleOpeningTargets { cap, rows, paths });
         }
-        let (base_rows, base_paths) = alloc_oracle::<BF, EF>(
+        let (base_rows, base_paths) = alloc_oracle(
             circuit,
             shape.num_pairs << self.config.log_folding_factor(),
             if self.grouping.is_some() {
@@ -134,11 +162,12 @@ impl BinaryPcsInputShape {
             } else {
                 log_domain - self.cap_height
             },
+            &mut field,
         )?;
         let final_codeword = (0..shape.final_codeword_len)
-            .map(|_| alloc_field::<BF, EF>(circuit))
+            .map(|_| field(circuit))
             .collect::<Result<_, _>>()?;
-        let pow_witness = alloc_field::<BF, EF>(circuit)?;
+        let pow_witness = field(circuit)?;
         let query_indices = (0..shape.num_pairs)
             .map(|_| {
                 (0..shape.pair_bits)
@@ -242,6 +271,78 @@ impl NativeBinaryPcsInput {
         let bits = BinaryPcsShape::new(&self.shape.config).pair_bits;
         for &index in &self.queries {
             values.extend((0..bits).map(|b| EF::from_bool(index >> b & 1 == 1)));
+        }
+        Ok(values)
+    }
+
+    /// Packs exactly the private input order of `shape().allocate_native_targets()`.
+    /// A different verifier shape is rejected before packing.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryPcsInputShape,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary PCS imported input belongs to a different verifier",
+            ));
+        }
+        if expected.grouping.is_some() {
+            return Err(invalid(
+                "native scalar binary PCS verifier does not support grouped codewords",
+            ));
+        }
+        let mut values = Vec::new();
+        let push_digest = |values: &mut Vec<BinaryField128>,
+                           digest: &[u8; 32]|
+         -> Result<(), VerificationError> {
+            for word in bytes_to_limbs(digest) {
+                values.push(<NativeBinaryEncoding as BinaryCircuitEncoding<
+                    BinaryField128,
+                >>::encode_u16(word)?);
+            }
+            Ok(())
+        };
+        values.extend(
+            self.sumcheck
+                .iter()
+                .flatten()
+                .map(|&raw| BinaryField128::from_repr(raw)),
+        );
+        for evals in &self.evals {
+            values.extend(
+                evals
+                    .current()
+                    .iter()
+                    .chain(evals.next())
+                    .map(|&raw| BinaryField128::from_repr(raw)),
+            );
+        }
+        for round in &self.rounds {
+            for digest in &round.cap {
+                push_digest(&mut values, digest)?;
+            }
+            values.extend(round.rows.iter().map(|&raw| BinaryField128::from_repr(raw)));
+            for digest in round.paths.iter().flatten() {
+                push_digest(&mut values, digest)?;
+            }
+        }
+        values.extend(
+            self.base_rows
+                .iter()
+                .map(|&raw| BinaryField128::from_repr(raw)),
+        );
+        for digest in self.base_paths.iter().flatten() {
+            push_digest(&mut values, digest)?;
+        }
+        values.extend(
+            self.final_codeword
+                .iter()
+                .map(|&raw| BinaryField128::from_repr(raw)),
+        );
+        values.push(BinaryField128::from_repr(self.pow_witness));
+        let bits = BinaryPcsShape::new(&self.shape.config).pair_bits;
+        for &index in &self.queries {
+            values.extend((0..bits).map(|b| BinaryField128::from_bool(index >> b & 1 == 1)));
         }
         Ok(values)
     }
@@ -619,17 +720,14 @@ pub(super) fn alloc_digest<EF: Field + Eq + Hash>(circuit: &mut CircuitBuilder<E
         .to_vec()
 }
 
-fn alloc_oracle<BF, EF>(
-    circuit: &mut CircuitBuilder<EF>,
+fn alloc_oracle<T, CF: Field + Eq + Hash>(
+    circuit: &mut CircuitBuilder<CF>,
     count: usize,
     depth: usize,
-) -> Result<super::OracleOpeningTargets<BinaryTower128Target>, VerificationError>
-where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
-{
+    field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+) -> Result<super::OracleOpeningTargets<T>, VerificationError> {
     let rows = (0..count)
-        .map(|_| alloc_field::<BF, EF>(circuit))
+        .map(|_| field(circuit))
         .collect::<Result<_, _>>()?;
     let paths = (0..count)
         .map(|_| (0..depth).map(|_| alloc_digest(circuit)).collect())

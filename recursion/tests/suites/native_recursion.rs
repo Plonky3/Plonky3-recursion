@@ -4,6 +4,8 @@ mod native_binary_air;
 mod native_binary_challenger;
 #[path = "../native_binary_circuit.rs"]
 mod native_binary_circuit;
+#[path = "../native_binary_folding_pcs.rs"]
+mod native_binary_folding_pcs;
 #[path = "../native_binary_interpolation.rs"]
 mod native_binary_interpolation;
 #[path = "../native_binary_nonzero.rs"]
