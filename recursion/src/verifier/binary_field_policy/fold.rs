@@ -29,12 +29,14 @@ pub(crate) trait BinaryFoldPolicy<CF: Field + Eq + Hash>: BinaryTowerPolicy<CF> 
         lo: &Self::ChallengeTarget,
     ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
     /// Natural-order bytes of a committed symbol of `width` bits.
+    /// `value` must already be constrained to `width` coordinates by `constrain_word`.
     fn leaf_bytes<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
         value: &Self::ChallengeTarget,
         width: usize,
     ) -> Result<Vec<ExprId>, VerificationError>;
     /// Observes one word of `width` bits in native transcript encoding.
+    /// `value` must already be constrained to `width` coordinates by `constrain_word`.
     fn observe_word<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
         ch: &mut BinaryTower128Challenger,

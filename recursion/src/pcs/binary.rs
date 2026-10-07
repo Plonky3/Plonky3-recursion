@@ -405,6 +405,9 @@ where
         let invalid = circuit.mul(active, outside);
         circuit.assert_zero(invalid);
         let complete_after = circuit.mul_many(&seen);
+        // `seen` updates are monotone, so `complete` never returns to zero and
+        // `stop` marks the first completing draw; in characteristic 2 `-1 = 1`,
+        // so `assert_bool(stop)` alone would not exclude such a return.
         let stop = circuit.sub(complete_after, complete);
         circuit.assert_bool(stop);
         stop_total = circuit.add(stop_total, stop);

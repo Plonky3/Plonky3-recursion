@@ -514,6 +514,7 @@ where
         P: BinaryFoldPolicy<CF, Base = F, Challenge = E>,
     {
         self.check_targets(cap, points, proof)?;
+        H::check_hash(self.hash)?;
         for value in points
             .iter()
             .flatten()
