@@ -18,6 +18,9 @@ use crate::verifier::VerificationError;
 mod whir;
 pub(crate) use whir::{BinaryOracleWord, BinaryWhirPolicy};
 
+mod fold;
+pub(crate) use fold::BinaryFoldPolicy;
+
 mod native_poly;
 pub(crate) use native_poly::{
     BinaryPolyPolicy, NativePoly64Relation, poly_native_values, poly_observe_seed_with_host,

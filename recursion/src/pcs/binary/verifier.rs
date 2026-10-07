@@ -8,7 +8,9 @@ use core::marker::PhantomData;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::BinaryPcsShape;
-use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::binary_encoding::{
+    BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding,
+};
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::{BinaryTower128Target, ByteHash};
 use p3_circuit::{CircuitBuilder, ExprId};
@@ -21,12 +23,13 @@ use p3_sumcheck::strategy::Basis;
 use p3_sumcheck::transcript::SumcheckShape;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol};
 
+use super::gadgets::{next_eval_using, reduce_sumcheck_using};
 use super::{
-    RecursiveBinaryChallengeField, RecursiveBinaryTowerField, binary128_eq_eval,
-    binary128_fold_pair, binary128_next_eval, binary128_reduce_sumcheck_claim,
-    verify_binary_pcs_query_indices_with_continuation,
+    RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
+    verify_binary_pcs_query_indices_with_host,
 };
 use crate::transcript::{SeedTap, domain_separator_seed};
+use crate::verifier::binary_field_policy::{BinaryFoldPolicy, TowerRelation};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
@@ -34,9 +37,9 @@ use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 /// limbs. Rows and paths have native query order, including projected duplicates.
 /// Each row contains one checked binary symbol and each path belongs to that row.
 #[derive(Clone, Debug)]
-pub struct BinaryOracleOpeningTargets {
+pub struct BinaryOracleOpeningTargets<T = BinaryTower128Target> {
     pub cap: Vec<Vec<ExprId>>,
-    pub rows: Vec<BinaryTower128Target>,
+    pub rows: Vec<T>,
     pub paths: Vec<Vec<Vec<ExprId>>>,
 }
 
@@ -46,14 +49,14 @@ pub struct BinaryOracleOpeningTargets {
 /// performed in the circuit using the constrained query bits. The native
 /// sumcheck PoW vector must be checked empty by a native proof importer.
 #[derive(Clone, Debug)]
-pub struct BinaryPcs128ProofTargets {
-    pub sumcheck: Vec<[BinaryTower128Target; 2]>,
-    pub evals: Vec<OpeningBatch<BinaryTower128Target>>,
-    pub rounds: Vec<BinaryOracleOpeningTargets>,
-    pub base_rows: Vec<BinaryTower128Target>,
+pub struct BinaryPcs128ProofTargets<T = BinaryTower128Target> {
+    pub sumcheck: Vec<[T; 2]>,
+    pub evals: Vec<OpeningBatch<T>>,
+    pub rounds: Vec<BinaryOracleOpeningTargets<T>>,
+    pub base_rows: Vec<T>,
     pub base_paths: Vec<Vec<Vec<ExprId>>>,
-    pub final_codeword: Vec<BinaryTower128Target>,
-    pub pow_witness: BinaryTower128Target,
+    pub final_codeword: Vec<T>,
+    pub pow_witness: T,
     /// Sorted unshifted sampled pair indices, in little-endian bit order.
     /// Native `query_pairs()` returns even low-symbol positions; an importer
     /// converts those positions with `position >> 1` before populating this field.
@@ -356,13 +359,28 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.observe_commitment_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, challenger, cap)
+    }
+
+    /// Same commitment observation under an explicit circuit host.
+    pub fn observe_commitment_with_host<H, CF>(
+        &self,
+        circuit: &mut CircuitBuilder<CF>,
+        challenger: &mut BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryCircuitHost<CF>,
+    {
         self.check_cap(cap)?;
-        observe_seed::<F, BF, EF>(
+        H::check_hash(self.hash)?;
+        observe_seed_with_host::<F, H, CF>(
             circuit,
             challenger,
             &domain_separator_seed(&commitment_domain_separator::<F>()),
         )?;
-        observe_cap::<BF, EF>(circuit, challenger, cap)
+        observe_cap_with_host::<H, CF>(circuit, challenger, cap)
     }
 
     pub const fn input_resource_usage(&self) -> InputResourceUsage {
@@ -425,7 +443,9 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.verify_at_impl::<BF, EF>(circuit, challenger, cap, points, proof, false)
+        self.verify_at_using::<TowerRelation<F, E>, PrimeBinaryEncoding<BF>, EF>(
+            circuit, challenger, cap, points, proof, false,
+        )
     }
 
     /// Verifies an opening immediately after another opening's bounded query
@@ -443,27 +463,53 @@ where
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.after_queries_using::<TowerRelation<F, E>, PrimeBinaryEncoding<BF>, EF>(
+            circuit,
+            continuation,
+            cap,
+            points,
+            proof,
+        )
+    }
+
+    /// Same post-query opening under an explicit scalar policy and circuit host.
+    pub(crate) fn after_queries_using<P, H, CF>(
+        &self,
+        circuit: &mut CircuitBuilder<CF>,
+        continuation: BinaryQueryContinuation,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<P::ChallengeTarget>],
+        proof: &BinaryPcs128ProofTargets<P::ChallengeTarget>,
+    ) -> Result<BinaryQueryContinuation, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+        H: BinaryPcsMmcsHost<CF>,
+        P: BinaryFoldPolicy<CF, Base = F, Challenge = E>,
+    {
         self.check_targets(cap, points, proof)?;
         let seed = self.opening_seeds.first().cloned().unwrap_or_else(|| {
             domain_separator_seed(&BinaryPcsShape::new(&self.config).domain_separator::<F, E>())
         });
-        let bytes = seed_bytes_with_host::<F, PrimeBinaryEncoding<BF>, EF>(circuit, &seed)?;
-        let challenger = continuation.resume_with_observation::<BF, EF>(circuit, &bytes)?;
-        self.verify_at_impl::<BF, EF>(circuit, challenger, cap, points, proof, true)
+        let bytes = seed_bytes_with_host::<F, H, CF>(circuit, &seed)?;
+        let challenger =
+            continuation.resume_with_observation_with_host::<H, CF>(circuit, &bytes)?;
+        self.verify_at_using::<P, H, CF>(circuit, challenger, cap, points, proof, true)
     }
 
-    fn verify_at_impl<BF, EF>(
+    /// Same opening relation under an explicit scalar policy and circuit host.
+    pub(crate) fn verify_at_using<P, H, CF>(
         &self,
-        circuit: &mut CircuitBuilder<EF>,
+        circuit: &mut CircuitBuilder<CF>,
         mut challenger: BinaryTower128Challenger,
         cap: &[Vec<ExprId>],
-        points: &[Vec<BinaryTower128Target>],
-        proof: &BinaryPcs128ProofTargets,
+        points: &[Vec<P::ChallengeTarget>],
+        proof: &BinaryPcs128ProofTargets<P::ChallengeTarget>,
         first_seed_observed: bool,
     ) -> Result<BinaryQueryContinuation, VerificationError>
     where
-        BF: PrimeField64,
-        EF: ExtensionField<BF> + Eq + Hash,
+        CF: Field + Eq + Hash,
+        H: BinaryPcsMmcsHost<CF>,
+        P: BinaryFoldPolicy<CF, Base = F, Challenge = E>,
     {
         self.check_targets(cap, points, proof)?;
         for value in points
@@ -479,36 +525,40 @@ where
             .chain(&proof.final_codeword)
             .chain(proof.rounds.iter().flat_map(|r| &r.rows))
         {
-            constrain_width(circuit, value, E::RAW_BITS);
+            P::constrain_word(circuit, value, E::RAW_BITS)?;
         }
         for value in proof
             .base_rows
             .iter()
             .chain(core::slice::from_ref(&proof.pow_witness))
         {
-            constrain_width(circuit, value, F::RAW_BITS);
+            P::constrain_word(circuit, value, F::RAW_BITS)?;
         }
         for (i, evals) in proof.evals.iter().enumerate() {
             if i != 0 || !first_seed_observed {
-                observe_seed::<F, BF, EF>(circuit, &mut challenger, &self.opening_seeds[i])?;
+                observe_seed_with_host::<F, H, CF>(
+                    circuit,
+                    &mut challenger,
+                    &self.opening_seeds[i],
+                )?;
             }
-            observe_values::<BF, EF>(circuit, &mut challenger, &evals.to_vec(), E::RAW_BITS)?;
+            P::observe::<H>(circuit, &mut challenger, &evals.to_vec())?;
         }
         let shape = BinaryPcsShape::new(&self.config);
         if !first_seed_observed || !self.opening_seeds.is_empty() {
-            observe_seed::<F, BF, EF>(
+            observe_seed_with_host::<F, H, CF>(
                 circuit,
                 &mut challenger,
                 &domain_separator_seed(&shape.domain_separator::<F, E>()),
             )?;
         }
-        observe_seed::<F, BF, EF>(circuit, &mut challenger, &self.batching_seed)?;
-        let alpha = self.sample_challenge::<BF, EF>(circuit, &mut challenger)?;
+        observe_seed_with_host::<F, H, CF>(circuit, &mut challenger, &self.batching_seed)?;
+        let alpha = P::sample::<H>(circuit, &mut challenger)?;
         let shapes = self.protocol.table_shapes();
         let (_, placements) = plan_stacked_layout(&shapes);
-        let one = circuit.binary128_constant(1)?;
+        let one = P::constant(circuit, 1)?;
         let mut power = one.clone();
-        let mut claim = circuit.binary128_constant(0)?;
+        let mut claim = P::constant(circuit, 0)?;
         // Native batching order is placements, then per-table claims, current, next.
         for placement in &placements {
             for (i, (table, _)) in self.protocol.iter_openings().enumerate() {
@@ -516,9 +566,9 @@ where
                     continue;
                 }
                 for eval in proof.evals[i].current().iter().chain(proof.evals[i].next()) {
-                    let term = circuit.binary128_mul(&power, eval);
-                    claim = circuit.binary128_add(&claim, &term);
-                    power = circuit.binary128_mul(&power, &alpha);
+                    let term = P::mul(circuit, &power, eval);
+                    claim = P::add(circuit, &claim, &term);
+                    power = P::mul(circuit, &power, &alpha);
                 }
             }
         }
@@ -528,10 +578,10 @@ where
         let mut betas = Vec::with_capacity(self.config.num_variables());
         for (batch, (start, arity)) in batches(&self.config).enumerate() {
             for message in &proof.sumcheck[start..start + arity] {
-                observe_seed::<F, BF, EF>(circuit, &mut challenger, &round_seed)?;
-                observe_values::<BF, EF>(circuit, &mut challenger, message, E::RAW_BITS)?;
-                let beta = self.sample_challenge::<BF, EF>(circuit, &mut challenger)?;
-                claim = binary128_reduce_sumcheck_claim(
+                observe_seed_with_host::<F, H, CF>(circuit, &mut challenger, &round_seed)?;
+                P::observe::<H>(circuit, &mut challenger, message)?;
+                let beta = P::sample::<H>(circuit, &mut challenger)?;
+                claim = reduce_sumcheck_using::<P, CF>(
                     circuit,
                     &claim,
                     &message[0],
@@ -541,11 +591,12 @@ where
                 betas.push(beta);
             }
             if batch + 1 < self.config.num_fold_batches() {
-                observe_cap::<BF, EF>(circuit, &mut challenger, &proof.rounds[batch].cap)?;
+                observe_cap_with_host::<H, CF>(circuit, &mut challenger, &proof.rounds[batch].cap)?;
             }
+            circuit.check_construction_limits()?;
         }
         let fold_point: Vec<_> = betas.iter().rev().cloned().collect();
-        let mut weight = circuit.binary128_constant(0)?;
+        let mut weight = P::constant(circuit, 0)?;
         power = one;
         for placement in &placements {
             for (i, (table, batch)) in self.protocol.iter_openings().enumerate() {
@@ -559,59 +610,54 @@ where
                             .point::<BinaryField128>()
                             .as_slice()
                             .iter()
-                            .map(|x| circuit.binary128_constant(x.to_repr()))
+                            .map(|x| P::constant(circuit, x.to_repr()))
                             .collect::<Result<_, _>>()?;
                         let selector_vars = selector.num_variables();
                         let local_weight = if successor {
-                            binary128_next_eval(circuit, &points[i], &fold_point[selector_vars..])?
+                            next_eval_using::<P, CF>(
+                                circuit,
+                                &points[i],
+                                &fold_point[selector_vars..],
+                            )?
                         } else {
-                            binary128_eq_eval(circuit, &points[i], &fold_point[selector_vars..])?
+                            P::eq_eval(circuit, &points[i], &fold_point[selector_vars..])?
                         };
-                        let selector_weight = binary128_eq_eval(
-                            circuit,
-                            &selector_point,
-                            &fold_point[..selector_vars],
-                        )?;
-                        let selected_weight =
-                            circuit.binary128_mul(&selector_weight, &local_weight);
-                        let term = circuit.binary128_mul(&power, &selected_weight);
-                        weight = circuit.binary128_add(&weight, &term);
-                        power = circuit.binary128_mul(&power, &alpha);
+                        let selector_weight =
+                            P::eq_eval(circuit, &selector_point, &fold_point[..selector_vars])?;
+                        let selected_weight = P::mul(circuit, &selector_weight, &local_weight);
+                        let term = P::mul(circuit, &power, &selected_weight);
+                        weight = P::add(circuit, &weight, &term);
+                        power = P::mul(circuit, &power, &alpha);
                     }
                 }
             }
         }
         let final_value = &proof.final_codeword[0];
         for value in &proof.final_codeword[1..] {
-            assert_equal(circuit, value, final_value);
+            P::assert_equal(circuit, value, final_value);
         }
-        let expected_claim = circuit.binary128_mul(&weight, final_value);
-        assert_equal(circuit, &claim, &expected_claim);
-        observe_values::<BF, EF>(circuit, &mut challenger, &proof.final_codeword, E::RAW_BITS)?;
+        let expected_claim = P::mul(circuit, &weight, final_value);
+        P::assert_equal(circuit, &claim, &expected_claim);
+        P::observe::<H>(circuit, &mut challenger, &proof.final_codeword)?;
         if self.config.pow_bits() == 0 {
-            let zero = circuit.binary128_constant(0)?;
-            assert_equal(circuit, &proof.pow_witness, &zero);
+            let zero = P::constant(circuit, 0)?;
+            P::assert_equal(circuit, &proof.pow_witness, &zero);
         } else {
-            observe_values::<BF, EF>(
-                circuit,
-                &mut challenger,
-                core::slice::from_ref(&proof.pow_witness),
-                F::RAW_BITS,
-            )?;
-            for bit in challenger.sample_bits::<BF, EF>(circuit, self.config.pow_bits())? {
+            P::observe_word::<H>(circuit, &mut challenger, &proof.pow_witness, F::RAW_BITS)?;
+            for bit in challenger.sample_bits_with_host::<H, CF>(circuit, self.config.pow_bits())? {
                 let difference = circuit.sub(ExprId::ZERO, bit);
                 circuit.assert_zero(difference);
             }
         }
-        let continuation = verify_binary_pcs_query_indices_with_continuation::<BF, EF>(
+        let continuation = verify_binary_pcs_query_indices_with_host::<H, CF>(
             circuit,
             challenger,
             &self.config,
             &proof.query_indices,
             self.max_query_draws,
         )?;
-        let zero = circuit.define_const(EF::ZERO);
-        let one = circuit.define_const(EF::ONE);
+        let zero = circuit.define_const(CF::ZERO);
+        let one = circuit.define_const(CF::ONE);
         let schedule: Vec<_> = batches(&self.config).collect();
         let log_domain = self.config.num_variables() + self.config.log_inv_rate();
         for (q, query) in proof.query_indices.iter().enumerate() {
@@ -632,17 +678,12 @@ where
                         *bit = if offset >> b & 1 == 1 { one } else { zero };
                     }
                     let width = if batch == 0 { F::RAW_BITS } else { E::RAW_BITS };
-                    let bytes = tower_bytes::<BF, EF>(circuit, row, width)?;
-                    // A fixed coset offset can send a sibling limb straight
-                    // into the hash NPO. Range checks also give each private
-                    // digest limb an ALU creator on the witness bus.
-                    for &limb in paths[q * size + offset].iter().flatten() {
-                        let _ = circuit.decompose_to_bits::<BF>(limb, 16)?;
-                    }
-                    circuit.verify_byte_hash_mmcs_opening_bytes::<BF>(
+                    let bytes = P::leaf_bytes::<H>(circuit, row, width)?;
+                    H::authenticate_leaf(
+                        circuit,
                         self.hash,
-                        &[bytes],
-                        &[1usize << (log_domain - start)],
+                        bytes,
+                        1usize << (log_domain - start),
                         &leaf_index,
                         &paths[q * size + offset],
                         cap,
@@ -656,7 +697,7 @@ where
                         for (b, bit) in pair_index[..arity - j - 1].iter_mut().enumerate() {
                             *bit = if offset >> b & 1 == 1 { one } else { zero };
                         }
-                        next.push(binary128_fold_pair(
+                        next.push(P::fold_pair(
                             circuit,
                             &pair_index,
                             &betas[start + j],
@@ -668,7 +709,7 @@ where
                 }
                 let expected = if let Some(&(_, next_arity)) = schedule.get(batch + 1) {
                     let size = 1usize << next_arity;
-                    select_symbol(
+                    select_symbol::<P, CF>(
                         circuit,
                         &proof.rounds[batch].rows[q * size..(q + 1) * size],
                         &index[start + arity..start + arity + next_arity],
@@ -677,8 +718,9 @@ where
                     // Uniformity already binds every final symbol to the first.
                     final_value.clone()
                 };
-                assert_equal(circuit, &folded[0], &expected);
+                P::assert_equal(circuit, &folded[0], &expected);
             }
+            circuit.check_construction_limits()?;
         }
         Ok(continuation)
     }
@@ -692,11 +734,11 @@ where
         Ok(())
     }
 
-    pub(crate) fn check_targets(
+    pub(crate) fn check_targets<T>(
         &self,
         cap: &[Vec<ExprId>],
-        points: &[Vec<BinaryTower128Target>],
-        proof: &BinaryPcs128ProofTargets,
+        points: &[Vec<T>],
+        proof: &BinaryPcs128ProofTargets<T>,
     ) -> Result<(), VerificationError> {
         self.check_cap(cap)?;
         let shape = BinaryPcsShape::new(&self.config);
@@ -755,6 +797,71 @@ where
                 ));
             }
         }
+        Ok(())
+    }
+}
+
+/// Byte-tree authentication of one serialized BaseFold symbol under a circuit host.
+pub(crate) trait BinaryPcsMmcsHost<CF: Field + Eq + Hash>: BinaryCircuitHost<CF> {
+    #[allow(clippy::too_many_arguments)]
+    fn authenticate_leaf(
+        b: &mut CircuitBuilder<CF>,
+        hash: ByteHash,
+        bytes: Vec<ExprId>,
+        height: usize,
+        index: &[ExprId],
+        path: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError>;
+}
+
+impl<BF, EF> BinaryPcsMmcsHost<EF> for PrimeBinaryEncoding<BF>
+where
+    BF: PrimeField64,
+    EF: ExtensionField<BF> + Eq + Hash,
+{
+    fn authenticate_leaf(
+        b: &mut CircuitBuilder<EF>,
+        hash: ByteHash,
+        bytes: Vec<ExprId>,
+        height: usize,
+        index: &[ExprId],
+        path: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        // A fixed coset offset can send a sibling limb straight
+        // into the hash NPO. Range checks also give each private
+        // digest limb an ALU creator on the witness bus.
+        for &limb in path.iter().flatten() {
+            let _ = b.decompose_to_bits::<BF>(limb, 16)?;
+        }
+        b.verify_byte_hash_mmcs_opening_bytes::<BF>(hash, &[bytes], &[height], index, path, cap)?;
+        Ok(())
+    }
+}
+
+impl BinaryPcsMmcsHost<BinaryField128> for NativeBinaryEncoding {
+    fn authenticate_leaf(
+        b: &mut CircuitBuilder<BinaryField128>,
+        hash: ByteHash,
+        bytes: Vec<ExprId>,
+        height: usize,
+        index: &[ExprId],
+        path: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        for &limb in path.iter().flatten() {
+            <Self as BinaryCircuitEncoding<BinaryField128>>::decompose_word(b, limb, 16)?;
+        }
+        b.verify_byte_hash_mmcs_opening_bytes_with_host::<Self>(
+            hash,
+            &[bytes],
+            &[height],
+            index,
+            path,
+            cap,
+        )?;
+        b.check_construction_limits()?;
         Ok(())
     }
 }
@@ -819,18 +926,6 @@ where
         })
         .map(|byte| Ok(circuit.define_const(H::encode_u16(u16::from(byte))?)))
         .collect()
-}
-
-pub(crate) fn observe_cap<BF, EF>(
-    circuit: &mut CircuitBuilder<EF>,
-    challenger: &mut BinaryTower128Challenger,
-    cap: &[Vec<ExprId>],
-) -> Result<(), VerificationError>
-where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
-{
-    observe_cap_with_host::<PrimeBinaryEncoding<BF>, EF>(circuit, challenger, cap)
 }
 
 pub(crate) fn observe_cap_with_host<H, EF>(
@@ -947,23 +1042,22 @@ pub(crate) fn assert_equal<F: Field + Eq + Hash>(
     }
 }
 
-fn select_symbol<F: Field + Eq + Hash>(
-    circuit: &mut CircuitBuilder<F>,
-    symbols: &[BinaryTower128Target],
+fn select_symbol<P, CF>(
+    circuit: &mut CircuitBuilder<CF>,
+    symbols: &[P::ChallengeTarget],
     index: &[ExprId],
-) -> Result<BinaryTower128Target, VerificationError> {
+) -> Result<P::ChallengeTarget, VerificationError>
+where
+    CF: Field + Eq + Hash,
+    P: BinaryFoldPolicy<CF>,
+{
     let mut layer = symbols.to_vec();
     for &bit in index {
         layer = layer
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|pair| {
-                let bits = core::array::from_fn(|i| {
-                    circuit.select(bit, pair[1].bits()[i], pair[0].bits()[i])
-                });
-                circuit.binary128_from_bits(bits)
-            })
+            .map(|pair| P::select(circuit, bit, &pair[1], &pair[0]))
             .collect::<Result<_, _>>()?;
     }
     Ok(layer

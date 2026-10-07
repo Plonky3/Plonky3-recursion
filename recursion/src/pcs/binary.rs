@@ -6,8 +6,10 @@ use core::hash::Hash;
 
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::BinaryPcsShape;
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
-use p3_field::{ExtensionField, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
@@ -160,7 +162,7 @@ pub use verifier::{
 };
 pub(crate) use verifier::{
     assert_equal, observe_cap_with_host, observe_seed, observe_seed_with_host, observe_values,
-    observe_values_with_host, seed_bytes_with_host,
+    observe_values_with_host, seed_bytes_with_host, tower_bytes_with_host,
 };
 pub use whir_gadgets::{
     binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,
@@ -217,6 +219,27 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
+    verify_binary_pcs_query_indices_with_host::<PrimeBinaryEncoding<BF>, EF>(
+        circuit,
+        challenger,
+        config,
+        sorted_indices,
+        max_draws,
+    )
+}
+
+/// Same relation under an explicit circuit host.
+pub(crate) fn verify_binary_pcs_query_indices_with_host<H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: BinaryTower128Challenger,
+    config: &BinaryPcsConfig,
+    sorted_indices: &[Vec<ExprId>],
+    max_draws: usize,
+) -> Result<BinaryQueryContinuation, CircuitBuilderError>
+where
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
+{
     let shape = BinaryPcsShape::new(config);
     if sorted_indices.len() != shape.num_pairs {
         return Err(CircuitBuilderError::NonPrimitiveOpArity {
@@ -225,7 +248,7 @@ where
             got: sorted_indices.len(),
         });
     }
-    verify_binary_query_indices_with_continuation::<BF, EF>(
+    verify_binary_query_indices_with_host::<H, EF>(
         circuit,
         challenger,
         shape.pair_bits,
@@ -280,7 +303,7 @@ where
 /// Shape checks and errors match [`verify_binary_query_indices`].
 pub fn verify_binary_query_indices_with_continuation<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    mut challenger: BinaryTower128Challenger,
+    challenger: BinaryTower128Challenger,
     bits: usize,
     sorted_indices: &[Vec<ExprId>],
     max_draws: usize,
@@ -288,6 +311,27 @@ pub fn verify_binary_query_indices_with_continuation<BF, EF>(
 where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
+{
+    verify_binary_query_indices_with_host::<PrimeBinaryEncoding<BF>, EF>(
+        circuit,
+        challenger,
+        bits,
+        sorted_indices,
+        max_draws,
+    )
+}
+
+/// Same relation under an explicit circuit host.
+pub(crate) fn verify_binary_query_indices_with_host<H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    mut challenger: BinaryTower128Challenger,
+    bits: usize,
+    sorted_indices: &[Vec<ExprId>],
+    max_draws: usize,
+) -> Result<BinaryQueryContinuation, CircuitBuilderError>
+where
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
 {
     if bits >= usize::BITS as usize {
         return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
@@ -340,7 +384,7 @@ where
     let mut stop_total = zero;
     for _ in 0..max_draws {
         // Native uniform-bit sampling consumes eight bytes even for bits=0.
-        let candidate = challenger.sample_bits::<BF, EF>(circuit, bits)?;
+        let candidate = challenger.sample_bits_with_host::<H, EF>(circuit, bits)?;
         let complete = circuit.mul_many(&seen);
         let active = circuit.sub(one, complete);
         let mut membership = zero;
@@ -368,6 +412,7 @@ where
         for (selected, byte) in retained.iter_mut().zip(digest) {
             *selected = circuit.mul_add(stop, byte, *selected);
         }
+        circuit.check_construction_limits()?;
     }
     for present in seen {
         circuit.connect(present, one);
