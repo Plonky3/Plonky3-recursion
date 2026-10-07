@@ -1,6 +1,7 @@
 //! Native Tower128 proving followed by native Tower128 recursion. `--pcs
 //! folding|whir` selects the polynomial commitment of the source proof and of
-//! every recursion layer.
+//! every recursion layer. With `--pcs folding`, `--leaves coset|symbol`
+//! selects whether each Merkle leaf is one fold coset or one codeword symbol.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_binary_recursion -- --layers 2
@@ -28,6 +29,10 @@
 //! 2 takes 95 s (24 GB resident) and needs
 //! `--max-pcs-codeword-cells 1073741824`.
 //!
+//! `--pcs folding` takes the same security level and grinding bits. Its coset
+//! leaves default to cap height 1, and its second layer needs more than the
+//! default `--max-pcs-codeword-cells`; the limit error states how many.
+//!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits
 //! count field cells or graph entries, not bytes.
 
@@ -43,12 +48,14 @@ use p3_circuit::ops::ByteHash;
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
-    ArtifactLimits, BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
+    ArtifactLimits, BinaryNativeAuthority, BinaryNativeGroupedAuthority,
+    BinaryNativeGroupedPcsParameters, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
     BinaryNativeWhirAuthority, BinaryNativeWhirPcsParameters,
 };
+use p3_recursion::pcs::binary::BinaryCodewordGrouping;
 use p3_recursion::prepared::{
     NativeBinaryFoldingRecursionOptions, NativeBinaryRecursionOptions, PreparedNativeBinaryLayer,
-    PreparedNativeBinaryWhirLayer,
+    PreparedNativeBinaryWhirLayer, PreparedNativeGroupedBinaryLayer,
 };
 use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -59,16 +66,29 @@ use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 type F = BinaryField128;
+const DEFAULT_CAP_HEIGHT: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum Pcs {
     Whir,
     Folding,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Leaves {
+    /// One Merkle leaf per fold coset.
+    Coset,
+    /// One Merkle leaf per codeword symbol.
+    Symbol,
 }
 #[derive(Parser)]
 struct Args {
     /// Polynomial commitment for the source proof and every recursion layer.
     #[arg(long, value_enum, default_value_t = Pcs::Whir)]
     pcs: Pcs,
+    /// Merkle leaves of every folding commitment; ignored by `--pcs whir`.
+    /// `coset` requires a cap height at most `--log-inv-rate`, since the
+    /// smallest coset-leaf tree has `2^log_inv_rate` leaves.
+    #[arg(long, value_enum, default_value_t = Leaves::Coset)]
+    leaves: Leaves,
     /// Log folding factor of the recursive output PCS (both WHIR and folding).
     #[arg(long, default_value_t = 4)]
     fold_arity: usize,
@@ -101,13 +121,24 @@ struct Args {
     /// PCS security level per opening; composed security still requires four bits.
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
-    /// Merkle cap height for the recursive output proofs.
-    #[arg(long, default_value_t = 4)]
-    cap_height: usize,
+    /// Merkle cap height for the recursive output proofs. Defaults to 4, or
+    /// to at most `--log-inv-rate` with `--pcs folding --leaves coset`.
+    #[arg(long)]
+    cap_height: Option<usize>,
     /// Grinding bits per recursive opening (both WHIR and folding); queries cover the rest
     /// of the security level.
     #[arg(long, default_value_t = 24)]
     pow_bits: usize,
+}
+impl Args {
+    /// `--cap-height`, or the default for the selected commitment and leaves.
+    fn cap_height(&self) -> usize {
+        self.cap_height
+            .unwrap_or_else(|| match (self.pcs, self.leaves) {
+                (Pcs::Folding, Leaves::Coset) => DEFAULT_CAP_HEIGHT.min(self.log_inv_rate),
+                _ => DEFAULT_CAP_HEIGHT,
+            })
+    }
 }
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
@@ -156,7 +187,7 @@ fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
         main: recursive_protocol(args),
         preprocessed: recursive_protocol(args),
-        cap_height: args.cap_height,
+        cap_height: args.cap_height(),
         initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
@@ -182,7 +213,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     match args.pcs {
         Pcs::Whir => run_whir(&args),
-        Pcs::Folding => run_folding(&args),
+        Pcs::Folding => match args.leaves {
+            Leaves::Coset => run_grouped_folding(&args),
+            Leaves::Symbol => run_folding(&args),
+        },
     }
 }
 fn folding_options(depth: usize, args: &Args) -> NativeBinaryFoldingRecursionOptions {
@@ -195,7 +229,7 @@ fn folding_options(depth: usize, args: &Args) -> NativeBinaryFoldingRecursionOpt
         main: params,
         preprocessed: params,
         log_folding_factor: args.fold_arity,
-        cap_height: args.cap_height,
+        cap_height: args.cap_height(),
         query_draw_slack: args.query_draw_slack,
         initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
@@ -308,23 +342,27 @@ fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn folding_source_pcs() -> Result<BinaryNativePcsParameters, Box<dyn Error>> {
+    Ok(BinaryNativePcsParameters {
+        config: BinaryPcsConfig::try_new::<F, F>(
+            2,
+            BinaryPcsParams {
+                log_inv_rate: 1,
+                pow_bits: 0,
+                security_level: 8,
+            },
+        )?,
+        hash: ByteHash::Keccak256,
+        cap_height: 0,
+        max_query_draws: 64,
+    })
+}
+
 fn run_folding(args: &Args) -> Result<(), Box<dyn Error>> {
     let (input, output, values) = source_trace();
     let mut expected = vec![vec![input, output]];
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativePcsParameters {
-            config: BinaryPcsConfig::try_new::<F, F>(
-                2,
-                BinaryPcsParams {
-                    log_inv_rate: 1,
-                    pow_bits: 0,
-                    security_level: 8,
-                },
-            )?,
-            hash: ByteHash::Keccak256,
-            cap_height: 0,
-            max_query_draws: 64,
-        },
+        main: folding_source_pcs()?,
         preprocessed: None,
         transcript_hash: ByteHash::Keccak256,
         initial_bytes: b"native-binary-recursion-source-v1".to_vec(),
@@ -386,6 +424,83 @@ fn run_folding(args: &Args) -> Result<(), Box<dyn Error>> {
                 &limits,
                 &construction_limits,
             )?;
+        }
+    }
+    Ok(())
+}
+
+fn run_grouped_folding(args: &Args) -> Result<(), Box<dyn Error>> {
+    let (input, output, values) = source_trace();
+    let mut expected = vec![vec![input, output]];
+    let spec = BinaryNativeVerifierSpec {
+        main: BinaryNativeGroupedPcsParameters {
+            pcs: folding_source_pcs()?,
+            base_grouping: BinaryCodewordGrouping::Folding,
+            round_grouping: BinaryCodewordGrouping::Folding,
+        },
+        preprocessed: None,
+        transcript_hash: ByteHash::Keccak256,
+        initial_bytes: b"native-binary-recursion-source-v1".to_vec(),
+        sumcheck_pow_bits: 0,
+        max_tau_draws: 8,
+        security_bits: 4,
+    };
+    let (prover, authority) = BinaryNativeGroupedAuthority::<F, F, _>::setup(
+        vec![SquaringAir],
+        vec![2],
+        spec,
+        &VerifierLimits::default(),
+    )?;
+    let proof = prover.prove(&expected, vec![RowMajorMatrix::new(values, 1)])?;
+    let mut checked = authority.verify_native(&proof, &expected)?;
+    println!(
+        "Tower128 source verified: {:#034x} -> {:#034x}",
+        input.to_repr(),
+        output.to_repr()
+    );
+    let (limits, construction_limits) = circuit_limits(args);
+    println!("Preparing native recursion layer 1...");
+    let mut layer =
+        PreparedNativeGroupedBinaryLayer::from_native_authority_with_construction_limits(
+            &authority,
+            folding_options(1, args),
+            &limits,
+            &construction_limits,
+        )?;
+    drop(prover);
+    for depth in 1..=args.layers {
+        let start = Instant::now();
+        println!(
+            "Layer {depth}: {} witnesses, {} initial codeword cells",
+            layer.circuit().witness_count,
+            layer.initial_codeword_cells()
+        );
+        let next_expected = layer.output_public_values(&expected)?;
+        let recursive = layer.prove_verified(&checked)?;
+        checked = layer.verify(&recursive, &expected)?;
+        println!(
+            "Native Tower128 layer {depth} proved and verified in {:.2?}",
+            start.elapsed()
+        );
+        let bytes = match layer
+            .authority()
+            .encode_native_proof(&recursive, &next_expected)
+        {
+            Ok(bytes) => bytes.len().to_string(),
+            Err(error) => format!("unavailable ({error:?})"),
+        };
+        println!("Layer {depth} proof bytes: {bytes}");
+        expected = next_expected;
+        if depth < args.layers {
+            println!("Preparing native recursion layer {}...", depth + 1);
+            let authority = layer.into_authority();
+            layer =
+                PreparedNativeGroupedBinaryLayer::from_native_authority_with_construction_limits(
+                    &authority,
+                    folding_options(depth + 1, args),
+                    &limits,
+                    &construction_limits,
+                )?;
         }
     }
     Ok(())
