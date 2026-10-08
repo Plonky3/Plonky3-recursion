@@ -173,7 +173,7 @@ jobs:
 
       - name: Upload compilation timings
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cargo-timings-${{ matrix.shard }}-${{ matrix.partition }}-${{ matrix.os }}-${{ matrix.features || 'baseline' }}-${{ github.run_attempt }}
           path: target/cargo-timings/*.html
