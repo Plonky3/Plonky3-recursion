@@ -949,7 +949,7 @@ dependencies = [
  "rand 0.10.3",
  "rayon",
  "serde",
- "spin 0.9.9",
+ "spin 0.12.3",
  "strum",
  "thiserror",
  "tracing",
