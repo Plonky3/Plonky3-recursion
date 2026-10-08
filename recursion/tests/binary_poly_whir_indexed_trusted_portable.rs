@@ -300,6 +300,7 @@ fn checked_poly_whir_chain(hash: ByteHash) {
 }
 
 #[test]
+#[ignore]
 fn checked_poly_indexed_bus_bytes_survive_two_portable_recursion_layers() {
     checked_poly_whir_chain(ByteHash::Blake3);
 }

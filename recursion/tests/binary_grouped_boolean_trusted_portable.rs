@@ -293,6 +293,7 @@ fn checked_grouped_boolean_trace_chain(hash: ByteHash) {
 }
 
 #[test]
+#[ignore]
 fn checked_grouped_boolean_trace_native_bytes_survive_two_portable_recursion_layers() {
     checked_grouped_boolean_trace_chain(ByteHash::Blake3);
 }

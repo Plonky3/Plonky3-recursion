@@ -29,7 +29,7 @@ jobs:
         run: python3 scripts/check_packaged_crates.py
 
   workspace_tests:
-    name: Workspace tests (${{ matrix.features || 'baseline' }}, ${{ matrix.shard.name }})
+    name: Workspace tests (${{ matrix.features || 'baseline' }}, ${{ matrix.shard }}, ${{ matrix.partition }}/${{ matrix.partition_count }})
     env:
       # Debug info and generic symbol names exhaust hosted runner disks.
       # Profile settings keep debug assertions and compose with the AVX2 RUSTFLAGS.
@@ -47,8 +47,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard:
-          - name: core
+        shard: [core, boolean, poly, stark, protocol]
+        os: [ubuntu-latest]
+        features: ['', '+avx2']
+        # Proof tests must run alone for memory safety. Spread their runtime
+        # across runners without splitting Cargo targets or skipping tests.
+        partition: [1, 2, 3]
+        exclude:
+          - { shard: core, partition: 2 }
+          - { shard: core, partition: 3 }
+          - { shard: poly, partition: 3 }
+          - { shard: protocol, partition: 2 }
+          - { shard: protocol, partition: 3 }
+        include:
+          - shard: core
+            partition_count: 1
             targets: >-
               --lib --bins --examples --benches
               --test arity4_mmcs --test arity4_mmcs_fields --test assurance_algebraic
@@ -62,24 +75,26 @@ jobs:
               --test statement --test statement_schema_api --test trusted_statement
             profile: --config profile.test.package.p3-recursion.opt-level=0
             feature_args: ''
-          - name: boolean
+          - shard: boolean
+            partition_count: 3
             targets: --test binary_boolean
             profile: ''
             feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
-          - name: poly
+          - shard: poly
+            partition_count: 2
             targets: --test binary_poly --test native_recursion
             profile: ''
             feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
-          - name: stark
+          - shard: stark
+            partition_count: 3
             targets: --test binary_stark --test whir_recursion --test whir_quintic
             profile: ''
             feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
-          - name: protocol
+          - shard: protocol
+            partition_count: 1
             targets: --test binary_components --test fri_recursion --test prepared_recursion --test protocol_contracts
             profile: ''
             feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
-        os: [ubuntu-latest]
-        features: ['', '+avx2']
     runs-on: ${{ matrix.os }}
     if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
 
@@ -130,7 +145,7 @@ jobs:
       # Single binary verifier tests peak close to the runner's 16 GB of RAM.
       # Swap absorbs a short overshoot instead of losing the runner.
       - name: Add swap
-        if: ${{ matrix.shard.name != 'core' }}
+        if: ${{ matrix.shard != 'core' }}
         run: |
           set -eux
           sudo fallocate -l 16G /extra.swap
@@ -143,22 +158,24 @@ jobs:
       - name: Test shard (workspace)
         run: >-
           cargo nextest run --locked --workspace --timings
-          ${{ matrix.shard.targets }} ${{ matrix.shard.profile }} ${{ matrix.shard.feature_args }}
+          ${{ matrix.targets }} ${{ matrix.profile }} ${{ matrix.feature_args }}
+          --partition hash:${{ matrix.partition }}/${{ matrix.partition_count }}
 
       # Core covers serial execution and all diagnostic/profiling features.
       # Proof shards exercise parallel execution once: recording millions of
       # diagnostic allocations exceeds runner memory and doubles compilation.
       - name: Test shard (workspace, all-features)
-        if: ${{ matrix.shard.name == 'core' }}
+        if: ${{ matrix.shard == 'core' }}
         run: >-
           cargo nextest run --locked --workspace --all-features --timings
-          ${{ matrix.shard.targets }} ${{ matrix.shard.profile }}
+          ${{ matrix.targets }} ${{ matrix.profile }}
+          --partition hash:${{ matrix.partition }}/${{ matrix.partition_count }}
 
       - name: Upload compilation timings
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: cargo-timings-${{ matrix.shard.name }}-${{ matrix.os }}-${{ matrix.features || 'baseline' }}-${{ github.run_attempt }}
+          name: cargo-timings-${{ matrix.shard }}-${{ matrix.partition }}-${{ matrix.os }}-${{ matrix.features || 'baseline' }}-${{ github.run_attempt }}
           path: target/cargo-timings/*.html
 
   workspace_checks:

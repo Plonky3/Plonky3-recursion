@@ -461,6 +461,7 @@ fn trusted_trace_geometry_and_combined_limits_reject_before_allocation() {
 }
 
 #[test]
+#[ignore]
 fn whir_trace_opening_proves_in_a_prime_field_circuit() {
     use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{

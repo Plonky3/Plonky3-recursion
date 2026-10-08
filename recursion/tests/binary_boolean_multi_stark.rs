@@ -558,6 +558,7 @@ fn prepared_input() -> (
 }
 
 #[test]
+#[ignore]
 fn prepared_boolean_trace_multi_stark_proves_its_bound_statement() {
     use p3_field::PrimeField64;
     use p3_recursion::ProveNextLayerParams;

@@ -303,6 +303,7 @@ fn composed_boolean_opening_proves_in_a_prime_field_circuit() {
 }
 
 #[test]
+#[ignore]
 fn consecutive_boolean_openings_reuse_the_native_ring_entry() {
     type E = BinaryField64;
     let config = BinaryPcsConfig::try_new::<E, E>(

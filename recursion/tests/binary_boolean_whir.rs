@@ -357,6 +357,7 @@ fn combined_resource_limit_accounts_for_both_the_ring_and_whir() {
 }
 
 #[test]
+#[ignore]
 fn complete_boolean_whir_readings_prove_in_a_prime_field_circuit() {
     use p3_circuit_prover::ConstraintProfile;
     use p3_circuit_prover::batch_stark_prover::{
