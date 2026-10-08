@@ -23,7 +23,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Build and run from published archives
         run: python3 scripts/check_packaged_crates.py
@@ -99,7 +99,7 @@ jobs:
     if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
@@ -207,7 +207,7 @@ jobs:
     if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
@@ -326,7 +326,7 @@ jobs:
     if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         id: rs-stable
@@ -366,7 +366,7 @@ jobs:
       CARGO_TARGET_DIR: target-embedded
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -408,7 +408,7 @@ jobs:
     if: "! contains(toJSON(github.event.commits.*.message), '[skip-ci]')"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:

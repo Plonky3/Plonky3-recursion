@@ -21,7 +21,7 @@ jobs:
       - name: Configure Cargo target directory
         run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/api-compatibility-target" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
