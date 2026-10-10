@@ -102,6 +102,33 @@ impl CircuitBuilder<BinaryField128> {
         self.native_tower128_from_bits(bits.try_into().expect("eight words have 128 bits"))
     }
 
+    /// Packs sixteen low-first bytes into the scalar `sum_k bytes[k] * x_k`,
+    /// where `x_k` has the single raw coordinate `8 * k`.
+    ///
+    /// Every byte is constrained to eight raw coordinates, which costs nothing
+    /// when its coordinates are already known. In the tower basis, multiplying
+    /// a scalar of at most eight coordinates by `x_k` shifts its coordinates
+    /// up by `8 * k`, so the packed scalar's coordinates are the bytes' bits in
+    /// order; they are recorded for later decompositions. IDs must belong to
+    /// this builder's graph.
+    pub fn native_tower128_from_bytes(
+        &mut self,
+        bytes: [ExprId; 16],
+    ) -> Result<NativeTower128Target, CircuitBuilderError> {
+        let mut bits = Vec::with_capacity(128);
+        for &byte in &bytes {
+            bits.extend(self.binary_decompose_coordinates(byte, 8)?);
+        }
+        let mut sum = bytes[0];
+        for (k, &byte) in bytes.iter().enumerate().skip(1) {
+            let shift = self.define_const(BinaryField128::from_repr(1 << (8 * k)));
+            sum = self.mul_add(byte, shift, sum);
+        }
+        self.check_construction_limits()?;
+        self.record_native_coordinates(sum, &bits);
+        Ok(NativeTower128Target { value: sum })
+    }
+
     pub fn native_tower128_to_words(
         &mut self,
         value: &NativeTower128Target,

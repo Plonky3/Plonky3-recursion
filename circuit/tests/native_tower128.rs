@@ -84,6 +84,84 @@ fn zero_has_no_native_scalar_inverse() {
     assert!(runner.run().is_err());
 }
 
+/// Sixteen bytes pack into the scalar whose raw coordinates are their bits in
+/// order. A byte with an eighth coordinate is rejected even when its
+/// neighbour compensates, which leaves the packed scalar unchanged.
+#[test]
+fn bytes_pack_into_their_raw_coordinates_and_reject_wide_bytes() {
+    for k in 1..16 {
+        for i in 0..8 {
+            assert_eq!(
+                F::from_repr(1 << i) * F::from_repr(1 << (8 * k)),
+                F::from_repr(1 << (8 * k + i))
+            );
+        }
+    }
+    let value = 0x8912_3456_789a_bcde_f012_3456_789a_bcdeu128;
+    let mut b = CircuitBuilder::<F>::new();
+    let bytes = b.alloc_public_input_array::<16>("bytes");
+    let expected = b.public_input();
+    let packed = b.native_tower128_from_bytes(bytes).unwrap();
+    b.connect(packed.as_expr(), expected);
+    let circuit = b.build().unwrap();
+    let runs = |public: &[F]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let mut public: Vec<F> = value
+        .to_le_bytes()
+        .map(|byte| F::from_repr(byte.into()))
+        .to_vec();
+    public.push(F::from_repr(value));
+    assert!(runs(&public));
+    let mut wrong = public.clone();
+    wrong[16] += F::from_repr(1 << 77);
+    assert!(!runs(&wrong), "changed packed scalar");
+    let mut wide = public;
+    wide[2] += F::from_repr(1 << 8);
+    wide[3] += F::ONE;
+    assert_eq!(
+        (0..16)
+            .map(|k| wide[k] * F::from_repr(1 << (8 * k)))
+            .sum::<F>(),
+        wide[16]
+    );
+    assert!(!runs(&wide), "byte with coordinate 8");
+}
+
+/// A packed scalar keeps its bytes' coordinates, so a later decomposition adds
+/// nothing, and bytes that are already checked cost one `mul_add` each.
+#[test]
+fn packed_bytes_record_their_coordinates() {
+    let mut b = CircuitBuilder::<F>::new();
+    let bytes = b.alloc_public_input_array::<16>("bytes");
+    let packed = b.native_tower128_from_bytes(bytes).unwrap();
+    let before = b.construction_usage().unwrap();
+    let bits = b.native_tower128_to_bits(&packed).unwrap();
+    for (k, &byte) in bytes.iter().enumerate() {
+        let byte_bits = b.binary_decompose_coordinates(byte, 8).unwrap();
+        assert_eq!(bits[8 * k..8 * k + 8], byte_bits[..]);
+    }
+    assert_eq!(b.construction_usage().unwrap(), before);
+    let checked: [_; 16] = bits
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|byte| b.binary_recompose_coordinates(byte).unwrap())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let before = b.construction_usage().unwrap().expression_nodes;
+    b.native_tower128_from_bytes(checked).unwrap();
+    assert_eq!(
+        b.construction_usage().unwrap().expression_nodes - before,
+        15
+    );
+}
+
 #[test]
 fn unchecked_words_split_and_bind_the_low_coordinates() {
     let value = 0x8912_3456_789a_bcde_f012_3456_789a_bcdeu128;
