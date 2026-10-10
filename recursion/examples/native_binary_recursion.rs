@@ -1,17 +1,32 @@
 //! Native Tower128 proving followed by native Tower128 recursion.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
-//!     --example native_binary_recursion -- --layers 1
+//!     --example native_binary_recursion -- --layers 3
 //!
-//! A tested two-layer configuration (large memory requirement):
-//! ./target/optimized/examples/native_binary_recursion --layers 2 \
-//!     --pcs-security-level 12 --cap-height 4 \
-//!     --max-expression-nodes 8388608 --max-pending-connects 8388608 \
-//!     --max-trace-cells 268435456 --max-pcs-codeword-cells 805306368
+//! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap
+//! height 4) keep every layer within the default limits. The recursive verifier
+//! levels off from layer 4: about 983k witnesses, 2,595 Keccak-f calls and
+//! 335,544,320 initial codeword cells (5 GiB) per layer.
+//!
+//! Measured with the defaults on a 14-core Apple M-series machine with 48 GB
+//! (fastest observed time of the last layer; peak memory footprint and maximum
+//! resident set of the whole run):
+//!
+//! | --layers | last layer | footprint | resident |
+//! |----------|------------|-----------|----------|
+//! | 1        | 3-7 s      | 0.3 GB    | 0.3 GB   |
+//! | 2        | 35 s       | 11.6 GB   | 13.8 GB  |
+//! | 3        | 45 s       | 13.4 GB   | 17.8 GB  |
+//! | 4        | 48 s       | 13.5 GB   | 19.6 GB  |
+//!
+//! Other jobs on the machine slowed layers by up to 1.8x. Grinding takes most
+//! of layer 1 and 1.5-6 s of each later layer. With `--pow-bits 20`, layer 2
+//! takes 40-46 s (15.5 GB resident) but layer 3 needs 603,979,776 codeword
+//! cells. With `--cap-height 0 --pow-bits 0`, layer 2 takes 95 s (24 GB
+//! resident) and needs `--max-pcs-codeword-cells 1073741824`.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits
-//! count field cells or graph entries, not bytes. The second layer's initial
-//! codewords alone occupy 12 GiB; traces, trees, and workspaces require more.
+//! count field cells or graph entries, not bytes.
 
 use std::error::Error;
 use std::time::Instant;
@@ -51,10 +66,10 @@ struct Args {
     #[arg(long, default_value_t = 1 << 22)]
     max_pending_connects: usize,
     /// Maximum combined trace, preprocessing, and temporary field cells.
-    #[arg(long, default_value_t = 1 << 27)]
+    #[arg(long, default_value_t = 1 << 28)]
     max_trace_cells: usize,
     /// Maximum combined initial main and preprocessing codeword cells.
-    #[arg(long, default_value_t = 1 << 27)]
+    #[arg(long, default_value_t = 1 << 29)]
     max_pcs_codeword_cells: usize,
     /// Maximum aggregate verifier rounds in each recursive output authority.
     #[arg(long, default_value_t = 256)]
@@ -63,10 +78,10 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
     /// Merkle cap height for the recursive output proofs.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 4)]
     cap_height: usize,
     /// WHIR grinding bits per recursive opening; queries cover the rest of the security level.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 24)]
     pow_bits: usize,
 }
 struct SquaringAir;
