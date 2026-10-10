@@ -371,15 +371,15 @@ fn patch_witness_cells(
     patched
 }
 
-/// From the second Keccak block on, an absorbed word reaches the AIR only
-/// through the lane `out + word`, a gate output whose `out` is the previous
-/// call's output. A word with a seventeenth coordinate makes that lane wide:
-/// the fanout, gate and bridge rows accept it, the hash bus does not, and
-/// lifting the Keccak lane instead leaves a state cell outside {0, 1}.
+/// An absorbed word reaches the AIR as a Keccak lane: in the first block the
+/// lane is the word itself, and from the second block on it is `out + word`,
+/// a gate output whose `out` is the previous call's output. A word with a
+/// seventeenth coordinate makes that lane wide: the fanout, gate and bridge
+/// rows accept it, the hash bus does not, and lifting the Keccak lane instead
+/// leaves a state cell outside {0, 1}.
 #[test]
-fn native_keccak_lanes_range_check_words_after_the_first_block() {
+fn native_keccak_lanes_range_check_words_in_both_blocks() {
     const WORDS: usize = 70;
-    const SECOND_BLOCK: usize = 68;
     let words: Vec<u16> = (0..WORDS as u16)
         .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
         .collect();
@@ -422,8 +422,8 @@ fn native_keccak_lanes_range_check_words_after_the_first_block() {
         .iter()
         .map(|&id| *witness.get_value(id).unwrap())
         .collect();
-    let mut traces = prepared.traces(&witness).unwrap();
-    let proof = prover.prove(&public, traces.clone()).unwrap();
+    let honest_traces = prepared.traces(&witness).unwrap();
+    let proof = prover.prove(&public, honest_traces.clone()).unwrap();
     authority.verify_native(&proof, &public).unwrap();
     let rejects = |traces: Vec<RowMajorMatrix<F>>| {
         let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
@@ -441,48 +441,52 @@ fn native_keccak_lanes_range_check_words_after_the_first_block() {
         })
         .collect();
     assert_eq!(calls.len(), 2, "two absorbed blocks");
-    let wide = F::from_raw_coordinates(1 << 16).unwrap();
-    let mut forged_private = private.clone();
-    forged_private[SECOND_BLOCK] += wide;
-    let mut runner = circuit.runner();
-    runner.set_public_inputs(&statement).unwrap();
-    runner.set_private_inputs(&forged_private).unwrap();
-    assert!(runner.run().is_err(), "the runner refuses a wide lane");
-
-    let forged = replay(&circuit, &honest, &statement, &forged_private);
-    let lanes: Vec<_> = calls
-        .iter()
-        .enumerate()
-        .flat_map(|(c, ids)| {
-            ids.iter()
-                .enumerate()
-                .filter(|&(_, id)| forged[id.0 as usize] != honest[id.0 as usize])
-                .map(move |(l, _)| (c, l))
-        })
-        .collect();
-    assert_eq!(lanes, [(1, 0)], "the first lane of the second block");
-    let [fanout, gates, bridge] =
-        patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
-    assert!(fanout > 0 && gates > 0 && bridge == 1);
-    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
-        check_constraints(air, trace, public);
-    }
-    rejects(traces.clone());
-
     let keccak = prepared
         .airs()
         .iter()
         .position(|air| air.width() == NUM_KECCAK_BINARY_COLS)
         .unwrap();
     assert_eq!(F::from_raw_coordinates(1), Some(F::ONE));
-    traces[keccak].values
-        [KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS + KECCAK_BINARY_ROWS_PER_PERM] +=
-        wide;
-    let local = catch_unwind(AssertUnwindSafe(|| {
-        check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
-    }));
-    assert!(local.is_err(), "the lifted lane leaves a non-Boolean cell");
-    rejects(traces);
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    // Word 5 is lane 5 of the first block; word 68 opens the second block.
+    for (word, call, lane, through_gates) in [(5, 0, 5, false), (68, 1, 0, true)] {
+        let mut forged_private = private.clone();
+        forged_private[word] += wide;
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&statement).unwrap();
+        runner.set_private_inputs(&forged_private).unwrap();
+        assert!(runner.run().is_err(), "the runner refuses a wide lane");
+
+        let forged = replay(&circuit, &honest, &statement, &forged_private);
+        let lanes: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .flat_map(|(c, ids)| {
+                ids.iter()
+                    .enumerate()
+                    .filter(|&(_, id)| forged[id.0 as usize] != honest[id.0 as usize])
+                    .map(move |(l, _)| (c, l))
+            })
+            .collect();
+        assert_eq!(lanes, [(call, lane)], "lane {lane} of block {call}");
+        let mut traces = honest_traces.clone();
+        let [fanout, gates, bridge] =
+            patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
+        assert!(fanout > 0 && bridge == 1 && (gates > 0) == through_gates);
+        for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+            check_constraints(air, trace, public);
+        }
+        rejects(traces.clone());
+
+        traces[keccak].values[call * KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS
+            + KECCAK_BINARY_ROWS_PER_PERM
+            + 16 * lane] += wide;
+        let local = catch_unwind(AssertUnwindSafe(|| {
+            check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
+        }));
+        assert!(local.is_err(), "the lifted lane leaves a non-Boolean cell");
+        rejects(traces);
+    }
 }
 
 /// A native WHIR leaf splits each opened value into hinted words bound by
