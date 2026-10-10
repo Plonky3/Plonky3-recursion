@@ -16,9 +16,12 @@
 use alloc::vec;
 
 use p3_binary_field::BinaryField128;
-use p3_binary_pcs::whir::{BooleanWhirData, BooleanWhirError, BooleanWhirProof};
+use p3_binary_pcs::whir::{
+    BinaryWhirDomain, BooleanWhirData, BooleanWhirError, BooleanWhirPcs, BooleanWhirProof,
+};
 use p3_binary_pcs::{
-    BooleanTraceCommitmentData, BooleanTraceCommitmentError, BooleanTraceCommitmentProof,
+    BooleanTraceCommitment, BooleanTraceCommitmentData, BooleanTraceCommitmentError,
+    BooleanTraceCommitmentProof,
 };
 use p3_commit::MultilinearPcs;
 use p3_field::PrimeCharacteristicRing;
@@ -27,7 +30,7 @@ use p3_sumcheck::layout::plan_stacked_layout;
 use p3_sumcheck::{
     OpeningEvals, OpeningProtocol, PrescribedOpeningSecurity, PrescribedPointPcs, TableSpec,
 };
-use p3_whir::{PcsProof, VerifierError, WhirConfigError, WhirProverData};
+use p3_whir::{PcsProof, VerifierError, WhirConfigError, WhirProver, WhirProverData};
 use serde::{Deserialize, Serialize};
 
 use super::*;
@@ -58,8 +61,9 @@ pub enum MixedWhirError<D> {
 
 /// Dense stacked WHIR over every table but one, and a bit commitment over that one table.
 ///
-/// Both parts use the same Merkle hash and the same cap height, so each contributes
-/// `cap_roots` roots to the shared commitment.
+/// Both parts' Merkle trees have one hash and one cap height, which
+/// [`Self::from_parameters`] enforces, so each part contributes `cap_roots` roots to the
+/// shared commitment.
 pub struct MixedWhirPcs {
     dense: DensePcs,
     packed: Option<(NativeBooleanWhirTracePcs, usize)>,
@@ -89,6 +93,46 @@ pub struct MixedWhirProof {
 }
 
 impl MixedWhirPcs {
+    /// Build both parts from checked parameters, on Merkle trees of the dense part's hash and
+    /// cap height.
+    ///
+    /// `packed` holds the bit commitment's parameters, the table it commits and the table's
+    /// bit arity. Parameters naming another hash or cap height are refused.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the unit tests construct the mixed commitment"
+        )
+    )]
+    pub(crate) fn from_parameters(
+        dense: &BinaryNativeWhirPcsParameters<E>,
+        packed: Option<(&BinaryNativeWhirPcsParameters<E>, usize, usize)>,
+    ) -> Result<Self, VerificationError> {
+        let (hash, cap_height) = (dense.hash, dense.cap_height);
+        let whir = |parameters: &BinaryNativeWhirPcsParameters<E>| -> DensePcs {
+            WhirProver::new(
+                parameters.config.clone(),
+                BinaryWhirDomain::<E>::default(),
+                tree(hash, cap_height),
+            )
+        };
+        let packed = packed
+            .map(|(parameters, table, bit_variables)| {
+                if (parameters.hash, parameters.cap_height) != (hash, cap_height) {
+                    return Err(super::super::invalid(
+                        "binary native mixed WHIR parts differ in hash or cap height",
+                    ));
+                }
+                let bits = BooleanWhirPcs::new(whir(parameters), bit_variables).map_err(|_| {
+                    super::super::invalid("binary native mixed WHIR bit configuration rejected")
+                })?;
+                Ok((BooleanTraceCommitment::from_commitment(bits), table))
+            })
+            .transpose()?;
+        Self::new(whir(dense), packed, cap_height)
+    }
+
     /// Pair a dense commitment with an optional bit commitment of table `packed.1`.
     ///
     /// `cap_height` is the cap height of both parts' Merkle trees.
@@ -99,7 +143,7 @@ impl MixedWhirPcs {
             reason = "only the unit tests construct the mixed commitment"
         )
     )]
-    pub(crate) fn new(
+    fn new(
         dense: DensePcs,
         packed: Option<(NativeBooleanWhirTracePcs, usize)>,
         cap_height: usize,
@@ -268,7 +312,7 @@ impl MultilinearPcs<E, Challenger> for MixedWhirPcs {
         witness: Vec<Table<E>>,
         challenger: &mut Challenger,
     ) -> Result<(Cap, MixedWhirData), Self::ProverError> {
-        // Shape and Boolean refusals precede the first binding, so they leave the transcript alone.
+        // Refusals of the witness precede the first binding, so they leave the transcript alone.
         let packed_table = self.packed_table();
         if let Some((pcs, index)) = &self.packed {
             let table = witness.get(*index).ok_or(MixedWhirError::Shape(
@@ -301,6 +345,8 @@ impl MultilinearPcs<E, Challenger> for MixedWhirPcs {
             .dense
             .commit(dense_witness, challenger)
             .map_err(MixedWhirError::Dense)?;
+        // Both trees have the constructor's cap height. A cap of another size is a
+        // configuration error, refused after its part's binding.
         if dense_cap.num_roots() != self.cap_roots {
             return Err(MixedWhirError::Shape(
                 "the dense cap does not have the configured height",

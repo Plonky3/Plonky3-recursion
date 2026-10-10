@@ -21,6 +21,8 @@ use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
 use super::*;
+// The crate-visible paths through which verifiers outside the artifact module build mixed proofs.
+use crate::artifact::binary_native::{BinaryNativeMixedWhirConfig, MixedWhirError, MixedWhirPcs};
 
 const HASH: ByteHash = ByteHash::Keccak256;
 /// Two roots per part, so a swapped or truncated cap is still a well-formed cap.
@@ -170,12 +172,13 @@ fn parameters() -> ProtocolParameters {
     }
 }
 
+fn whir_parameters(num_variables: usize) -> BinaryNativeWhirPcsParameters<E> {
+    BinaryNativeWhirPcsParameters::<E>::new(num_variables, parameters(), HASH, CAP_HEIGHT).unwrap()
+}
+
 fn whir(num_variables: usize) -> DensePcs {
-    let parameters =
-        BinaryNativeWhirPcsParameters::<E>::new(num_variables, parameters(), HASH, CAP_HEIGHT)
-            .unwrap();
     WhirProver::new(
-        parameters.config,
+        whir_parameters(num_variables).config,
         BinaryWhirDomain::<E>::default(),
         tree(HASH, CAP_HEIGHT),
     )
@@ -193,21 +196,29 @@ fn keccak_shape() -> TableShape {
     TableShape::new(KECCAK_VARIABLES, NUM_KECCAK_BINARY_COLS)
 }
 
+/// Bit arity of the Keccak table; its packed WHIR folds seven fewer variables.
+fn bit_variables() -> usize {
+    arity(&[keccak_shape()])
+}
+
+fn dense_main_variables() -> usize {
+    arity(&[dense_shape(), dense_shape()])
+}
+
 fn packed_pcs() -> NativeBooleanWhirTracePcs {
-    let bits = arity(&[keccak_shape()]);
-    let inner = whir(bits - 7);
-    BooleanTraceCommitment::from_commitment(BooleanWhirPcs::new(inner, bits).unwrap())
+    let bits = bit_variables();
+    BooleanTraceCommitment::from_commitment(BooleanWhirPcs::new(whir(bits - 7), bits).unwrap())
 }
 
 fn dense_main_pcs() -> DensePcs {
-    whir(arity(&[dense_shape(), dense_shape()]))
+    whir(dense_main_variables())
 }
 
 fn mixed_pcs(packed_table: usize) -> MixedWhirPcs {
-    MixedWhirPcs::new(
-        dense_main_pcs(),
-        Some((packed_pcs(), packed_table)),
-        CAP_HEIGHT,
+    let bits = bit_variables();
+    MixedWhirPcs::from_parameters(
+        &whir_parameters(dense_main_variables()),
+        Some((&whir_parameters(bits - 7), packed_table, bits)),
     )
     .unwrap()
 }
@@ -242,13 +253,12 @@ impl Fixture {
             TestAir::Keccak(KeccakBinaryAir::assuming_boolean_trace()),
             TestAir::Dense,
         ];
-        let preprocessed = MixedWhirPcs::new(
-            whir(arity(&[
+        let preprocessed = MixedWhirPcs::from_parameters(
+            &whir_parameters(arity(&[
                 TableShape::new(DENSE_VARIABLES, 1),
                 TableShape::new(DENSE_VARIABLES, 1),
             ])),
             None,
-            CAP_HEIGHT,
         )
         .unwrap();
         let config = Config::new(mixed_pcs(KECCAK), Some(preprocessed)).unwrap();
@@ -398,7 +408,8 @@ fn mixed_transcript_order_pin() {
 
 #[test]
 fn dense_only_observation_matches_dense_pcs() {
-    let composite = MixedWhirPcs::new(dense_main_pcs(), None, CAP_HEIGHT).unwrap();
+    let composite =
+        MixedWhirPcs::from_parameters(&whir_parameters(dense_main_variables()), None).unwrap();
     let bare = dense_main_pcs();
     let tables = || vec![dense_table(E::ONE, E::ZERO), dense_table(E::ZERO, E::ONE)];
 
@@ -571,4 +582,33 @@ fn bit_region_is_the_packed_table_alone() {
     for table in [0, KECCAK] {
         assert_eq!(dense_only.bit_region(table, NUM_KECCAK_BINARY_COLS), 0);
     }
+}
+
+#[test]
+fn from_parameters_refuses_parts_on_other_trees() {
+    let dense = whir_parameters(dense_main_variables());
+    let bits = bit_variables();
+    let packed = |hash, cap_height| {
+        BinaryNativeWhirPcsParameters::<E>::new(bits - 7, parameters(), hash, cap_height).unwrap()
+    };
+    let build = |packed: &BinaryNativeWhirPcsParameters<E>, bits| {
+        MixedWhirPcs::from_parameters(&dense, Some((packed, KECCAK, bits)))
+    };
+
+    assert!(build(&packed(HASH, CAP_HEIGHT), bits).is_ok());
+    // One Merkle tree pair serves both parts, so the split falls at one cap's length.
+    assert!(build(&packed(ByteHash::Blake3, CAP_HEIGHT), bits).is_err());
+    assert!(build(&packed(HASH, CAP_HEIGHT + 1), bits).is_err());
+    // The packed WHIR must fold exactly the elements the bit table packs into.
+    assert!(build(&packed(HASH, CAP_HEIGHT), bits + 1).is_err());
+}
+
+#[test]
+fn constructors_refuse_unsupported_configurations() {
+    // Preprocessing is observed as one dense cap, so it cannot carry a bit commitment.
+    let preprocessed = MixedWhirPcs::from_parameters(&whir_parameters(DENSE_VARIABLES), None);
+    assert!(Config::new(mixed_pcs(KECCAK), Some(preprocessed.unwrap())).is_ok());
+    assert!(Config::new(mixed_pcs(KECCAK), Some(mixed_pcs(KECCAK))).is_err());
+    // Both parts' roots together must have a `usize` count.
+    assert!(MixedWhirPcs::new(dense_main_pcs(), None, usize::BITS as usize - 1).is_err());
 }

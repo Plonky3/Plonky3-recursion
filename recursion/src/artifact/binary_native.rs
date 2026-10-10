@@ -40,6 +40,14 @@ pub use config::{
     BinaryNativePolyWhirPcsParameters, BinaryNativeWhirConfig, BinaryNativeWhirLayout,
     BinaryNativeWhirPcsParameters,
 };
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "only the unit tests construct the mixed commitment"
+    )
+)]
+pub(crate) use config::{BinaryNativeMixedWhirConfig, MixedWhirError, MixedWhirPcs};
 use config::{NativeAlphabet, NativeMmcs, tree};
 use family::{NativeFamily, RawFamily};
 use lifecycle::State;
