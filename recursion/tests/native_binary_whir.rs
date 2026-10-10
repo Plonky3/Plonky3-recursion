@@ -231,6 +231,7 @@ macro_rules! check {
                 .private_native_values(&other.input_shape())
                 .is_err()
         );
+        circuit
     }};
 }
 
@@ -272,9 +273,13 @@ fn tower32_whir_keeps_base_rows_narrow_and_challenges_wide() {
 
 /// Folding four variables opens sixteen-value rows: a Tower128 row is a
 /// 256-byte leaf hashed over two Keccak blocks, a Tower32 base row a
-/// 64-byte leaf.
+/// 64-byte leaf. Hashing rows as sixteen-bit words, these verifiers take
+/// 44,288 and 37,433 witnesses, against 182,912 and 77,561 when every value
+/// is split into checked bytes; the bounds sit about 25% above the former.
 #[test]
 fn native_sixteen_value_rows_authenticate_as_word_leaves() {
-    check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
-    check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
+    let tower128 = check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
+    assert!(tower128.witness_count <= 55_000);
+    let tower32 = check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
+    assert!(tower32.witness_count <= 47_000);
 }
