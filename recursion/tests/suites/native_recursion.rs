@@ -30,6 +30,8 @@ mod native_binary_whir;
 mod native_bus_circuit;
 #[path = "../native_construction_limits.rs"]
 mod native_construction_limits;
+#[path = "../native_dense_format_pins.rs"]
+mod native_dense_format_pins;
 #[path = "../native_indexed_circuit.rs"]
 mod native_indexed_circuit;
 #[path = "../native_keccak_circuit.rs"]
