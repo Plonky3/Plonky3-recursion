@@ -898,3 +898,125 @@ impl BinaryTower128Challenger {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use p3_binary_field::{BinaryChallenger, BinaryField8, BinaryField128, TowerLevel};
+    use p3_challenger::{CanObserve, CanSample};
+    use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+    use p3_field::PrimeCharacteristicRing;
+    use p3_keccak::Keccak256Hash;
+
+    use super::*;
+
+    type E = NativeBinaryEncoding;
+    type F = BinaryField128;
+
+    /// Pending words and bytes of each branch: a word at an even offset, a
+    /// byte, a word at an odd offset and a byte.
+    const BRANCHES: [([u16; 2], [u8; 2]); 2] =
+        [([0xb7e5, 0x1c03], [7, 251]), ([0x4d21, 0xe8f0], [129, 3])];
+
+    fn observe_branch(
+        b: &mut CircuitBuilder<F>,
+        words: [ExprId; 2],
+        bytes: [u8; 2],
+    ) -> BinaryTower128Challenger {
+        let mut ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        for (word, byte) in words.into_iter().zip(bytes) {
+            ch.observe_words_with_host::<E, F>(b, &[word]).unwrap();
+            let byte = b.define_const(E::encode_u16(byte.into()).unwrap());
+            ch.observe_bytes_with_host::<E, F>(b, &[byte]).unwrap();
+        }
+        ch
+    }
+
+    /// The branch picked by a private selector samples exactly like the native
+    /// transcript of its own observations, so its pending words keep their
+    /// sixteen-bit kind and the other branch's values do not leak in.
+    #[test]
+    fn selected_word_branches_hash_like_the_native_transcript() {
+        for (chosen, &(words, bytes)) in BRANCHES.iter().enumerate() {
+            let mut native =
+                BinaryChallenger::<BinaryField8, _>::from_hasher(Vec::new(), Keccak256Hash);
+            for (word, byte) in words.into_iter().zip(bytes) {
+                for byte in word.to_le_bytes().into_iter().chain([byte]) {
+                    native.observe(BinaryField8::from_repr(byte));
+                }
+            }
+            let expected: BinaryField128 = native.sample();
+
+            let mut b = CircuitBuilder::<F>::new();
+            b.enable_native_keccak_f1600().unwrap();
+            let pick = b.alloc_private_input("branch");
+            let one = b.define_const(F::ONE);
+            let keep = b.sub(one, pick);
+            let branches: Vec<_> = BRANCHES
+                .iter()
+                .zip([keep, pick])
+                .map(|(&(_, bytes), selector)| {
+                    let words = [b.public_input(), b.public_input()];
+                    (selector, observe_branch(&mut b, words, bytes))
+                })
+                .collect();
+            let mut selected =
+                BinaryTower128Challenger::select_same_shape(&mut b, &branches).unwrap();
+            let actual = selected.sample_with_host::<E, F>(&mut b).unwrap();
+            for (i, &bit) in actual.bits().iter().enumerate() {
+                let bit_value = b.define_const(F::from_bool(expected.to_repr() >> i & 1 != 0));
+                b.connect(bit, bit_value);
+            }
+            let circuit = b.build().unwrap();
+            let public: Vec<F> = BRANCHES
+                .iter()
+                .flat_map(|(words, _)| words.map(|word| E::encode_u16(word).unwrap()))
+                .collect();
+            let runs = |pick: usize| {
+                let mut runner = circuit.runner();
+                runner
+                    .set_public_inputs(&public)
+                    .and_then(|()| runner.set_private_inputs(&[F::from_bool(pick == 1)]))
+                    .and_then(|()| runner.run())
+                    .is_ok()
+            };
+            assert!(runs(chosen), "branch {chosen} selected");
+            assert!(!runs(1 - chosen), "the other branch hashes differently");
+        }
+    }
+
+    #[test]
+    fn branches_must_agree_on_every_pending_entry_width() {
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let [pick, word] = [b.alloc_private_input("branch"), b.public_input()];
+        let byte = b.define_const(F::ONE);
+        let mut word_first = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        word_first
+            .observe_words_with_host::<E, F>(&mut b, &[word])
+            .unwrap();
+        word_first
+            .observe_bytes_with_host::<E, F>(&mut b, &[byte])
+            .unwrap();
+        let mut byte_first = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        byte_first
+            .observe_bytes_with_host::<E, F>(&mut b, &[byte])
+            .unwrap();
+        byte_first
+            .observe_words_with_host::<E, F>(&mut b, &[word])
+            .unwrap();
+        let one = b.define_const(F::ONE);
+        let keep = b.sub(one, pick);
+        let branches = [(keep, word_first), (pick, byte_first)];
+        assert!(BinaryTower128Challenger::select_same_shape(&mut b, &branches).is_err());
+
+        // Sixteen pending words are 32 bytes, but not a retained digest.
+        let mut pending = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        pending
+            .observe_words_with_host::<E, F>(&mut b, &[word; 16])
+            .unwrap();
+        assert!(matches!(
+            pending.retained_query_digest(),
+            Err(CircuitBuilderError::NonPrimitiveOpArity { got: 32, .. })
+        ));
+    }
+}

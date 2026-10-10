@@ -322,3 +322,61 @@ fn native_word_observations_sample_like_byte_observations() {
         assert!(!runs(&wrong), "changed observed value {value}");
     }
 }
+
+/// A public word observed whole is range-checked by every refill path:
+/// absorbed as a lane at an even offset, split at an odd offset, and split
+/// in an odd-length input. A seventeenth coordinate is rejected, although
+/// the low sixteen coordinates hash and sample honestly.
+#[test]
+fn native_out_of_range_observed_words_are_rejected_on_every_absorb_path() {
+    type F = BinaryField128;
+    const WORD: u16 = 0xb7e5;
+    // Bytes before and after the word: even offset, odd offset, odd length.
+    for (before, after) in [(&[3u8, 251][..], &[][..]), (&[3], &[7]), (&[3, 251], &[7])] {
+        let mut native =
+            BinaryChallenger::<BinaryField8, _>::from_hasher(before.to_vec(), Keccak256Hash);
+        for &byte in WORD.to_le_bytes().iter().chain(after) {
+            native.observe(BinaryField8::from_repr(byte));
+        }
+        let expected: BinaryField128 = native.sample();
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let initial: Vec<_> = before
+            .iter()
+            .map(|&byte| b.define_const(E::encode_u16(u16::from(byte)).unwrap()))
+            .collect();
+        let trailing: Vec<_> = after
+            .iter()
+            .map(|&byte| b.define_const(E::encode_u16(u16::from(byte)).unwrap()))
+            .collect();
+        let word = b.public_input();
+        let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(
+            &mut b,
+            ByteHash::Keccak256,
+            &initial,
+        )
+        .unwrap();
+        ch.observe_words_with_host::<E, F>(&mut b, &[word]).unwrap();
+        ch.observe_bytes_with_host::<E, F>(&mut b, &trailing)
+            .unwrap();
+        let actual = ch.sample_with_host::<E, F>(&mut b).unwrap();
+        bind_bits(&mut b, actual.bits(), expected.to_repr());
+        let circuit = b.build().unwrap();
+        let runs = |word: u128| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(&[F::from_raw_coordinates(word).unwrap()])
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        let case = (before.len(), after.len());
+        assert!(
+            runs(u128::from(WORD)),
+            "honest word, bytes around it {case:?}"
+        );
+        assert!(
+            !runs(u128::from(WORD) | (1 << 16)),
+            "word with coordinate 16, bytes around it {case:?}"
+        );
+    }
+}
