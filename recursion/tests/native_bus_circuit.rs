@@ -1,14 +1,20 @@
 //! Native product buses bind every fixed circuit occurrence without pushforwards.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use p3_air::{BaseAir, check_constraints};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
-use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::ByteHash;
+use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit_prover::native_bus::NativeBusCircuit;
-use p3_field::PrimeCharacteristicRing;
+use p3_circuit::ops::{ByteHash, bytes_to_limbs};
+use p3_circuit::{AluOpKind, Circuit, CircuitBuilder, Op, WitnessId};
+use p3_circuit_prover::native_bus::{NativeBusCircuit, NativeBusCircuitAir};
+use p3_field::{Field, PrimeCharacteristicRing};
 use p3_keccak::Keccak256Hash;
+use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
+use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
     BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
 };
@@ -257,6 +263,226 @@ fn native_product_buses_authenticate_keccak_call_boundaries() {
     if let Ok(Ok(proof)) = attempt {
         assert!(authority.verify_native(&proof, &public).is_err());
     }
+}
+
+/// The assignment reached by replaying `circuit` from `public` and `private`
+/// as the runner does, except that hints and native Keccak calls keep their
+/// `honest` outputs: the witness of a prover who claims the honest digests.
+fn replay(circuit: &Circuit<F>, honest: &[F], public: &[F], private: &[F]) -> Vec<F> {
+    fn assign(w: &mut [Option<F>], id: WitnessId, value: F) {
+        let slot = &mut w[id.0 as usize];
+        assert!(
+            slot.is_none_or(|old| old == value),
+            "replay conflict at {id:?}"
+        );
+        *slot = Some(value);
+    }
+    const fn get(w: &[Option<F>], id: WitnessId) -> F {
+        w[id.0 as usize].expect("operand assigned before use")
+    }
+    let mut w = vec![None; circuit.witness_count as usize];
+    for (&id, &value) in circuit.public_rows.iter().zip(public) {
+        assign(&mut w, id, value);
+    }
+    for (&id, &value) in circuit.private_input_rows.iter().zip(private) {
+        assign(&mut w, id, value);
+    }
+    for op in &circuit.ops {
+        match op {
+            Op::Const { out, val } => assign(&mut w, *out, *val),
+            Op::Public { .. } => {}
+            Op::Hint { outputs, .. } => {
+                for &id in outputs {
+                    assign(&mut w, id, honest[id.0 as usize]);
+                }
+            }
+            Op::NonPrimitiveOpWithExecutor { outputs, .. } => {
+                for &id in outputs.iter().flatten() {
+                    assign(&mut w, id, honest[id.0 as usize]);
+                }
+            }
+            &Op::Alu {
+                kind,
+                a,
+                b,
+                c,
+                out,
+                intermediate_out,
+            } => {
+                let a_val = get(&w, a);
+                let (id, value) = match (kind, w[b.0 as usize]) {
+                    (AluOpKind::Add, None) => (b, get(&w, out) - a_val),
+                    (AluOpKind::Mul, None) => (b, get(&w, out) * a_val.inverse()),
+                    (AluOpKind::Add, Some(b_val)) => (out, a_val + b_val),
+                    (AluOpKind::Mul, Some(b_val)) => (out, a_val * b_val),
+                    (AluOpKind::BoolCheck, _) => (out, a_val),
+                    (AluOpKind::MulAdd, _) => {
+                        let product = a_val * get(&w, b);
+                        if let Some(id) = intermediate_out {
+                            assign(&mut w, id, product);
+                        }
+                        (out, product + c.map_or(F::ZERO, |c| get(&w, c)))
+                    }
+                    (AluOpKind::HornerAcc, _) => {
+                        let accumulator = get(&w, intermediate_out.unwrap());
+                        (out, accumulator * get(&w, b) + get(&w, c.unwrap()) - a_val)
+                    }
+                };
+                assign(&mut w, id, value);
+            }
+        }
+    }
+    w.into_iter()
+        .zip(honest)
+        .map(|(value, &old)| value.unwrap_or(old))
+        .collect()
+}
+
+/// Writes `forged` into every fanout, gate and bridge cell whose fixed label
+/// names a witness that differs from `honest`, and returns how many cells of
+/// each of those three tables changed. Keccak bit rows are left as they are.
+fn patch_witness_cells(
+    airs: &[NativeBusCircuitAir<F>],
+    traces: &mut [RowMajorMatrix<F>],
+    honest: &[F],
+    forged: &[F],
+) -> [usize; 3] {
+    let mut patched = [0; 3];
+    for (air, trace) in airs.iter().zip(traces) {
+        let table = match (air.width(), air.preprocessed_width()) {
+            (1, 4) => 0,
+            (5, 12) => 1,
+            (100, 102) => 2,
+            _ => continue,
+        };
+        let labels = air.preprocessed_trace().unwrap();
+        let width = trace.width;
+        for (row, labels) in labels.values.chunks(labels.width).enumerate() {
+            for (column, label) in labels[..width].iter().enumerate() {
+                // A label is a witness index plus one; zero marks an unused slot.
+                let id = label.to_raw_coordinates() as usize;
+                if id != 0 && forged[id - 1] != honest[id - 1] {
+                    trace.values[row * width + column] = forged[id - 1];
+                    patched[table] += 1;
+                }
+            }
+        }
+    }
+    patched
+}
+
+/// From the second Keccak block on, an absorbed word reaches the AIR only
+/// through the lane `out + word`, a gate output whose `out` is the previous
+/// call's output. A word with a seventeenth coordinate makes that lane wide:
+/// the fanout, gate and bridge rows accept it, the hash bus does not, and
+/// lifting the Keccak lane instead leaves a state cell outside {0, 1}.
+#[test]
+fn native_keccak_lanes_range_check_words_after_the_first_block() {
+    const WORDS: usize = 70;
+    const SECOND_BLOCK: usize = 68;
+    let words: Vec<u16> = (0..WORDS as u16)
+        .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
+        .collect();
+    let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+    let hashed = Keccak256Hash.hash_iter(bytes.iter().copied());
+    let encode = |word: u16| F::from_raw_coordinates(word.into()).unwrap();
+
+    // The host word hash that absorbs observed transcript words.
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let expected = b.alloc_public_input_array::<16>("digest");
+    let message = b.alloc_private_inputs(WORDS, "message words");
+    let digest = NativeBinaryEncoding::hash_words(&mut b, ByteHash::Keccak256, &message).unwrap();
+    for (&limb, &expected) in digest.iter().zip(&expected) {
+        b.connect(limb, expected);
+    }
+    let circuit = b.build().unwrap();
+    let statement: Vec<F> = bytes_to_limbs(&hashed).into_iter().map(encode).collect();
+    let private: Vec<F> = words.iter().map(|&word| encode(word)).collect();
+
+    let prepared = NativeBusCircuit::new(&circuit, "words").unwrap();
+    let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec(&prepared),
+        &VerifierLimits {
+            max_rounds: 256,
+            max_metadata_entries: 1 << 20,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    runner.set_private_inputs(&private).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest: Vec<F> = witness
+        .index
+        .iter()
+        .map(|&id| *witness.get_value(id).unwrap())
+        .collect();
+    let mut traces = prepared.traces(&witness).unwrap();
+    let proof = prover.prove(&public, traces.clone()).unwrap();
+    authority.verify_native(&proof, &public).unwrap();
+    let rejects = |traces: Vec<RowMajorMatrix<F>>| {
+        let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
+        if let Ok(Ok(proof)) = attempt {
+            assert!(authority.verify_native(&proof, &public).is_err());
+        }
+    };
+
+    let calls: Vec<_> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor { inputs, .. } => Some(&inputs[0]),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2, "two absorbed blocks");
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    let mut forged_private = private.clone();
+    forged_private[SECOND_BLOCK] += wide;
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    runner.set_private_inputs(&forged_private).unwrap();
+    assert!(runner.run().is_err(), "the runner refuses a wide lane");
+
+    let forged = replay(&circuit, &honest, &statement, &forged_private);
+    let lanes: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .flat_map(|(c, ids)| {
+            ids.iter()
+                .enumerate()
+                .filter(|&(_, id)| forged[id.0 as usize] != honest[id.0 as usize])
+                .map(move |(l, _)| (c, l))
+        })
+        .collect();
+    assert_eq!(lanes, [(1, 0)], "the first lane of the second block");
+    let [fanout, gates, bridge] =
+        patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
+    assert!(fanout > 0 && gates > 0 && bridge == 1);
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+    rejects(traces.clone());
+
+    let keccak = prepared
+        .airs()
+        .iter()
+        .position(|air| air.width() == NUM_KECCAK_BINARY_COLS)
+        .unwrap();
+    assert_eq!(F::from_raw_coordinates(1), Some(F::ONE));
+    traces[keccak].values
+        [KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS + KECCAK_BINARY_ROWS_PER_PERM] +=
+        wide;
+    let local = catch_unwind(AssertUnwindSafe(|| {
+        check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
+    }));
+    assert!(local.is_err(), "the lifted lane leaves a non-Boolean cell");
+    rejects(traces);
 }
 
 #[test]
