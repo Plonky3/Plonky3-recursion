@@ -384,20 +384,34 @@ fn mixed_security_is_union_of_parts() {
 fn mixed_transcript_order_pin() {
     let fixture = Fixture::new();
     let pcs = &fixture.config.main;
+    let tables = fixture.tables();
+
+    // Each bare part commits its own tables. Merkle roots do not depend on the transcript, so
+    // these caps fix the wire layout apart from the composite: dense roots, then packed roots.
+    let dense_tables = vec![tables[0].clone(), tables[2].clone()];
+    let (dense, _) = dense_main_pcs()
+        .commit(
+            SuffixProver::<E, E>::new_witness(dense_tables, FOLDING),
+            &mut challenger(),
+        )
+        .unwrap();
+    let (packed, _) = packed_pcs()
+        .commit(vec![tables[KECCAK].clone()], &mut challenger())
+        .unwrap();
 
     let mut prover = challenger();
-    let (cap, _) = pcs.commit(fixture.tables(), &mut prover).unwrap();
+    let (cap, _) = pcs.commit(tables, &mut prover).unwrap();
+    assert_eq!(cap.roots(), [dense.roots(), packed.roots()].concat());
     let after_commit: E = prover.sample();
 
     let mut verifier = challenger();
     pcs.observe_commitment(&cap, &mut verifier);
     let after_observe: E = verifier.sample();
 
-    let (dense, packed) = cap_halves(&cap);
-    let replay = |order: [&Vec<[u8; 32]>; 2]| -> E {
+    let replay = |order: [&Cap; 2]| -> E {
         let mut challenger = challenger();
-        dense_main_pcs().observe_commitment(&MerkleCap::new(order[0].clone()), &mut challenger);
-        packed_pcs().observe_commitment(&MerkleCap::new(order[1].clone()), &mut challenger);
+        dense_main_pcs().observe_commitment(order[0], &mut challenger);
+        packed_pcs().observe_commitment(order[1], &mut challenger);
         challenger.sample()
     };
 
