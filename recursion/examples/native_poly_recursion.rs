@@ -144,6 +144,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.layers == 0 {
         return Err("--layers must be positive".into());
     }
+    if args.pow_bits >= args.pcs_security_level {
+        return Err("--pow-bits must be below --pcs-security-level".into());
+    }
     let input = F::new(0xfedcba9876543210);
     let mut values = vec![input];
     for _ in 0..3 {
