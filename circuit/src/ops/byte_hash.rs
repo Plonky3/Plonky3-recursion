@@ -353,6 +353,43 @@ where
         )
     }
 
+    /// [`Self::verify_byte_hash_mmcs_opening_bytes_with_host`] for rows of
+    /// low-first sixteen-bit words.
+    ///
+    /// Each word stands for its two little-endian bytes, so a row of `n` words
+    /// authenticates the same `2n`-byte string. Rows hash with
+    /// [`BinaryCircuitHost::hash_words`], which range-checks every word (a
+    /// native host absorbs each one as a raw Keccak limb), and their digest
+    /// words are used directly.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_opening_bytes_with_host`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_opening_words_with_host<H>(
+        &mut self,
+        hash: ByteHash,
+        rows: &[Vec<ExprId>],
+        heights: &[usize],
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<F>,
+    {
+        H::check_hash(hash)?;
+        self.verify_byte_hash_mmcs_opening_with(
+            rows,
+            heights,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| H::hash_words(builder, hash, row),
+            |builder, left, right| H::compress(builder, hash, left, right),
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn verify_byte_hash_mmcs_opening_with(
         &mut self,

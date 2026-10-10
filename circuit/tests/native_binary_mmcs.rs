@@ -10,21 +10,29 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_test_utils::binary_field_params::keccak;
 
-fn check<F: BinaryCoordinateField>(heights: &[usize], cap_height: usize, index: usize) {
+/// Word rows have an even byte width and are given as low-first sixteen-bit
+/// words.
+fn check<F: BinaryCoordinateField>(
+    heights: &[usize],
+    cap_height: usize,
+    index: usize,
+    words: bool,
+) {
     let mmcs = keccak::LevelMmcs::<BinaryField8>::new(
         keccak::FieldHash::new(keccak::byte_hash()),
         keccak::Compress::new(keccak::byte_hash()),
         cap_height,
     );
+    let width = |m: usize| if words { 2 * m + 2 } else { 2 * m + 1 };
     let matrices: Vec<_> = heights
         .iter()
         .enumerate()
         .map(|(m, &height)| {
             RowMajorMatrix::new(
-                (0..height * (2 * m + 1))
+                (0..height * width(m))
                     .map(|i| BinaryField8::from_repr((i * 37 + m * 19 + 129) as u8))
                     .collect(),
-                2 * m + 1,
+                width(m),
             )
         })
         .collect();
@@ -43,26 +51,44 @@ fn check<F: BinaryCoordinateField>(heights: &[usize], cap_height: usize, index: 
     let mut b = CircuitBuilder::<F>::new();
     b.enable_native_keccak_f1600().unwrap();
     let mut inputs = |count| (0..count).map(|_| b.public_input()).collect();
-    let rows: Vec<_> = dims.iter().map(|d| inputs(d.width)).collect();
+    let rows: Vec<_> = dims
+        .iter()
+        .map(|d| inputs(if words { d.width / 2 } else { d.width }))
+        .collect();
     let bits = inputs(log_height);
     let siblings: Vec<_> = (0..log_height - cap_height).map(|_| inputs(16)).collect();
     let cap: Vec<_> = (0..1 << cap_height).map(|_| inputs(16)).collect();
-    b.verify_byte_hash_mmcs_opening_bytes_with_host::<NativeBinaryEncoding>(
-        ByteHash::Keccak256,
-        &rows,
-        heights,
-        &bits,
-        &siblings,
-        &cap,
-    )
+    if words {
+        b.verify_byte_hash_mmcs_opening_words_with_host::<NativeBinaryEncoding>(
+            ByteHash::Keccak256,
+            &rows,
+            heights,
+            &bits,
+            &siblings,
+            &cap,
+        )
+    } else {
+        b.verify_byte_hash_mmcs_opening_bytes_with_host::<NativeBinaryEncoding>(
+            ByteHash::Keccak256,
+            &rows,
+            heights,
+            &bits,
+            &siblings,
+            &cap,
+        )
+    }
     .unwrap();
     let circuit = b.build().unwrap();
-    let mut public: Vec<F> = opening
-        .opened_values
-        .iter()
-        .flatten()
-        .map(|x| NativeBinaryEncoding::encode_u16(u16::from(x.to_repr())).unwrap())
-        .collect();
+    let encode = |word: u16| -> F { NativeBinaryEncoding::encode_u16(word).unwrap() };
+    let mut public: Vec<F> = Vec::new();
+    for row in &opening.opened_values {
+        let row: Vec<u8> = row.iter().map(|x| x.to_repr()).collect();
+        if words {
+            public.extend(bytes_to_limbs(&row).into_iter().map(encode));
+        } else {
+            public.extend(row.into_iter().map(|byte| encode(u16::from(byte))));
+        }
+    }
     let row_width = public.len();
     public.extend((0..log_height).map(|bit| F::from_bool(index >> bit & 1 != 0)));
     for digest in opening.opening_proof.iter().chain(commitment.roots()) {
@@ -90,6 +116,18 @@ fn check<F: BinaryCoordinateField>(heights: &[usize], cap_height: usize, index: 
             "cap height {cap_height}, index {index}, changed input {changed}"
         );
     }
+    if words {
+        // A word with a seventeenth coordinate serializes no row.
+        let mut wide = public.clone();
+        wide[0] += F::from_raw_coordinates(1 << 16).unwrap();
+        let mut runner = circuit.runner();
+        assert!(
+            runner
+                .set_public_inputs(&wide)
+                .and_then(|()| runner.run())
+                .is_err()
+        );
+    }
     if !siblings.is_empty() {
         public[row_width + log_height] += F::ONE;
         let mut runner = circuit.runner();
@@ -104,14 +142,16 @@ fn check<F: BinaryCoordinateField>(heights: &[usize], cap_height: usize, index: 
 
 #[test]
 fn native_tower_and_polynomial_mmcs_match_mixed_height_caps_and_zero_depth() {
-    for cap_height in [0, 1] {
-        for index in 0..3 {
-            check::<BinaryField128>(&[3, 2], cap_height, index);
-            check::<Poly64>(&[3, 2], cap_height, index);
+    for words in [false, true] {
+        for cap_height in [0, 1] {
+            for index in 0..3 {
+                check::<BinaryField128>(&[3, 2], cap_height, index, words);
+                check::<Poly64>(&[3, 2], cap_height, index, words);
+            }
         }
+        check::<BinaryField128>(&[4], 2, 3, words);
+        check::<Poly64>(&[4], 2, 3, words);
     }
-    check::<BinaryField128>(&[4], 2, 3);
-    check::<Poly64>(&[4], 2, 3);
 }
 
 #[test]
