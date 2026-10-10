@@ -83,3 +83,51 @@ fn zero_has_no_native_scalar_inverse() {
     runner.set_public_inputs(&[F::ZERO, F::ONE]).unwrap();
     assert!(runner.run().is_err());
 }
+
+#[test]
+fn unchecked_words_split_and_bind_the_low_coordinates() {
+    let value = 0x8912_3456_789a_bcde_f012_3456_789a_bcdeu128;
+    for count in 0..=8 {
+        let mut b = CircuitBuilder::<F>::new();
+        let input = b.public_input();
+        let expected = (0..count).map(|_| b.public_input()).collect::<Vec<_>>();
+        let scalar = b.native_tower128_from_expr(input);
+        let words = b.native_tower128_unchecked_words(&scalar, count).unwrap();
+        assert_eq!(words.len(), count);
+        for (&word, &expected) in words.iter().zip(&expected) {
+            b.connect(word, expected);
+        }
+        let circuit = b.build().unwrap();
+        let runs = |public: &[F]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        let low = if count == 8 {
+            value
+        } else {
+            value & ((1 << (16 * count)) - 1)
+        };
+        let mut public = vec![F::from_repr(low)];
+        public.extend((0..count).map(|j| F::from_repr(low >> (16 * j) & 0xffff)));
+        assert!(runs(&public), "{count} words");
+        if count > 0 {
+            let mut wrong = public.clone();
+            wrong[count] += F::ONE;
+            assert!(!runs(&wrong), "changed top word of {count}");
+        }
+        if count < 8 {
+            let mut high = public.clone();
+            high[0] += F::from_repr(1 << (16 * count));
+            assert!(!runs(&high), "coordinate above {count} words");
+        }
+    }
+    let mut b = CircuitBuilder::<F>::new();
+    let input = b.public_input();
+    let scalar = b.native_tower128_from_expr(input);
+    let before = b.construction_usage().unwrap();
+    assert!(b.native_tower128_unchecked_words(&scalar, 9).is_err());
+    assert_eq!(b.construction_usage().unwrap(), before);
+}
