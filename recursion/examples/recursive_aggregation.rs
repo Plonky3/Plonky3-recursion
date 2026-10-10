@@ -1,8 +1,8 @@
 //! N-to-1 proof aggregation example (N-ary tree, binary by default).
 //!
-//! Builds a full aggregation tree from distinct base proofs:
-//! 1. **Leaves**: `arity^depth` dummy circuits (each a single distinct constant),
-//!    each proved independently with batch STARK.
+//! Builds a full aggregation tree over one shared base proof:
+//! 1. **Leaves**: a dummy circuit (a single constant) proved once with batch
+//!    STARK and placed at all `arity^depth` leaf positions.
 //! 2. **Levels 1..depth**: `arity`-to-1 aggregation up the tree until a
 //!    single root proof remains.
 //!
@@ -11,10 +11,11 @@
 //!
 //! ## What this proves
 //!
-//! The root proof attests that every base proof in the tree is valid.  All
-//! base proofs are genuinely distinct (different constant values) so the
-//! circuit optimizer cannot collapse the verifications inside an
-//! aggregation node.
+//! The root proof attests that every leaf proof in the tree is valid.  An
+//! aggregation circuit depends only on the shape of its input proofs, never
+//! on their values, and each input gets its own witness slots, so verifying
+//! one shared leaf `arity` times builds the same circuit as verifying
+//! `arity` distinct leaves.
 //!
 //! ## Usage
 //!
@@ -22,7 +23,7 @@
 //! # 2 base proofs, 1 aggregation level (default)
 //! cargo run --release --example recursive_aggregation -- --field koala-bear
 //!
-//! # 7 distinct proofs verified inside one aggregation circuit
+//! # 7 proofs verified inside one aggregation circuit
 //! cargo run --release --example recursive_aggregation -- --aggregation-arity 7
 //!
 //! # KoalaBear with quintic challenge extension (D = 5)
@@ -96,6 +97,7 @@ mod n_to_one;
 
 use common::*;
 use p3_batch_stark::ProverData;
+use p3_circuit_prover::BatchStarkProof;
 use p3_maybe_rayon::prelude::*;
 
 #[derive(Parser, Debug)]
@@ -246,6 +248,26 @@ fn checked_num_leaves(arity: usize, depth: usize) -> Result<usize, &'static str>
         .ok_or("aggregation tree is too large")
 }
 
+/// Proves the dummy leaf circuit once and places that proof at every leaf position.
+fn shared_leaf_proofs<SC: StarkGenericConfig>(
+    num_leaves: usize,
+    prove_leaf: impl FnOnce(u32) -> RecursionOutput<SC>,
+) -> Vec<RecursionOutput<SC>> {
+    info!("Base proof (const = 1), shared by all {num_leaves} leaves");
+    let RecursionOutput(proof, data) = prove_leaf(1);
+    // `BatchStarkProof` is not `Clone`, so each leaf decodes its own copy from the wire
+    // encoding. That encoding omits `stark_common.lookups`, which are copied over directly.
+    let bytes = postcard::to_allocvec(&proof).expect("Failed to serialize base proof");
+    (0..num_leaves)
+        .map(|_| {
+            let mut copy: BatchStarkProof<SC> =
+                postcard::from_bytes(&bytes).expect("Failed to deserialize base proof");
+            copy.stark_common.lookups = proof.stark_common.lookups.clone();
+            RecursionOutput(copy, Arc::clone(&data))
+        })
+        .collect()
+}
+
 impl Args {
     pub fn to_fri_params(&self) -> FriParams {
         FriParams {
@@ -291,21 +313,8 @@ fn main() {
     let fri_params = args.to_fri_params();
     let table_packing = args.table_packing();
 
-    let num_leaves = checked_num_leaves(args.aggregation_arity, args.num_recursive_layers)
-        .unwrap_or_else(|message| {
-            clap::Error::raw(clap::error::ErrorKind::ValueValidation, message).exit()
-        });
-    let max_constant = match args.field {
-        FieldOption::KoalaBear => p3_koala_bear::KoalaBear::ORDER_U64 - 1,
-        FieldOption::BabyBear => p3_baby_bear::BabyBear::ORDER_U64 - 1,
-        FieldOption::Goldilocks => u64::from(u32::MAX),
-    };
-    if num_leaves as u64 > max_constant {
-        clap::Error::raw(
-            clap::error::ErrorKind::ValueValidation,
-            "aggregation tree has too many leaves for distinct base constants",
-        )
-        .exit();
+    if let Err(message) = checked_num_leaves(args.aggregation_arity, args.num_recursive_layers) {
+        clap::Error::raw(clap::error::ErrorKind::ValueValidation, message).exit();
     }
 
     assert_quintic_field(args.field, args.quintic);
@@ -601,13 +610,10 @@ macro_rules! define_field_module_aggregation_quintic {
                         let run = || {
                             let backend = $backend;
                             let config_base: $cfg_type = $config_base;
-                            let mut proofs: Vec<RecursionOutput<$cfg_type>> = (0..num_leaves)
-                                .map(|i| {
-                                    let val = (i + 1) as u32;
-                                    info!("Base proof {i} (const = {val})");
-                                    $prove_base_fn(val, &config_base, &base_table_packing)
-                                })
-                                .collect();
+                            let mut proofs: Vec<RecursionOutput<$cfg_type>> = shared_leaf_proofs(
+                                num_leaves,
+                                |val| $prove_base_fn(val, &config_base, &base_table_packing),
+                            );
 
                             // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
                             // starting from level 1's proofs, re-solving (from the first pair) against
@@ -1055,7 +1061,7 @@ macro_rules! define_field_module {
                 $gen_trace
             );
 
-            // All PCS variants prove the same distinct constant circuits at the leaves.
+            // All PCS variants prove the same constant circuit at the leaves.
             macro_rules! define_base_prover {
                 ($name:ident, $config_ty:ident, $base_field:ty, $base_d:expr) => {
                     fn $name(
@@ -1111,7 +1117,7 @@ macro_rules! define_field_module {
             #[allow(clippy::too_many_arguments)]
             pub fn run(
                 num_recursive_layers: usize,
-            aggregation_arity: usize,
+                aggregation_arity: usize,
                 fri_params: &FriParams,
                 table_packing: &TablePacking,
                 security_level: usize,
@@ -1137,13 +1143,10 @@ macro_rules! define_field_module {
                         let run = || {
                         let backend = $backend;
                         let config_base: $cfg_type = $config_base;
-                        let mut proofs: Vec<RecursionOutput<$cfg_type>> = (0..num_leaves)
-                            .map(|i| {
-                                let val = (i + 1) as u32;
-                                info!("Base proof {i} (const = {val})");
-                                $prove_base_fn(val, &config_base, &base_table_packing)
-                            })
-                            .collect();
+                        let mut proofs: Vec<RecursionOutput<$cfg_type>> = shared_leaf_proofs(
+                            num_leaves,
+                            |val| $prove_base_fn(val, &config_base, &base_table_packing),
+                        );
 
                         // `--profile` path: a `RecursionLayerProfile` fixed point is searched for
                         // starting from level 1's proofs, re-solving (from the first pair) against
@@ -1926,13 +1929,10 @@ macro_rules! arity4_run {
             };
 
             let config_base = config_with_fri_params(fri_params, security_level, true);
-            let base_proofs: Vec<RecursionOutput<ConfigWithFriParams>> = (0..num_leaves)
-                .map(|i| {
-                    let val = (i + 1) as u32;
-                    info!("Base proof {i} (const = {val})");
-                    prove_dummy_circuit(val, &config_base, &base_table_packing)
-                })
-                .collect();
+            let base_proofs: Vec<RecursionOutput<ConfigWithFriParams>> = shared_leaf_proofs(
+                num_leaves,
+                |val| prove_dummy_circuit(val, &config_base, &base_table_packing),
+            );
 
             if aggregation_arity != 2 {
                 let input_config = config_with_fri_params(fri_params, security_level, disable_recompose_npo);
