@@ -489,24 +489,26 @@ fn native_keccak_lanes_range_check_words_in_both_blocks() {
     }
 }
 
-/// A native WHIR leaf splits each opened value into hinted words bound by
-/// `value = sum_j word_j * x^(16j)` and absorbs them as Keccak lanes. Moving
-/// coordinate `16 * (j + 1)` of a value into word `j` as a seventeenth
-/// coordinate keeps that sum and the low sixteen coordinates of every lane,
-/// so only the lane range check separates the forged opening from the
-/// committed one. For a lane of each of the leaf's two Keccak blocks, the
-/// fanout, gate and bridge rows accept the forgery, the hash bus does not,
-/// and lifting the Keccak lane instead leaves a state cell outside {0, 1}.
-#[test]
-fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
-    // Sixteen Tower128 values: a 256-byte leaf absorbed in two blocks.
-    const VALUES: usize = 16;
-    let values: Vec<u128> = (0..VALUES as u128)
-        .map(|i| 0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i + 13))
-        .collect();
+/// A native WHIR leaf splits each opened value into `count` hinted words
+/// bound by `value = sum_j word_j * x_(16j)`, where `x_c` has the single raw
+/// coordinate `c`, and absorbs them as Keccak lanes. Each forgery
+/// `(value, word, moved, call, lane)` flips coordinate `moved` of a value and
+/// adds `x_moved / x_(16 * word)` to that word, which keeps the sum. The
+/// quotient has no coordinate below sixteen, so every lane keeps the sixteen
+/// low coordinates it absorbs and only the lane range check separates the
+/// forged opening from the committed one: lane `lane` of Keccak call `call`
+/// turns wide, the fanout, gate and bridge rows accept it, the hash bus does
+/// not, and lifting the Keccak lane instead leaves a state cell outside
+/// {0, 1}.
+fn reject_wide_leaf_words(
+    values: &[u128],
+    count: usize,
+    blocks: usize,
+    forgeries: &[(usize, usize, usize, usize, usize)],
+) {
     let bytes: Vec<u8> = values
         .iter()
-        .flat_map(|value| value.to_le_bytes())
+        .flat_map(|value| value.to_le_bytes().into_iter().take(2 * count))
         .collect();
     let root = Keccak256Hash.hash_iter(bytes.iter().copied());
 
@@ -514,11 +516,11 @@ fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
     let mut b = CircuitBuilder::<F>::new();
     b.enable_native_keccak_f1600().unwrap();
     let cap = b.alloc_public_input_array::<16>("root");
-    let row = b.alloc_private_inputs(VALUES, "row values");
+    let row = b.alloc_private_inputs(values.len(), "row values");
     let mut words = Vec::new();
     for &value in &row {
         let value = b.native_tower128_from_expr(value);
-        words.extend(b.native_tower128_unchecked_words(&value, 8).unwrap());
+        words.extend(b.native_tower128_unchecked_words(&value, count).unwrap());
     }
     b.verify_byte_hash_mmcs_opening_words_with_host::<NativeBinaryEncoding>(
         ByteHash::Keccak256,
@@ -576,16 +578,21 @@ fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
             _ => None,
         })
         .collect();
-    assert_eq!(calls.len(), 2, "two absorbed blocks");
+    assert_eq!(calls.len(), blocks, "absorbed blocks");
     let keccak = prepared
         .airs()
         .iter()
         .position(|air| air.width() == NUM_KECCAK_BINARY_COLS)
         .unwrap();
     assert_eq!(F::from_raw_coordinates(1), Some(F::ONE));
-    let wide = F::from_raw_coordinates(1 << 16).unwrap();
-    // Words 0 and 68 open the first and second Keccak blocks.
-    for (value, word, call) in [(0, 0, 0), (8, 4, 1)] {
+    let monomial = |coordinate: usize| F::from_raw_coordinates(1 << coordinate).unwrap();
+    for &(value, word, moved, call, lane) in forgeries {
+        let wide = monomial(moved) * monomial(16 * word).inverse();
+        assert_eq!(
+            wide.to_raw_coordinates() & 0xffff,
+            0,
+            "lane bytes unchanged"
+        );
         let split = circuit
             .ops
             .iter()
@@ -596,11 +603,11 @@ fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(split.len(), 8);
+        assert_eq!(split.len(), count);
         let mut hinted = honest.clone();
         hinted[split[word].0 as usize] += wide;
         let mut forged_private = private.clone();
-        forged_private[value] = F::from_repr(values[value] ^ (1 << (16 * (word + 1))));
+        forged_private[value] = F::from_repr(values[value] ^ (1 << moved));
         let mut runner = circuit.runner();
         runner.set_public_inputs(&statement).unwrap();
         runner.set_private_inputs(&forged_private).unwrap();
@@ -620,7 +627,7 @@ fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
                     .map(move |(l, _)| (c, l))
             })
             .collect();
-        assert_eq!(lanes, [(call, 0)], "the first lane of block {call}");
+        assert_eq!(lanes, [(call, lane)], "lane {lane} of block {call}");
         let mut traces = honest_traces.clone();
         let [fanout, gates, bridge] =
             patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
@@ -631,13 +638,36 @@ fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
         rejects(traces.clone());
 
         traces[keccak].values[call * KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS
-            + KECCAK_BINARY_ROWS_PER_PERM] += wide;
+            + KECCAK_BINARY_ROWS_PER_PERM
+            + 16 * lane] += wide;
         let local = catch_unwind(AssertUnwindSafe(|| {
             check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
         }));
         assert!(local.is_err(), "the lifted lane leaves a non-Boolean cell");
         rejects(traces);
     }
+}
+
+/// Sixteen Tower128 values form a 256-byte leaf absorbed in two Keccak
+/// blocks, whose first lanes are words 0 and 68.
+#[test]
+fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
+    let values: Vec<u128> = (0..16)
+        .map(|i| 0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i + 13))
+        .collect();
+    reject_wide_leaf_words(&values, 8, 2, &[(0, 0, 16, 0, 0), (8, 4, 80, 1, 0)]);
+}
+
+/// Sixteen Tower32 base values form a 64-byte leaf of two words per value.
+/// Moving coordinate 32 of a value into its second word gives a value outside
+/// Tower32 with the same leaf bytes, so the lane range check is also what
+/// keeps base rows in Tower32.
+#[test]
+fn native_keccak_lanes_range_check_tower32_leaf_words() {
+    let values: Vec<u128> = (0..16)
+        .map(|i| u128::from(0x9bfa3e51u32.wrapping_mul(i + 13)))
+        .collect();
+    reject_wide_leaf_words(&values, 2, 1, &[(0, 0, 16, 0, 0), (15, 1, 32, 0, 31)]);
 }
 
 /// A native WHIR verifier gives proof-supplied Merkle siblings no range check
