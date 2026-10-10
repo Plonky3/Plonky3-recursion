@@ -223,3 +223,102 @@ fn native_limbs_digest_and_grinding_keep_the_next_draw_bound() {
             .is_err()
     );
 }
+
+/// Words observed whole sample exactly like the same values observed as
+/// checked bytes, and like the native transcript: in an odd-length input, a
+/// word-aligned input, words at odd offsets and a two-block input.
+#[test]
+fn native_word_observations_sample_like_byte_observations() {
+    type F = BinaryField128;
+    const BYTE: u8 = 201;
+    let initial = [3u8, 251, 7];
+    let values: [u128; 12] = core::array::from_fn(|i| {
+        0x8123_4567_89ab_cdef_0fed_cba9_8765_4321u128.rotate_left(11 * i as u32) ^ i as u128
+    });
+    let mut native =
+        BinaryChallenger::<BinaryField8, _>::from_hasher(initial.to_vec(), Keccak256Hash);
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let input = b.alloc_public_input_array::<3>("initial bytes");
+    let observed = b.alloc_public_input_array::<12>("observed values");
+    let mut words = BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(
+        &mut b,
+        ByteHash::Keccak256,
+        &input,
+    )
+    .unwrap();
+    let mut bytes = words.clone();
+    let byte = [b.define_const(E::encode_u16(u16::from(BYTE)).unwrap())];
+    // Values observed before each draw; the third phase brackets them with a
+    // byte, so its words sit at odd offsets.
+    for (range, bracket) in [(0..2, false), (2..3, false), (3..4, true), (4..12, false)] {
+        for _ in 0..usize::from(bracket) {
+            native.observe(BinaryField8::from_repr(BYTE));
+            words
+                .observe_bytes_with_host::<E, F>(&mut b, &byte)
+                .unwrap();
+            bytes
+                .observe_bytes_with_host::<E, F>(&mut b, &byte)
+                .unwrap();
+        }
+        for i in range {
+            for byte in values[i].to_le_bytes() {
+                native.observe(BinaryField8::from_repr(byte));
+            }
+            let value = b.native_tower128_from_expr(observed[i]);
+            let split = b.native_tower128_unchecked_words(&value, 8).unwrap();
+            words
+                .observe_words_with_host::<E, F>(&mut b, &split)
+                .unwrap();
+            let checked: Vec<_> = b
+                .native_tower128_to_bits(&value)
+                .unwrap()
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|bits| E::recompose_word(&mut b, bits).unwrap())
+                .collect();
+            bytes
+                .observe_bytes_with_host::<E, F>(&mut b, &checked)
+                .unwrap();
+        }
+        for _ in 0..usize::from(bracket) {
+            native.observe(BinaryField8::from_repr(BYTE));
+            words
+                .observe_bytes_with_host::<E, F>(&mut b, &byte)
+                .unwrap();
+            bytes
+                .observe_bytes_with_host::<E, F>(&mut b, &byte)
+                .unwrap();
+        }
+        let expected: BinaryField128 = native.sample();
+        for ch in [&mut words, &mut bytes] {
+            let actual = ch.sample_with_host::<E, F>(&mut b).unwrap();
+            bind_bits(&mut b, actual.bits(), expected.to_repr());
+        }
+        let expected = native.sample_bits(13);
+        for ch in [&mut words, &mut bytes] {
+            let actual = ch.sample_bits_with_host::<E, F>(&mut b, 13).unwrap();
+            bind_bits(&mut b, &actual, expected as u128);
+        }
+    }
+    let circuit = b.build().unwrap();
+    let mut public: Vec<F> = initial
+        .iter()
+        .map(|&byte| E::encode_u16(u16::from(byte)).unwrap())
+        .collect();
+    public.extend(values.map(F::from_repr));
+    let runs = |public: &[F]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    assert!(runs(&public));
+    for value in [0, 2, 3, 11] {
+        let mut wrong = public.clone();
+        wrong[3 + value] += F::from_repr(1 << 77);
+        assert!(!runs(&wrong), "changed observed value {value}");
+    }
+}

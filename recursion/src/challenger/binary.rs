@@ -2,8 +2,9 @@
 //!
 //! This matches `BinaryChallenger<BinaryField128, HashChallenger<u8, H, 32>>`
 //! with `H = p3_keccak::Keccak256Hash` or `H = p3_blake3::Blake3`.
-//! Transcript buffers hold individual bytes, supporting observations and
-//! samples of any byte length. All methods must use
+//! Transcript buffers hold individual bytes, and the pending input may also
+//! hold sixteen-bit words standing for their two little-endian bytes. This
+//! supports observations and samples of any byte length. All methods must use
 //! one [`CircuitBuilder`] expression graph: [`ExprId`] has no graph owner to
 //! let this type detect targets copied from another builder.
 
@@ -18,7 +19,9 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 
 /// A circuit transcript for raw binary-tower observations and byte-hash samples.
 ///
-/// Both private buffers hold natural-order bytes, constrained to eight bits.
+/// Both private buffers hold natural-order bytes, constrained to eight bits;
+/// the input buffer may also hold sixteen-bit words, each standing for its two
+/// little-endian bytes and range-checked when hashed.
 /// The fixed [`ByteHash`] choice is part of the circuit relation, and its
 /// corresponding Keccak-f or BLAKE3 non-primitive operation must be enabled
 /// before a sample needs a refill. A failed fallible method preserves this
@@ -27,8 +30,36 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 #[derive(Clone, Debug)]
 pub struct BinaryTower128Challenger {
     hash: ByteHash,
-    input_buffer: Vec<ExprId>,
+    input_buffer: Vec<Absorbed>,
     output_buffer: Vec<ExprId>,
+}
+
+/// One entry of the next hash input.
+#[derive(Clone, Copy, Debug)]
+enum Absorbed {
+    Byte(ExprId),
+    /// A low-first sixteen-bit word, absorbed as its two little-endian bytes.
+    Word(ExprId),
+}
+
+impl Absorbed {
+    const fn len(self) -> usize {
+        match self {
+            Self::Byte(_) => 1,
+            Self::Word(_) => 2,
+        }
+    }
+
+    const fn byte(self) -> Option<ExprId> {
+        match self {
+            Self::Byte(byte) => Some(byte),
+            Self::Word(_) => None,
+        }
+    }
+}
+
+fn absorbed_bytes(bytes: &[ExprId]) -> impl Iterator<Item = Absorbed> + '_ {
+    bytes.iter().map(|&byte| Absorbed::Byte(byte))
 }
 
 /// The exact retained hash input at native rejection-sampling completion.
@@ -80,7 +111,7 @@ impl BinaryQueryContinuation {
         }
         let mut challenger = BinaryTower128Challenger {
             hash: self.hash,
-            input_buffer: self.digest.to_vec(),
+            input_buffer: absorbed_bytes(&self.digest).collect(),
             output_buffer: Vec::new(),
         };
         challenger.observe_bytes_with_host::<H, EF>(circuit, bytes)?;
@@ -94,13 +125,14 @@ impl BinaryTower128Challenger {
     pub(crate) fn retained_query_digest(
         &self,
     ) -> Result<(ByteHash, [ExprId; 32]), CircuitBuilderError> {
-        let digest = self.input_buffer.as_slice().try_into().map_err(|_| {
-            CircuitBuilderError::NonPrimitiveOpArity {
+        let bytes: Option<Vec<_>> = self.input_buffer.iter().map(|unit| unit.byte()).collect();
+        let digest = bytes
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| CircuitBuilderError::NonPrimitiveOpArity {
                 op: "BinaryQueryDigest",
                 expected: "32 retained bytes after a query draw".into(),
-                got: self.input_buffer.len(),
-            }
-        })?;
+                got: self.input_buffer.iter().map(|unit| unit.len()).sum(),
+            })?;
         Ok((self.hash, digest))
     }
 
@@ -121,6 +153,11 @@ impl BinaryTower128Challenger {
             branch.hash != first.hash
                 || branch.input_buffer.len() != first.input_buffer.len()
                 || branch.output_buffer.len() != first.output_buffer.len()
+                || branch
+                    .input_buffer
+                    .iter()
+                    .zip(&first.input_buffer)
+                    .any(|(unit, other)| unit.len() != other.len())
         }) {
             return Err(CircuitBuilderError::NonPrimitiveOpArity {
                 op: "BinaryChallengerSelect",
@@ -139,14 +176,23 @@ impl BinaryTower128Challenger {
                             let byte = if output {
                                 branch.output_buffer[i]
                             } else {
-                                branch.input_buffer[i]
+                                match branch.input_buffer[i] {
+                                    Absorbed::Byte(entry) | Absorbed::Word(entry) => entry,
+                                }
                             };
                             circuit.mul_add(*selector, byte, sum)
                         })
                 })
-                .collect()
+                .collect::<Vec<_>>()
         };
-        let input_buffer = select(false, first.input_buffer.len());
+        let input_buffer = select(false, first.input_buffer.len())
+            .into_iter()
+            .zip(&first.input_buffer)
+            .map(|(entry, unit)| match unit {
+                Absorbed::Byte(_) => Absorbed::Byte(entry),
+                Absorbed::Word(_) => Absorbed::Word(entry),
+            })
+            .collect();
         let output_buffer = select(true, first.output_buffer.len());
         Ok(Self {
             hash: first.hash,
@@ -202,7 +248,7 @@ impl BinaryTower128Challenger {
         let bytes = Self::bytes_from_limbs::<H, EF>(circuit, initial)?;
         Ok(Self {
             hash,
-            input_buffer: bytes,
+            input_buffer: absorbed_bytes(&bytes).collect(),
             output_buffer: Vec::new(),
         })
     }
@@ -242,7 +288,7 @@ impl BinaryTower128Challenger {
         }
         Ok(Self {
             hash,
-            input_buffer: initial.to_vec(),
+            input_buffer: absorbed_bytes(initial).collect(),
             output_buffer: Vec::new(),
         })
     }
@@ -283,7 +329,37 @@ impl BinaryTower128Challenger {
         }
         if !bytes.is_empty() {
             self.output_buffer.clear();
-            self.input_buffer.extend_from_slice(bytes);
+            self.input_buffer.extend(absorbed_bytes(bytes));
+        }
+        Ok(())
+    }
+
+    /// Observes the natural-order bytes of low-first sixteen-bit words: each
+    /// word contributes its low byte, then its high byte. A nonempty
+    /// observation discards unsampled output; an empty one changes nothing.
+    ///
+    /// Words are range-checked when a refill hashes them: a word at an even
+    /// byte offset of an even-length input goes to the host's word hash, which
+    /// a native host absorbs as a raw Keccak limb; any other word is split into
+    /// checked bytes. The caller binds each word to the value it encodes. IDs
+    /// must belong to `circuit`'s expression graph.
+    ///
+    /// # Errors
+    /// Rejects an unsupported host field before adding constraints.
+    pub fn observe_words_with_host<H, EF>(
+        &mut self,
+        _circuit: &mut CircuitBuilder<EF>,
+        words: &[ExprId],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        H::check_hash(self.hash)?;
+        if !words.is_empty() {
+            self.output_buffer.clear();
+            self.input_buffer
+                .extend(words.iter().map(|&word| Absorbed::Word(word)));
         }
         Ok(())
     }
@@ -550,7 +626,7 @@ impl BinaryTower128Challenger {
         let mut staged = self.clone();
         let bytes = Self::bytes_from_limbs::<H, EF>(circuit, digest)?;
         staged.output_buffer.clear();
-        staged.input_buffer.extend(bytes);
+        staged.input_buffer.extend(absorbed_bytes(&bytes));
         *self = staged;
         Ok(())
     }
@@ -698,9 +774,9 @@ impl BinaryTower128Challenger {
             .bits()
             .chunks(8)
             .map(|bits| H::recompose_word(circuit, bits))
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?;
         self.output_buffer.clear();
-        self.input_buffer.extend(bytes);
+        self.input_buffer.extend(absorbed_bytes(&bytes));
         Ok(())
     }
 
@@ -736,8 +812,8 @@ impl BinaryTower128Challenger {
             if self.output_buffer.is_empty() {
                 // Native HashChallenger hashes the whole forward message and
                 // retains that complete digest for the next chained refill.
-                let bytes = H::hash_bytes(circuit, self.hash, &self.input_buffer)?.to_vec();
-                self.input_buffer.clone_from(&bytes);
+                let bytes = Self::hash_input::<H, EF>(circuit, self.hash, &self.input_buffer)?;
+                self.input_buffer = absorbed_bytes(&bytes).collect();
                 self.output_buffer = bytes;
             }
             stream.push(
@@ -747,6 +823,58 @@ impl BinaryTower128Challenger {
             );
         }
         Ok(stream)
+    }
+
+    /// The digest bytes of the input's natural-order byte string. An input
+    /// of only bytes hashes them directly. Otherwise an even-length input is
+    /// packed into low-first words, absorbing each word entry whole at an
+    /// even offset; an odd-length input splits every word into checked bytes.
+    fn hash_input<H, EF>(
+        circuit: &mut CircuitBuilder<EF>,
+        hash: ByteHash,
+        input: &[Absorbed],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        let bytes: Option<Vec<_>> = input.iter().map(|unit| unit.byte()).collect();
+        if let Some(bytes) = bytes {
+            return Ok(H::hash_bytes(circuit, hash, &bytes)?.to_vec());
+        }
+        if !input
+            .iter()
+            .map(|unit| unit.len())
+            .sum::<usize>()
+            .is_multiple_of(2)
+        {
+            let mut bytes = Vec::new();
+            for &unit in input {
+                match unit {
+                    Absorbed::Byte(byte) => bytes.push(byte),
+                    Absorbed::Word(word) => bytes.extend(H::bytes_from_words(circuit, &[word])?),
+                }
+            }
+            return Ok(H::hash_bytes(circuit, hash, &bytes)?.to_vec());
+        }
+        let mut words = Vec::new();
+        let mut low = None;
+        for &unit in input {
+            match (unit, low.take()) {
+                (Absorbed::Byte(byte), None) => low = Some(byte),
+                (Absorbed::Word(word), None) => words.push(word),
+                (Absorbed::Byte(byte), Some(first)) => {
+                    words.extend(H::words_from_bytes(circuit, &[first, byte])?);
+                }
+                (Absorbed::Word(word), Some(first)) => {
+                    let split = H::bytes_from_words(circuit, &[word])?;
+                    words.extend(H::words_from_bytes(circuit, &[first, split[0]])?);
+                    low = Some(split[1]);
+                }
+            }
+        }
+        let digest = H::hash_words(circuit, hash, &words)?;
+        H::bytes_from_words(circuit, &digest)
     }
 
     fn bytes_from_limbs<H, EF>(

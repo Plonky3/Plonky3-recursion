@@ -347,8 +347,12 @@ where
         ch: &mut BinaryTower128Challenger,
         values: &[NativeTower128Target],
     ) -> Result<(), VerificationError> {
-        let bytes = native_tower_bytes::<H>(b, values)?;
-        Ok(ch.observe_bytes_with_host::<H, BinaryField128>(b, &bytes)?)
+        // The refill that hashes these words range-checks each one.
+        let mut words = alloc::vec::Vec::with_capacity(8 * values.len());
+        for value in values {
+            words.extend(b.native_tower128_unchecked_words(value, 8)?);
+        }
+        Ok(ch.observe_words_with_host::<H, BinaryField128>(b, &words)?)
     }
     fn observe_after_queries<H: BinaryCircuitHost<BinaryField128>>(
         b: &mut CircuitBuilder<BinaryField128>,
