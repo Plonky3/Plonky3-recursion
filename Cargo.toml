@@ -46,6 +46,7 @@ cognitive_complexity = "allow"
 [workspace.dependencies]
 
 # Other common dependencies
+blake3 = { version = "1.8.4", default-features = false }
 clap = { version = "4.6", features = ["derive"] }
 hashbrown = "0.17.1"
 itertools = { version = "0.15.0", default-features = false, features = ["use_alloc"] }
