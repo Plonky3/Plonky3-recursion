@@ -11,6 +11,12 @@
 //!     --max-trace-cells 536870912 --max-pcs-codeword-cells 1073741824 \
 //!     --max-verifier-rounds 512
 //!
+//! On a 14-core Apple M-series machine with 48 GB, its second layer (4.63M
+//! witnesses, 1,073,741,824 initial codeword cells) proves and verifies in
+//! 89 s, with a 30 GB peak memory footprint and a 27 GB maximum resident set.
+//! `--pcs-security-level 32 --pow-bits 24` gives a second layer of the same
+//! size (71 s, 28.5 GB resident) at the cost of 1-14 s of grinding per layer.
+//!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits
 //! count field cells or graph entries, not bytes. The second layer's initial
 //! codewords alone occupy 8 GiB; traces, trees, and workspaces require more.
