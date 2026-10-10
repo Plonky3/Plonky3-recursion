@@ -298,8 +298,8 @@ where
                     b.check_construction_limits()?;
                 }
             }
-            for &limb in path.iter().flatten() {
-                H::decompose_word(b, limb, 16)?;
+            for sibling in path {
+                H::constrain_sibling(b, sibling)?;
             }
             let heights = [1usize << check.site.log_height];
             if let Some(words) = words {

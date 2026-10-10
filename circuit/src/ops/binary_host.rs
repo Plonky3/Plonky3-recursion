@@ -68,6 +68,19 @@ pub trait BinaryCircuitHost<F: Field + Eq + Hash>: BinaryCircuitEncoding<F> + Si
         Self::words_from_bytes(builder, &digest)
     }
 
+    /// Range-checks the words of a proof-supplied Merkle sibling digest, which
+    /// an MMCS opening selects against the current digest under a Boolean
+    /// index bit to form the inputs of [`Self::compress`].
+    fn constrain_sibling(
+        builder: &mut CircuitBuilder<F>,
+        sibling: &[ExprId],
+    ) -> Result<(), CircuitBuilderError> {
+        for &word in sibling {
+            Self::decompose_word(builder, word, 16)?;
+        }
+        Ok(())
+    }
+
     /// Native `CompressionFunctionFromHasher`: hash the two complete digests.
     fn compress(
         builder: &mut CircuitBuilder<F>,
@@ -116,6 +129,17 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         <Self as BinaryCircuitHost<F>>::check_hash(hash)?;
         Ok(builder.native_keccak256_words(words)?.to_vec())
+    }
+
+    /// Adds no constraint. Under a Boolean index bit the two selected digests
+    /// are the current digest and the sibling, so each sibling word equals a
+    /// word that [`Self::compress`] absorbs as a first-block native Keccak
+    /// lane, which the native Keccak AIR constrains to sixteen coordinates.
+    fn constrain_sibling(
+        _builder: &mut CircuitBuilder<F>,
+        _sibling: &[ExprId],
+    ) -> Result<(), CircuitBuilderError> {
+        <Self as BinaryCircuitEncoding<F>>::check_carrier()
     }
 }
 
