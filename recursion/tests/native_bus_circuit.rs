@@ -371,6 +371,27 @@ fn patch_witness_cells(
     patched
 }
 
+/// The Keccak trace cell of bit 0 of input lane `lane` of call `call`: row
+/// `call * KECCAK_BINARY_ROWS_PER_PERM`, column
+/// `KECCAK_BINARY_ROWS_PER_PERM + 16 * lane`. Asserts that the sixteen bits
+/// from there, bit `t` weighted by `x_t`, pack to `expected`, the honest lane
+/// witness, so adding `d` to the cell adds `d` to exactly that lane.
+fn keccak_input_cell<F: BinaryCoordinateField>(
+    keccak: &RowMajorMatrix<F>,
+    call: usize,
+    lane: usize,
+    expected: F,
+) -> usize {
+    let cell = call * KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS
+        + KECCAK_BINARY_ROWS_PER_PERM
+        + 16 * lane;
+    let packed = (0..16).fold(F::ZERO, |sum, t| {
+        sum + keccak.values[cell + t] * F::from_raw_coordinates(1 << t).unwrap()
+    });
+    assert_eq!(packed, expected, "lane {lane} of Keccak call {call}");
+    cell
+}
+
 /// An absorbed word reaches the AIR as a Keccak lane: in the first block the
 /// lane is the word itself, and from the second block on it is `out + word`,
 /// a gate output whose `out` is the previous call's output. A word with a
@@ -478,9 +499,13 @@ fn native_keccak_lanes_range_check_words_in_both_blocks() {
         }
         rejects(traces.clone());
 
-        traces[keccak].values[call * KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS
-            + KECCAK_BINARY_ROWS_PER_PERM
-            + 16 * lane] += wide;
+        let cell = keccak_input_cell(
+            &traces[keccak],
+            call,
+            lane,
+            honest[calls[call][lane].0 as usize],
+        );
+        traces[keccak].values[cell] += wide;
         let local = catch_unwind(AssertUnwindSafe(|| {
             check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
         }));
@@ -637,9 +662,13 @@ fn reject_wide_leaf_words(
         }
         rejects(traces.clone());
 
-        traces[keccak].values[call * KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS
-            + KECCAK_BINARY_ROWS_PER_PERM
-            + 16 * lane] += wide;
+        let cell = keccak_input_cell(
+            &traces[keccak],
+            call,
+            lane,
+            honest[calls[call][lane].0 as usize],
+        );
+        traces[keccak].values[cell] += wide;
         let local = catch_unwind(AssertUnwindSafe(|| {
             check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
         }));
@@ -878,9 +907,13 @@ fn native_keccak_lanes_range_check_whir_merkle_siblings() {
 
         // Lifting the Keccak lane to the wide value through its unit-weight
         // bit balances the hash bus but leaves a state cell outside {0, 1}.
-        traces[keccak].values[call * KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS
-            + KECCAK_BINARY_ROWS_PER_PERM
-            + 16 * lane] += wide;
+        let cell = keccak_input_cell(
+            &traces[keccak],
+            call,
+            lane,
+            honest[calls[call][lane].0 as usize],
+        );
+        traces[keccak].values[cell] += wide;
         let local = catch_unwind(AssertUnwindSafe(|| {
             check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
         }));
