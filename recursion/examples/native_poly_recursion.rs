@@ -67,6 +67,9 @@ struct Args {
     /// Merkle cap height for the recursive output proofs.
     #[arg(long, default_value_t = 0)]
     cap_height: usize,
+    /// WHIR grinding bits per recursive opening; queries cover the rest of the security level.
+    #[arg(long, default_value_t = 0)]
+    pow_bits: usize,
 }
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
@@ -102,17 +105,18 @@ const fn protocol() -> ProtocolParameters {
         starting_log_inv_rate: 1,
     }
 }
-fn recursive_protocol(security_level: usize) -> ProtocolParameters {
+fn recursive_protocol(security_level: usize, pow_bits: usize) -> ProtocolParameters {
     ProtocolParameters {
         security_level,
+        pow_bits,
         folding_factor: FoldingFactor::Constant(4),
         ..protocol()
     }
 }
 fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
-        main: recursive_protocol(args.pcs_security_level),
-        preprocessed: recursive_protocol(args.pcs_security_level),
+        main: recursive_protocol(args.pcs_security_level, args.pow_bits),
+        preprocessed: recursive_protocol(args.pcs_security_level, args.pow_bits),
         cap_height: args.cap_height,
         initial_bytes: format!("native-poly-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
