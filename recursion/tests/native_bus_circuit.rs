@@ -636,6 +636,246 @@ fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
     }
 }
 
+/// A native WHIR verifier gives proof-supplied Merkle siblings no range check
+/// of their own. Each level selects its compression inputs from the current
+/// digest and the sibling under a Boolean index bit, sampled or a constant
+/// stratum bit, so each sibling word equals a first-block lane of that
+/// compression's native Keccak call. In a complete native WHIR verifier, a
+/// prover who claims the honest digests for a sibling word with a seventeenth
+/// coordinate satisfies every fanout, gate and bridge row, but the hash bus
+/// rejects it, and lifting the Keccak lane instead leaves a state cell
+/// outside {0, 1}. A Keccak padding row isolates that Booleanity constraint.
+#[test]
+fn native_keccak_lanes_range_check_whir_merkle_siblings() {
+    use p3_binary_pcs::whir::BinaryWhirDomain;
+    use p3_commit::MultilinearPcs;
+    use p3_multilinear_util::point::Point;
+    use p3_recursion::BinaryTower128Challenger;
+    use p3_recursion::pcs::binary::BinaryWhirVerifier;
+    use p3_sumcheck::layout::{Layout, SuffixProver, Table, plan_stacked_layout};
+    use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
+    use p3_test_utils::binary_field_params::keccak;
+    use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
+    type Ch = keccak::LevelChallenger<F>;
+    type L = SuffixProver<F, F>;
+    const CAP_HEIGHT: usize = 1;
+    const VARIABLES: usize = 6;
+
+    let protocol = OpeningProtocol::new(vec![TableSpec::new(
+        TableShape::new(VARIABLES, 1),
+        vec![OpeningBatch::new(vec![0], vec![0])],
+    )]);
+    let domain = BinaryWhirDomain::<F>::default();
+    let config = WhirConfig::<F, F, Ch>::new_with_domain(
+        plan_stacked_layout(&protocol.table_shapes()).0,
+        ProtocolParameters {
+            security_level: 8,
+            pow_bits: 0,
+            round_log_inv_rates: vec![],
+            folding_factor: FoldingFactor::Constant(2),
+            soundness_type: SecurityAssumption::JohnsonBound,
+            starting_log_inv_rate: 1,
+        },
+        &domain,
+    )
+    .unwrap();
+    let mmcs = keccak::LevelMmcs::<F>::new(
+        keccak::FieldHash::new(keccak::byte_hash()),
+        keccak::Compress::new(keccak::byte_hash()),
+        CAP_HEIGHT,
+    );
+    let pcs = WhirProver::<F, F, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
+    let recursive = BinaryWhirVerifier::<F>::new(
+        &config,
+        protocol.clone(),
+        L::variable_order(),
+        ByteHash::Keccak256,
+        CAP_HEIGHT,
+    )
+    .unwrap();
+    let shape = recursive.input_shape();
+    let make = || Ch::from_hasher(vec![129, 9, 251], keccak::byte_hash());
+    let dense = |i: usize| {
+        F::from_repr(0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i as u128 + 13))
+    };
+    let table = Table::new(RowMajorMatrix::new(
+        (0..1 << VARIABLES).map(dense).collect(),
+        1 << VARIABLES,
+    ));
+    let witness = L::new_witness(vec![table], config.round_folding_factor(0));
+    let points = vec![Point::new((0..VARIABLES).map(|j| dense(j + 71)).collect())];
+    let mut prover_ch = make();
+    let (commitment, data) = pcs.commit(witness, &mut prover_ch).unwrap();
+    let opened = pcs
+        .open_at(data, &protocol, &points, &mut prover_ch)
+        .unwrap();
+    let mut entry = make();
+    pcs.observe_commitment(&commitment, &mut entry);
+    let imported = recursive
+        .import_native(&config, &mmcs, &commitment, &points, &opened, &mut entry)
+        .unwrap();
+
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let cap: Vec<_> = (0..1 << CAP_HEIGHT)
+        .map(|_| b.alloc_public_input_array::<16>("root").to_vec())
+        .collect();
+    let point: Vec<_> = (0..VARIABLES)
+        .map(|_| {
+            let coordinate = b.public_input();
+            b.native_tower128_from_expr(coordinate)
+        })
+        .collect();
+    let proof = shape.allocate_native_targets(&mut b).unwrap();
+    let initial =
+        [129u8, 9, 251].map(|byte| b.define_const(F::from_raw_coordinates(byte.into()).unwrap()));
+    let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<NativeBinaryEncoding, F>(
+        &mut b,
+        ByteHash::Keccak256,
+        &initial,
+    )
+    .unwrap();
+    recursive
+        .observe_commitment_with_host::<NativeBinaryEncoding, F>(&mut b, &mut ch, &cap)
+        .unwrap();
+    recursive
+        .verify_at_native(&mut b, ch, &cap, &[point], &proof)
+        .unwrap();
+    let circuit = b.build().unwrap();
+    let statement: Vec<F> = commitment
+        .roots()
+        .iter()
+        .flat_map(|root| bytes_to_limbs(root))
+        .map(|word| F::from_raw_coordinates(word.into()).unwrap())
+        .chain(points[0].iter().copied())
+        .collect();
+    let private = imported.private_native_values(&shape).unwrap();
+
+    let prepared = NativeBusCircuit::new(&circuit, "whir").unwrap();
+    let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec(&prepared),
+        &VerifierLimits {
+            max_rounds: 256,
+            max_metadata_entries: 1 << 20,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    runner.set_private_inputs(&private).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest: Vec<F> = witness
+        .index
+        .iter()
+        .map(|&id| *witness.get_value(id).unwrap())
+        .collect();
+    let honest_traces = prepared.traces(&witness).unwrap();
+    let honest_proof = prover.prove(&public, honest_traces.clone()).unwrap();
+    authority.verify_native(&honest_proof, &public).unwrap();
+    let rejects = |traces: Vec<RowMajorMatrix<F>>| {
+        let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
+        if let Ok(Ok(proof)) = attempt {
+            assert!(authority.verify_native(&proof, &public).is_err());
+        }
+    };
+
+    let calls: Vec<_> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor { inputs, .. } => Some(&inputs[0]),
+            _ => None,
+        })
+        .collect();
+    let keccak = prepared
+        .airs()
+        .iter()
+        .position(|air| air.width() == NUM_KECCAK_BINARY_COLS)
+        .unwrap();
+    assert_eq!(F::from_raw_coordinates(1), Some(F::ONE));
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    // The first query's lowest index bit is sampled, so its first sibling
+    // reaches the hash through `select` gates. Its next bit is a constant
+    // stratum bit, which makes the second sibling itself a Keccak lane.
+    let path = &proof.final_paths[0];
+    assert!(path.len() >= 2, "a path through two compressions");
+    for (level, word, through_gates) in [(0, 3, true), (1, 5, false)] {
+        let id = circuit.expr_to_widx[&path[level][word]];
+        let input = circuit
+            .private_input_rows
+            .iter()
+            .position(|&row| row == id)
+            .unwrap();
+        let mut forged_private = private.clone();
+        forged_private[input] += wide;
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&statement).unwrap();
+        runner.set_private_inputs(&forged_private).unwrap();
+        assert!(runner.run().is_err(), "the runner refuses a wide lane");
+
+        let forged = replay(&circuit, &honest, &statement, &forged_private);
+        let lanes: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .flat_map(|(c, ids)| {
+                ids.iter()
+                    .enumerate()
+                    .filter(|&(_, id)| forged[id.0 as usize] != honest[id.0 as usize])
+                    .map(move |(l, _)| (c, l))
+            })
+            .collect();
+        let [(call, lane)] = lanes[..] else {
+            panic!("exactly one wide Keccak input lane, got {lanes:?}");
+        };
+        assert!(lane % 16 == word && lane < 32, "a first-block digest lane");
+        let mut traces = honest_traces.clone();
+        let [fanout, gates, bridge] =
+            patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
+        assert!(fanout > 0 && bridge == 1 && (gates > 0) == through_gates);
+        // Only the hash bus can reject this: every table holds locally.
+        for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+            check_constraints(air, trace, public);
+        }
+        rejects(traces.clone());
+
+        // Lifting the Keccak lane to the wide value through its unit-weight
+        // bit balances the hash bus but leaves a state cell outside {0, 1}.
+        traces[keccak].values[call * KECCAK_BINARY_ROWS_PER_PERM * NUM_KECCAK_BINARY_COLS
+            + KECCAK_BINARY_ROWS_PER_PERM
+            + 16 * lane] += wide;
+        let local = catch_unwind(AssertUnwindSafe(|| {
+            check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
+        }));
+        assert!(local.is_err(), "a wide Keccak lane needs a non-Boolean bit");
+        rejects(traces);
+    }
+
+    // A padding output row after another output row is read by no round map
+    // and no active bus row, so only Booleanity constrains its state cells.
+    let mut padded = honest_traces;
+    let height = padded[keccak].values.len() / NUM_KECCAK_BINARY_COLS;
+    let row = (calls.len() * KECCAK_BINARY_ROWS_PER_PERM + height) / 2;
+    assert!(calls.len() * KECCAK_BINARY_ROWS_PER_PERM < row && row < height);
+    let schedule = prepared.airs()[keccak].preprocessed_trace().unwrap();
+    assert_eq!(schedule.values[3 * row..3 * row + 3], [F::ZERO; 3]);
+    for r in [row - 1, row] {
+        let flags =
+            &padded[keccak].values[r * NUM_KECCAK_BINARY_COLS..][..KECCAK_BINARY_ROWS_PER_PERM];
+        let (round, output) = flags.split_at(KECCAK_BINARY_ROWS_PER_PERM - 1);
+        assert!(round.iter().all(|&flag| flag == F::ZERO) && output == [F::ONE]);
+    }
+    padded[keccak].values[row * NUM_KECCAK_BINARY_COLS + KECCAK_BINARY_ROWS_PER_PERM] = wide;
+    rejects(padded.clone());
+    let local = catch_unwind(AssertUnwindSafe(|| {
+        check_constraints(&prepared.airs()[keccak], &padded[keccak], &[]);
+    }));
+    assert!(local.is_err(), "a padding state cell outside {{0, 1}}");
+}
+
 #[test]
 fn product_bus_circuit_proves_over_poly64_with_poly192_challenges() {
     use p3_binary_field::Poly64;
