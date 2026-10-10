@@ -25,6 +25,18 @@ pub(crate) trait BinaryWhirPolicy<CF: Field + Eq + Hash>: BinaryProtocolPolicy<C
         value: &Self::ChallengeTarget,
         mode: BinaryOracleWord,
     ) -> Result<Vec<ExprId>, VerificationError>;
+    /// Low-first sixteen-bit words of the bytes [`Self::oracle_bytes`]
+    /// returns, bound to `value` but range-checked only by the leaf hash that
+    /// absorbs them. Once range-checked, the words also constrain Base
+    /// membership. `None` keeps the value on [`Self::oracle_bytes`], before
+    /// any constraint is added.
+    fn oracle_words(
+        _b: &mut CircuitBuilder<CF>,
+        _value: &Self::ChallengeTarget,
+        _mode: BinaryOracleWord,
+    ) -> Result<Option<Vec<ExprId>>, VerificationError> {
+        Ok(None)
+    }
     fn query_point(
         b: &mut CircuitBuilder<CF>,
         index_bits: &[ExprId],
@@ -89,6 +101,20 @@ where
             BinaryOracleWord::Challenge => 128,
         };
         <Self as BinaryTowerPolicy<BinaryField128>>::word_bytes::<H>(b, value, width)
+    }
+    fn oracle_words(
+        b: &mut CircuitBuilder<BinaryField128>,
+        value: &NativeTower128Target,
+        mode: BinaryOracleWord,
+    ) -> Result<Option<Vec<ExprId>>, VerificationError> {
+        let width = match mode {
+            BinaryOracleWord::Base => F::RAW_BITS,
+            BinaryOracleWord::Challenge => 128,
+        };
+        if !width.is_multiple_of(16) {
+            return Ok(None);
+        }
+        Ok(Some(b.native_tower128_unchecked_words(value, width / 16)?))
     }
     fn query_point(
         b: &mut CircuitBuilder<BinaryField128>,

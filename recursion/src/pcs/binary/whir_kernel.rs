@@ -285,22 +285,42 @@ where
     P::assert_equal(b, &claim, &expected);
     for check in checks {
         for ((row, path), index) in check.rows.iter().zip(check.paths).zip(&check.indices) {
+            // Every value of a row shares one width, so either all of them
+            // split into words or none does.
+            let words = row
+                .iter()
+                .map(|value| P::oracle_words(b, value, check.mode))
+                .collect::<Result<Option<Vec<_>>, _>>()?;
             let mut bytes = Vec::new();
-            for value in row {
-                bytes.extend(P::oracle_bytes::<H>(b, value, check.mode)?);
-                b.check_construction_limits()?;
+            if words.is_none() {
+                for value in row {
+                    bytes.extend(P::oracle_bytes::<H>(b, value, check.mode)?);
+                    b.check_construction_limits()?;
+                }
             }
             for &limb in path.iter().flatten() {
                 H::decompose_word(b, limb, 16)?;
             }
-            b.verify_byte_hash_mmcs_opening_bytes_with_host::<H>(
-                p.hash,
-                &[bytes],
-                &[1usize << check.site.log_height],
-                index,
-                path,
-                &check.cap,
-            )?;
+            let heights = [1usize << check.site.log_height];
+            if let Some(words) = words {
+                b.verify_byte_hash_mmcs_opening_words_with_host::<H>(
+                    p.hash,
+                    &[words.concat()],
+                    &heights,
+                    index,
+                    path,
+                    &check.cap,
+                )?;
+            } else {
+                b.verify_byte_hash_mmcs_opening_bytes_with_host::<H>(
+                    p.hash,
+                    &[bytes],
+                    &heights,
+                    index,
+                    path,
+                    &check.cap,
+                )?;
+            }
             b.check_construction_limits()?;
         }
     }

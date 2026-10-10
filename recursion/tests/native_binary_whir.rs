@@ -47,7 +47,10 @@ fn protocol(rows: usize, width: usize, next: bool) -> OpeningProtocol {
 }
 
 macro_rules! check {
-    ($base:ty, $layout:ident, $protocol:expr, $cap_height:expr, $pow:expr) => {{
+    ($base:ty, $layout:ident, $protocol:expr, $cap_height:expr, $pow:expr) => {
+        check!($base, $layout, $protocol, $cap_height, $pow, 2)
+    };
+    ($base:ty, $layout:ident, $protocol:expr, $cap_height:expr, $pow:expr, $folding:expr) => {{
         type Ch = keccak::LevelChallenger<$base>;
         type L = $layout<$base, F>;
         let protocol = $protocol;
@@ -59,7 +62,7 @@ macro_rules! check {
                 security_level: 8,
                 pow_bits: $pow,
                 round_log_inv_rates: vec![],
-                folding_factor: FoldingFactor::Constant(2),
+                folding_factor: FoldingFactor::Constant($folding),
                 soundness_type: SecurityAssumption::JohnsonBound,
                 starting_log_inv_rate: 1,
             },
@@ -265,4 +268,13 @@ fn native_zero_closing_rounds_and_leaf_caps_preserve_transcript() {
 #[test]
 fn tower32_whir_keeps_base_rows_narrow_and_challenges_wide() {
     check!(BinaryField32, SuffixProver, protocol(2, 2, true), 0, 1);
+}
+
+/// Folding four variables opens sixteen-value rows: a Tower128 row is a
+/// 256-byte leaf hashed over two Keccak blocks, a Tower32 base row a
+/// 64-byte leaf.
+#[test]
+fn native_sixteen_value_rows_authenticate_as_word_leaves() {
+    check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
+    check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
 }
