@@ -31,13 +31,15 @@ use crate::direct::{DirectCircuitError, DirectCircuitLimits};
 use crate::indexed::{IndexedCircuitError, cells, gate, padded_height, variables};
 use crate::native_binary::{
     KeccakCall, NativeBinaryCircuitError, eval_keccak_bits, keccak_bit_trace, keccak_calls,
-    keccak_limb_expression,
+    keccak_limb_expression, keccak_packed_words,
 };
 use crate::primitive_plan::PrimitivePlan;
 
 const MAX_NAMESPACE_BYTES: usize = BusName::MAX_LEN - ".witness".len();
 const GATE_PP: usize = 12;
 const HASH_WIDTH: usize = NUM_KECCAK_BINARY_COLS;
+/// Columns of the Keccak table are indexed by `COLUMN_VARIABLES` coordinates once packed.
+const COLUMN_VARIABLES: usize = HASH_WIDTH.next_power_of_two().ilog2() as usize;
 
 #[derive(Debug, Error)]
 pub enum NativeBusCircuitError {
@@ -55,6 +57,28 @@ pub enum NativeBusCircuitError {
     LabelCapacity { label: usize, bits: usize },
     #[error("expected {expected} circuit public values, got {actual}")]
     PublicLength { expected: usize, actual: usize },
+}
+
+/// How the Keccak table is committed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeccakCommitment {
+    /// One field element per cell, with the booleanity constraints in the AIR.
+    #[default]
+    Dense,
+    /// One bit per cell, packed 64 rows to a word. The AIR assumes a Boolean trace, which is
+    /// sound only under a commitment that stores bits.
+    Bits,
+}
+
+/// One table's main trace.
+#[derive(Clone, Debug)]
+pub enum NativeBusTrace<F> {
+    Dense(RowMajorMatrix<F>),
+    /// Row blocks of `1625` words each, `ceil(2^log_height / 64)` blocks in all.
+    PackedBits {
+        words: RowMajorMatrix<u64>,
+        log_height: usize,
+    },
 }
 
 /// Sorted witness reads, one fanout row each, in a table of `height` rows.
@@ -89,6 +113,7 @@ enum Table<F> {
     Keccak {
         pp: Arc<RowMajorMatrix<F>>,
         weights: [F; 16],
+        bits: bool,
     },
     Bridge(Arc<RowMajorMatrix<F>>),
 }
@@ -111,6 +136,7 @@ pub struct NativeBusCircuit<F> {
     log_heights: Vec<usize>,
     main_variables: usize,
     preprocessed_variables: usize,
+    keccak: KeccakCommitment,
 }
 
 impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
@@ -136,6 +162,26 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         min_log_height: usize,
         limits: DirectCircuitLimits,
     ) -> Result<Self, NativeBusCircuitError> {
+        Self::with_options(
+            circuit,
+            namespace,
+            min_log_height,
+            limits,
+            KeccakCommitment::Dense,
+        )
+    }
+
+    /// As [`Self::with_min_log_height_and_limits`], committing the Keccak table as `keccak`.
+    /// In [`KeccakCommitment::Bits`] mode the Keccak table is left out of
+    /// [`Self::main_variables`] and its trace is requested through [`Self::trace_tables`].
+    pub fn with_options(
+        circuit: &Circuit<F>,
+        namespace: &str,
+        min_log_height: usize,
+        limits: DirectCircuitLimits,
+        keccak: KeccakCommitment,
+    ) -> Result<Self, NativeBusCircuitError> {
+        let bits = keccak == KeccakCommitment::Bits;
         let shift = u32::try_from(min_log_height.max(1))
             .map_err(|_| IndexedCircuitError::AllocationOverflow)?;
         let minimum_height = 1usize
@@ -199,11 +245,15 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         }
         // IDs and boundary tags, rather than fanout row numbers, are bus labels.
         label::<F>(plan.width.max(cells(calls.len(), 2)?))?;
+        let hash_cells = cells(hash_height, HASH_WIDTH)?;
         let main_cells = add(
             add(witness_height, cells(gate_height, 5)?)?,
             add(
                 cells(plan.public.len(), minimum_height)?,
-                add(cells(hash_height, HASH_WIDTH)?, cells(bridge_height, 100)?)?,
+                add(
+                    if bits { 0 } else { hash_cells },
+                    cells(bridge_height, 100)?,
+                )?,
             )?,
         )?;
         let pp_cells = add(
@@ -222,7 +272,11 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         } else {
             0
         };
-        let bounded = add(add(main_cells, pp_cells)?, hash_temporary)?;
+        let packed_cells = if bits { add(hash_cells, 127)? / 128 } else { 0 };
+        let bounded = add(
+            add(add(main_cells, pp_cells)?, hash_temporary)?,
+            packed_cells,
+        )?;
         limits.check(
             "native bus traces, preprocessing and temporary cells",
             bounded,
@@ -297,6 +351,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             airs.push(air(Table::Keccak {
                 pp: Arc::new(RowMajorMatrix::new(pp, 3)),
                 weights,
+                bits,
             }));
             log_heights.push(hash_height.ilog2() as usize);
             let mut pp = vec![F::ZERO; cells(bridge_height, 102)?];
@@ -323,6 +378,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             log_heights,
             main_variables,
             preprocessed_variables,
+            keccak,
         })
     }
 
@@ -337,6 +393,18 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
     }
     pub const fn preprocessed_variables(&self) -> Option<usize> {
         Some(self.preprocessed_variables)
+    }
+
+    /// Position of the bit-committed Keccak table in [`Self::airs`], when there is one.
+    pub fn keccak_table_index(&self) -> Option<usize> {
+        self.airs
+            .iter()
+            .position(|air| matches!(air.table, Table::Keccak { bits: true, .. }))
+    }
+
+    /// Variables of the Keccak table's bit stack: its column and row coordinates.
+    pub fn packed_bit_variables(&self) -> Option<usize> {
+        Some(COLUMN_VARIABLES + self.log_heights[self.keccak_table_index()?])
     }
 
     pub fn public_values(&self, public: &[F]) -> Result<Vec<Vec<F>>, NativeBusCircuitError> {
@@ -359,10 +427,35 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             .collect())
     }
 
+    /// Dense main traces of every table, including the Keccak table in either mode.
     pub fn traces(
         &self,
         witness: &WitnessTrace<F>,
     ) -> Result<Vec<RowMajorMatrix<F>>, NativeBusCircuitError> {
+        Ok(self
+            .trace_tables_with(witness, false)?
+            .into_iter()
+            .map(|trace| match trace {
+                NativeBusTrace::Dense(matrix) => matrix,
+                NativeBusTrace::PackedBits { .. } => unreachable!("dense traces are requested"),
+            })
+            .collect())
+    }
+
+    /// Main traces of every table, with the Keccak table as packed bits in
+    /// [`KeccakCommitment::Bits`] mode.
+    pub fn trace_tables(
+        &self,
+        witness: &WitnessTrace<F>,
+    ) -> Result<Vec<NativeBusTrace<F>>, NativeBusCircuitError> {
+        self.trace_tables_with(witness, self.keccak == KeccakCommitment::Bits)
+    }
+
+    fn trace_tables_with(
+        &self,
+        witness: &WitnessTrace<F>,
+        packed: bool,
+    ) -> Result<Vec<NativeBusTrace<F>>, NativeBusCircuitError> {
         if witness.num_rows() != self.width {
             return Err(DirectCircuitError::WitnessLength {
                 expected: self.width,
@@ -382,6 +475,13 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let mut traces = Vec::with_capacity(self.airs.len());
         for (air, &log) in self.airs.iter().zip(&self.log_heights) {
             let height = 1usize << log;
+            if packed && matches!(air.table, Table::Keccak { bits: true, .. }) {
+                traces.push(NativeBusTrace::PackedBits {
+                    words: keccak_packed_words(&self.calls, witness, height)?,
+                    log_height: log,
+                });
+                continue;
+            }
             let trace = match &air.table {
                 Table::Witness(_) => {
                     let mut values: Vec<_> = self.fanout.ids.iter().map(|&id| read(id)).collect();
@@ -426,7 +526,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     RowMajorMatrix::new(values, 100)
                 }
             };
-            traces.push(trace);
+            traces.push(NativeBusTrace::Dense(trace));
         }
         Ok(traces)
     }
@@ -507,6 +607,9 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Bridge(_) => 100,
         }
     }
+    fn assumes_boolean_trace(&self) -> bool {
+        matches!(self.table, Table::Keccak { bits: true, .. })
+    }
     fn num_public_values(&self) -> usize {
         match &self.table {
             Table::Public(ids) => ids.len(),
@@ -547,8 +650,8 @@ where
     AB::F: BinaryCoordinateField,
 {
     fn eval(&self, b: &mut AB) {
-        if let Table::Keccak { .. } = &self.table {
-            eval_keccak_bits(b);
+        if let Table::Keccak { bits, .. } = &self.table {
+            eval_keccak_bits(b, *bits);
         }
         let main = b.main();
         let row = main.current_slice();

@@ -636,3 +636,114 @@ fn constructors_refuse_unsupported_configurations() {
     // Both parts' roots together must have a `usize` count.
     assert!(MixedWhirPcs::new(dense_main_pcs(), None, usize::BITS as usize - 1).is_err());
 }
+
+/// Three chained Keccak-f calls through the native bus, with the Keccak table bit-committed.
+#[test]
+fn nativebus_bits_mode_round_trip() {
+    use p3_circuit::CircuitBuilder;
+    use p3_circuit::ops::binary_native::BinaryCoordinateField;
+    use p3_circuit::ops::keccak_state_to_limbs;
+    use p3_circuit_prover::direct::DirectCircuitLimits;
+    use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusTrace};
+    use p3_keccak::KeccakF;
+    use p3_symmetric::Permutation;
+
+    const CALLS: usize = 3;
+    let mut builder = CircuitBuilder::<E>::new();
+    builder.enable_native_keccak_f1600().unwrap();
+    let mut state = builder.alloc_public_input_array::<100>("input").to_vec();
+    for _ in 0..CALLS {
+        state = builder.add_native_keccak_f1600(&state).unwrap().to_vec();
+    }
+    let expected = builder.alloc_public_input_array::<100>("output");
+    for (actual, expected) in state.iter().zip(expected) {
+        builder.connect(*actual, expected);
+    }
+    let circuit = builder.build().unwrap();
+
+    let input: [u64; 25] =
+        core::array::from_fn(|i| 0x8123456789abcdefu64.rotate_left(3 * i as u32));
+    let mut output = input;
+    for _ in 0..CALLS {
+        KeccakF.permute_mut(&mut output);
+    }
+    let statement: Vec<E> = [input, output]
+        .iter()
+        .flat_map(keccak_state_to_limbs)
+        .map(|limb| E::from_raw_coordinates(limb as u128).unwrap())
+        .collect();
+
+    let prepared = NativeBusCircuit::with_options(
+        &circuit,
+        "bits",
+        // Taller than the 128 rows of three permutations, so padding rows beyond the
+        // generator's own are exercised.
+        KECCAK_VARIABLES + 1,
+        DirectCircuitLimits::default(),
+        KeccakCommitment::Bits,
+    )
+    .unwrap();
+    let keccak = prepared.keccak_table_index().unwrap();
+    let bits = prepared.packed_bit_variables().unwrap();
+    let preprocessed = MixedWhirPcs::from_parameters(
+        &whir_parameters(prepared.preprocessed_variables().unwrap()),
+        None,
+    )
+    .unwrap();
+    let main = MixedWhirPcs::from_parameters(
+        &whir_parameters(prepared.main_variables()),
+        Some((&whir_parameters(bits - 7), keccak, bits)),
+    )
+    .unwrap();
+    let config = Config::new(main, Some(preprocessed)).unwrap();
+    let airs = prepared.airs().iter().collect::<Vec<_>>();
+    let (proving, verifying) = setup(&config, &airs, &mut challenger()).unwrap();
+
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let public = prepared.public_values(&statement).unwrap();
+    let tables = prepared
+        .trace_tables(&witness)
+        .unwrap()
+        .into_iter()
+        .map(|trace| match trace {
+            NativeBusTrace::Dense(matrix) => Table::new(matrix.transpose()),
+            NativeBusTrace::PackedBits { words, log_height } => {
+                Table::from_packed_bits(words, log_height)
+            }
+        })
+        .collect::<Vec<_>>();
+    let proof = prove_with_security(
+        &config,
+        ProverInstances::new(
+            airs.iter()
+                .zip(tables)
+                .zip(&public)
+                .map(|((air, table), public)| ProverInstance::new(*air, table, &proving, public))
+                .collect(),
+        ),
+        POW_BITS,
+        TARGET_BITS,
+        &mut challenger(),
+    )
+    .unwrap();
+    assert!(proof.opening.packed.is_some());
+    verify_with_security(
+        &config,
+        VerifierInstances::new(
+            airs.iter()
+                .zip(prepared.log_heights())
+                .zip(&public)
+                .map(|((air, &height), public)| {
+                    VerifierInstance::new(*air, &verifying, height, public)
+                })
+                .collect(),
+        ),
+        &proof,
+        POW_BITS,
+        TARGET_BITS,
+        &mut challenger(),
+    )
+    .unwrap();
+}
