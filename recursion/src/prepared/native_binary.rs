@@ -115,12 +115,16 @@ where
         )
     }
 
-    fn prepare<A, L>(
+    /// Builds the child verifier circuit and its product-bus relation as
+    /// preparation does, without the output codeword budget or key generation.
+    /// `None` places no construction checkpoints, as in
+    /// [`Self::from_native_authority`].
+    pub fn verifier_circuit<A, L>(
         authority: &BinaryNativeWhirAuthority<Base, A, L>,
-        options: NativeBinaryRecursionOptions,
+        options: &NativeBinaryRecursionOptions,
         circuit_limits: &DirectCircuitLimits,
-        construction_limits: Option<CircuitConstructionLimits>,
-    ) -> Result<Self, VerificationError>
+        construction_limits: Option<&CircuitConstructionLimits>,
+    ) -> Result<(Circuit<F>, NativeBusCircuit<F>), VerificationError>
     where
         Base: EncodableLevel + FoldAlphabet<F> + PackedValue<Value = Base> + Ord,
         F: ChallengeField<Base>,
@@ -140,7 +144,7 @@ where
         let input_shape = verifier.input_shape();
         let public_counts: Vec<_> = input_shape.public_value_counts().collect();
         let mut builder = match construction_limits {
-            Some(limits) => CircuitBuilder::<F>::with_construction_limits(limits)?,
+            Some(limits) => CircuitBuilder::<F>::with_construction_limits(*limits)?,
             None => CircuitBuilder::<F>::new(),
         };
         builder.enable_native_keccak_f1600()?;
@@ -180,6 +184,30 @@ where
             minimum_log_height,
             *circuit_limits,
         )?;
+        Ok((circuit, bus))
+    }
+
+    fn prepare<A, L>(
+        authority: &BinaryNativeWhirAuthority<Base, A, L>,
+        options: NativeBinaryRecursionOptions,
+        circuit_limits: &DirectCircuitLimits,
+        construction_limits: Option<CircuitConstructionLimits>,
+    ) -> Result<Self, VerificationError>
+    where
+        Base: EncodableLevel + FoldAlphabet<F> + PackedValue<Value = Base> + Ord,
+        F: ChallengeField<Base>,
+        BinaryWhirDomain<Base>: WhirDomain<Base, F>,
+        A: VerifierAir<Base, F>,
+        L: BinaryNativeWhirLayout<Base>,
+    {
+        let (circuit, bus) = Self::verifier_circuit(
+            authority,
+            &options,
+            circuit_limits,
+            construction_limits.as_ref(),
+        )?;
+        let input_shape = authority.recursive_verifier().input_shape();
+        let public_counts: Vec<_> = input_shape.public_value_counts().collect();
         let required_draws = bus.log_heights().iter().copied().max().unwrap_or(0);
         if options.max_tau_draws < required_draws {
             return Err(VerificationError::InvalidProofShape(alloc::format!(
