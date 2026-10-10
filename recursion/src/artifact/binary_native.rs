@@ -33,6 +33,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 pub use codec::CanonicalBinaryStatement;
+use config::NativeAlphabet;
 pub use config::{
     BinaryNativeBooleanTraceConfig, BinaryNativeBooleanWhirTraceConfig, BinaryNativeChallenger,
     BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedConfig,
@@ -48,7 +49,7 @@ pub use config::{
     )
 )]
 pub(crate) use config::{BinaryNativeMixedWhirConfig, MixedWhirError, MixedWhirPcs};
-use config::{NativeAlphabet, NativeMmcs, tree};
+pub(crate) use config::{NativeMmcs, tree};
 use family::{NativeFamily, RawFamily};
 use lifecycle::State;
 use p3_binary_dft::EncodableLevel;

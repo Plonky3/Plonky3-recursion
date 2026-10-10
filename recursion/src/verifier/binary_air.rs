@@ -115,20 +115,23 @@ where
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
-        Self::build(air, log_height, limits, false).map(|(plan, _)| plan)
+        Self::build(air, log_height, limits, false, false).map(|(plan, _)| plan)
     }
 
     /// Internal entry point for a surrounding verifier that also consumes the
     /// retained bus and indexed obligations. The public AIR constructor rejects them.
+    /// `bits_committed` states that the surrounding commitment stores this AIR's main
+    /// trace as bits, the only case in which it may declare bit columns.
     pub(super) fn with_interaction_limits<A>(
         air: &A,
         log_height: usize,
         limits: &VerifierLimits,
+        bits_committed: bool,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
-        Self::build(air, log_height, limits, true)
+        Self::build(air, log_height, limits, true, bits_committed)
     }
 
     #[cfg(test)]
@@ -140,7 +143,7 @@ where
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
-        let output = Self::with_interaction_limits(air, log_height, limits)?;
+        let output = Self::with_interaction_limits(air, log_height, limits, false)?;
         if !output.0.program.indexed.is_empty() {
             return Err(invalid(
                 "binary AIR interactions require a supported reduction",
@@ -154,6 +157,7 @@ where
         log_height: usize,
         limits: &VerifierLimits,
         allow_interactions: bool,
+        bits_committed: bool,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
@@ -163,6 +167,7 @@ where
             log_height,
             limits,
             allow_interactions,
+            bits_committed,
             F::raw_coordinates,
         )
         .map(|(program, bus)| {
@@ -478,6 +483,7 @@ impl AirProgram {
         log_height: usize,
         limits: &VerifierLimits,
         allow_interactions: bool,
+        bits_committed: bool,
         base_raw: fn(F) -> u128,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
@@ -503,7 +509,7 @@ impl AirProgram {
                 component: "binary AIR symbolic columns",
             })?;
         usage.add_metadata_entries(limits, columns)?;
-        if air.boolean_columns() != 0 {
+        if air.boolean_columns() != 0 && !bits_committed {
             return Err(invalid("binary AIR requires a Boolean trace commitment"));
         }
         let next_columns = air.main_next_row_columns();
@@ -1020,7 +1026,7 @@ impl BinaryPolyAirConstraintPlan {
             p3_binary_field::Poly64,
             p3_binary_field::Poly192,
             A,
-        >(air, log_height, limits, true, |value| {
+        >(air, log_height, limits, true, false, |value| {
             value.to_bits() as u128
         })?;
         Ok((Self { program }, declarations))
@@ -1084,6 +1090,7 @@ impl BinaryPolyAirConstraintPlan {
             air,
             log_height,
             limits,
+            false,
             false,
             |value| value.to_bits() as u128,
         )

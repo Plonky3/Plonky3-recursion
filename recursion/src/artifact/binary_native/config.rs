@@ -73,7 +73,7 @@ impl CryptographicHasher<u8, [u8; 32]> for BinaryNativeHash {
     }
 }
 
-pub(super) type NativeMmcs<F> = MerkleTreeMmcs<
+pub(crate) type NativeMmcs<F> = MerkleTreeMmcs<
     F,
     u8,
     SerializingHasher<BinaryNativeHash>,
@@ -383,7 +383,7 @@ where
     }
 }
 
-pub(super) const fn tree<F>(hash: ByteHash, cap_height: usize) -> NativeMmcs<F> {
+pub(crate) const fn tree<F>(hash: ByteHash, cap_height: usize) -> NativeMmcs<F> {
     NativeMmcs::new(
         SerializingHasher::new(BinaryNativeHash(hash)),
         CompressionFunctionFromHasher::new(BinaryNativeHash(hash)),

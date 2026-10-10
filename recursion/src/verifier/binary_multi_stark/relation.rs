@@ -97,7 +97,36 @@ where
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
-        if airs.is_empty() || airs.len() != heights.len() || heights.contains(&0) {
+        Self::build_with_bit_tables(
+            airs,
+            heights,
+            &vec![false; airs.len()],
+            pow_bits,
+            max_tau_draws,
+            has_preprocessing,
+            limits,
+        )
+    }
+
+    /// As [`Self::build`], where `bits_committed[i]` states that the main commitment stores
+    /// AIR `i`'s trace as bits. Only such an AIR may declare bit columns.
+    pub(in crate::verifier) fn build_with_bit_tables<A>(
+        airs: &[&A],
+        heights: &[usize],
+        bits_committed: &[bool],
+        pow_bits: usize,
+        max_tau_draws: usize,
+        has_preprocessing: bool,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, OpeningProtocol, Option<OpeningProtocol>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        if airs.is_empty()
+            || airs.len() != heights.len()
+            || airs.len() != bits_committed.len()
+            || heights.contains(&0)
+        {
             return Err(invalid("binary MultiStark trusted instance shape mismatch"));
         }
         // TableShape stores its height as usize and shifts by this exponent.
@@ -117,9 +146,10 @@ where
         usage.add_instances(limits, airs.len())?;
         let mut plans = Vec::with_capacity(airs.len());
         let mut bus_declarations = Vec::with_capacity(airs.len());
-        for (&air, &height) in airs.iter().zip(heights) {
-            let (plan, declarations) =
-                BinaryAirConstraintPlan::<F, E>::with_interaction_limits(air, height, limits)?;
+        for ((&air, &height), &bits) in airs.iter().zip(heights).zip(bits_committed) {
+            let (plan, declarations) = BinaryAirConstraintPlan::<F, E>::with_interaction_limits(
+                air, height, limits, bits,
+            )?;
             if plan.preprocessed_width() != 0 && !has_preprocessing {
                 return Err(invalid(
                     "binary MultiStark preprocessing requires a trusted commitment plan",
