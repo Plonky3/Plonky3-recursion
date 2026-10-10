@@ -662,4 +662,62 @@ mod tests {
             assert!(!runs(&wrong), "changed observed value {changed}");
         }
     }
+
+    /// Native field draws from a challenger merged under a private one-hot
+    /// selector read merged output bytes, whose coordinates are unknown, and
+    /// equal the chosen branch's native transcript: entirely from merged bytes,
+    /// across the refill, and after observing both draws through their
+    /// recorded coordinates. The other branch's transcript is rejected.
+    #[test]
+    fn native_tower_draws_from_merged_branches_match_the_native_transcript() {
+        let values: [u128; 2] = [
+            0x8123_4567_89ab_cdef_0fed_cba9_8765_4321,
+            0xdead_beef_0bad_f00d_1357_9bdf_2468_ace0,
+        ];
+        for (chosen, value) in values.into_iter().enumerate() {
+            let mut native = Native::from_hasher(alloc::vec::Vec::new(), Keccak256Hash);
+            native.observe_slice(&value.to_le_bytes().map(BinaryField8::from_repr));
+            for _ in 0..3 {
+                let _: BinaryField8 = native.sample();
+            }
+            let mut b = CircuitBuilder::<F>::new();
+            b.enable_native_keccak_f1600().unwrap();
+            let observed = b.alloc_public_input_array::<2>("branch values");
+            let pick = b.alloc_private_input("branch");
+            let one = b.define_const(F::ONE);
+            let keep = b.sub(one, pick);
+            let branches = [(keep, observed[0]), (pick, observed[1])].map(|(selector, value)| {
+                let value = b.native_tower128_from_expr(value);
+                let mut ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
+                P::observe::<H>(&mut b, &mut ch, &[value]).unwrap();
+                ch.sample_bytes_with_host::<H, F>(&mut b, 3).unwrap();
+                (selector, ch)
+            });
+            let mut ch = BinaryTower128Challenger::select_same_shape(&mut b, &branches).unwrap();
+            let (merged, merged_raw) = draw(&mut b, &mut ch, &mut native);
+            let (crossing, crossing_raw) = draw(&mut b, &mut ch, &mut native);
+            let (hash, digest) = ch.retained_query_digest().unwrap();
+            for raw in [merged_raw, crossing_raw] {
+                native.observe_slice(&raw.to_le_bytes().map(BinaryField8::from_repr));
+            }
+            let mut ch = P::observe_after_queries::<H>(
+                &mut b,
+                crate::BinaryQueryContinuation::from_digest(hash, digest),
+                &[merged, crossing],
+            )
+            .unwrap();
+            draw(&mut b, &mut ch, &mut native);
+            let circuit = b.build().unwrap();
+            let runs = |pick: usize| {
+                let mut runner = circuit.runner();
+                runner
+                    .set_public_inputs(&values.map(F::from_repr))
+                    .and_then(|()| runner.set_private_inputs(&[F::from_bool(pick == 1)]))
+                    .and_then(|()| runner.run())
+                    .is_ok()
+            };
+            assert!(runs(chosen), "branch {chosen} selected");
+            assert!(!runs(1 - chosen), "the other branch draws differently");
+        }
+    }
 }
