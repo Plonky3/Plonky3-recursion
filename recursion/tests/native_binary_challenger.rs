@@ -241,6 +241,9 @@ fn native_word_observations_sample_like_byte_observations() {
     b.enable_native_keccak_f1600().unwrap();
     let input = b.alloc_public_input_array::<3>("initial bytes");
     let observed = b.alloc_public_input_array::<12>("observed values");
+    // The byte challenger reads its own copy of the values, so a change to
+    // `observed` reaches the samples only through the word challenger.
+    let copies = b.alloc_public_input_array::<12>("checked copies");
     let mut words = BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(
         &mut b,
         ByteHash::Keccak256,
@@ -270,8 +273,9 @@ fn native_word_observations_sample_like_byte_observations() {
             words
                 .observe_words_with_host::<E, F>(&mut b, &split)
                 .unwrap();
+            let copy = b.native_tower128_from_expr(copies[i]);
             let checked: Vec<_> = b
-                .native_tower128_to_bits(&value)
+                .native_tower128_to_bits(&copy)
                 .unwrap()
                 .as_chunks::<8>()
                 .0
@@ -308,6 +312,7 @@ fn native_word_observations_sample_like_byte_observations() {
         .map(|&byte| E::encode_u16(u16::from(byte)).unwrap())
         .collect();
     public.extend(values.map(F::from_repr));
+    public.extend(values.map(F::from_repr));
     let runs = |public: &[F]| {
         let mut runner = circuit.runner();
         runner
@@ -319,7 +324,7 @@ fn native_word_observations_sample_like_byte_observations() {
     for value in [0, 2, 3, 11] {
         let mut wrong = public.clone();
         wrong[3 + value] += F::from_repr(1 << 77);
-        assert!(!runs(&wrong), "changed observed value {value}");
+        assert!(!runs(&wrong), "changed word-observed value {value}");
     }
 }
 
