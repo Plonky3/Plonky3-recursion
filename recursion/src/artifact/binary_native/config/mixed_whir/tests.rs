@@ -11,8 +11,8 @@ use p3_field::PrimeCharacteristicRing;
 use p3_keccak_air::{KeccakBinaryAir, NUM_KECCAK_BINARY_COLS, generate_binary_trace_packed};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_multi_stark::{
-    MultiStarkProof, ProverInstance, ProverInstances, ProvingKey, VerifierInstance,
-    VerifierInstances, VerifyingKey, prove_with_security, security_report, setup,
+    MultiStarkProof, ProverInstance, ProverInstances, ProvingKey, VerificationError as StarkError,
+    VerifierInstance, VerifierInstances, VerifyingKey, prove_with_security, security_report, setup,
     verify_with_security,
 };
 use p3_sumcheck::{OpeningBatch, TableShape};
@@ -320,7 +320,10 @@ impl Fixture {
         .unwrap()
     }
 
-    fn verify(&self, proof: &MultiStarkProof<Config>) -> bool {
+    fn verify(
+        &self,
+        proof: &MultiStarkProof<Config>,
+    ) -> Result<(), StarkError<MixedWhirError<VerifierError>>> {
         verify_with_security(
             &self.config,
             self.verifier_instances(),
@@ -329,7 +332,6 @@ impl Fixture {
             TARGET_BITS,
             &mut challenger(),
         )
-        .is_ok()
     }
 }
 
@@ -351,7 +353,7 @@ fn mixed_round_trip_with_security() {
     assert!(proof.opening.packed.is_some());
     // The dense opening carries the two dense tables only; the Keccak values travel packed.
     assert_eq!(proof.opening.dense.evals.len(), 2);
-    assert!(fixture.verify(&proof));
+    fixture.verify(&proof).unwrap();
 }
 
 #[test]
@@ -462,20 +464,24 @@ fn dense_only_observation_matches_dense_pcs() {
 fn tampered_mixed_proofs_are_rejected() {
     let fixture = Fixture::new();
     let proof = fixture.prove();
-    assert!(fixture.verify(&proof));
+    fixture.verify(&proof).unwrap();
     // The configuration is not `Clone`, so each tamper starts from a decoded copy.
     let bytes = postcard::to_allocvec(&proof).unwrap();
-    let rejects = |tamper: &dyn Fn(&mut MultiStarkProof<Config>)| {
+    let rejection = |tamper: &dyn Fn(&mut MultiStarkProof<Config>)| {
         let mut tampered: MultiStarkProof<Config> = postcard::from_bytes(&bytes).unwrap();
-        assert!(fixture.verify(&tampered));
+        fixture.verify(&tampered).unwrap();
         tamper(&mut tampered);
-        !fixture.verify(&tampered)
+        fixture.verify(&tampered).unwrap_err()
     };
+    let by_packed = |error| matches!(error, StarkError::Opening(MixedWhirError::Packed(_)));
+    let by_dense = |error| matches!(error, StarkError::Opening(MixedWhirError::Dense(_)));
 
-    assert!(rejects(&|proof| {
+    // An altered opening is refused by the part that opened it, before the AIR closing check
+    // reads the values, so each part is shown to authenticate its own tables.
+    assert!(by_packed(rejection(&|proof| {
         proof.opening.packed.as_mut().unwrap().values[0] += E::ONE;
-    }));
-    assert!(rejects(&|proof| {
+    })));
+    assert!(by_packed(rejection(&|proof| {
         proof
             .opening
             .packed
@@ -486,21 +492,25 @@ fn tampered_mixed_proofs_are_rejected() {
             .claims[0]
             .tensor
             .add_exterior_product(E::ONE, E::ONE);
-    }));
-    assert!(rejects(&|proof| {
+    })));
+    assert!(by_dense(rejection(&|proof| {
         let batch = &proof.opening.dense.evals[0];
         let mut current = batch.current().to_vec();
         current[0] += E::ONE;
         proof.opening.dense.evals[0] = OpeningBatch::new(current, batch.next().to_vec());
-    }));
-    assert!(rejects(&|proof| {
+    })));
+    // The dense part reads the packed roots as its own cap, and its paths fail against them.
+    assert!(by_dense(rejection(&|proof| {
         let (dense, packed) = cap_halves(&proof.commitment);
         proof.commitment = MerkleCap::new([packed, dense].concat());
-    }));
-    assert!(rejects(&|proof| {
-        let (dense, _) = cap_halves(&proof.commitment);
-        proof.commitment = MerkleCap::new(dense);
-    }));
+    })));
+    assert!(matches!(
+        rejection(&|proof| {
+            let (dense, _) = cap_halves(&proof.commitment);
+            proof.commitment = MerkleCap::new(dense);
+        }),
+        StarkError::Opening(MixedWhirError::Shape(_))
+    ));
 }
 
 #[test]
