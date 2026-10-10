@@ -366,8 +366,9 @@ where
         b: &mut CircuitBuilder<BinaryField128>,
         ch: &mut BinaryTower128Challenger,
     ) -> Result<NativeTower128Target, VerificationError> {
-        let value = ch.sample_with_host::<H, BinaryField128>(b)?;
-        Ok(b.native_tower128_from_bits(*value.bits())?)
+        // A native draw reads sixteen digest bytes as one low-first scalar.
+        let bytes = ch.sample_bytes_with_host::<H, BinaryField128>(b, 16)?;
+        Ok(b.native_tower128_from_bytes(bytes.try_into().expect("sixteen sampled bytes"))?)
     }
     fn assert_equal(
         b: &mut CircuitBuilder<BinaryField128>,
@@ -550,5 +551,115 @@ where
         value: &BinaryTower128Target,
     ) -> Result<NativeTower128Target, CircuitBuilderError> {
         b.native_tower128_from_bits(*value.bits())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use p3_binary_field::{BinaryChallenger, BinaryField8, TowerLevel};
+    use p3_challenger::{CanObserve, CanSample, CanSampleBits, HashChallenger};
+    use p3_circuit::ops::ByteHash;
+    use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+    use p3_field::PrimeCharacteristicRing;
+    use p3_keccak::Keccak256Hash;
+
+    use super::*;
+
+    type F = BinaryField128;
+    type H = NativeBinaryEncoding;
+    type P = NativeTower128Relation;
+    type Native = BinaryChallenger<BinaryField8, HashChallenger<u8, Keccak256Hash, 32>>;
+
+    /// Binds a native policy draw to the native transcript's next field
+    /// sample and checks that its coordinates are known for decompositions.
+    fn draw(
+        b: &mut CircuitBuilder<F>,
+        ch: &mut BinaryTower128Challenger,
+        native: &mut Native,
+    ) -> (NativeTower128Target, u128) {
+        let expected: F = native.sample();
+        let actual = P::sample::<H>(b, ch).unwrap();
+        let before = b.construction_usage().unwrap();
+        b.native_tower128_to_bits(&actual).unwrap();
+        assert_eq!(b.construction_usage().unwrap(), before);
+        let constant = b.native_tower128_constant(expected.to_repr());
+        P::assert_equal(b, &actual, &constant);
+        (actual, expected.to_repr())
+    }
+
+    /// Native field draws equal the native transcript's samples wherever they
+    /// start in the digest: at a fresh refill, on its aligned second half,
+    /// at an odd offset after bit and byte draws, across a refill, and after
+    /// word observations at even and odd offsets and a post-query observation.
+    #[test]
+    fn native_tower_draws_match_the_native_transcript() {
+        let initial = [3u8, 251, 7];
+        let values: [u128; 3] = [
+            0x8123_4567_89ab_cdef_0fed_cba9_8765_4321,
+            0x0102_0304_0506_0708_f9fa_fbfc_fdfe_ff00,
+            0xdead_beef_0bad_f00d_1357_9bdf_2468_ace0,
+        ];
+        let mut native = Native::from_hasher(initial.to_vec(), Keccak256Hash);
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let initial = initial.map(|byte| b.define_const(H::encode_u16(byte.into()).unwrap()));
+        let observed = b.alloc_public_input_array::<3>("observed values");
+        let observed = observed.map(|value| b.native_tower128_from_expr(value));
+        let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
+            &mut b,
+            ByteHash::Keccak256,
+            &initial,
+        )
+        .unwrap();
+        draw(&mut b, &mut ch, &mut native);
+        draw(&mut b, &mut ch, &mut native);
+        let expected = native.sample_bits(13);
+        let bits = ch.sample_bits_with_host::<H, F>(&mut b, 13).unwrap();
+        for (i, bit) in bits.into_iter().enumerate() {
+            let value = b.define_const(F::from_bool(expected >> i & 1 != 0));
+            b.connect(bit, value);
+        }
+        for byte in ch.sample_bytes_with_host::<H, F>(&mut b, 3).unwrap() {
+            let expected: BinaryField8 = native.sample();
+            let value = b.define_const(H::encode_u16(expected.to_repr().into()).unwrap());
+            b.connect(byte, value);
+        }
+        draw(&mut b, &mut ch, &mut native);
+        draw(&mut b, &mut ch, &mut native);
+        for value in &values[..2] {
+            native.observe_slice(&value.to_le_bytes().map(BinaryField8::from_repr));
+        }
+        P::observe::<H>(&mut b, &mut ch, &observed[..2]).unwrap();
+        draw(&mut b, &mut ch, &mut native);
+        native.observe(BinaryField8::from_repr(201));
+        native.observe_slice(&values[2].to_le_bytes().map(BinaryField8::from_repr));
+        let byte = b.define_const(H::encode_u16(201).unwrap());
+        ch.observe_bytes_with_host::<H, F>(&mut b, &[byte]).unwrap();
+        P::observe::<H>(&mut b, &mut ch, &observed[2..]).unwrap();
+        let (last, raw) = draw(&mut b, &mut ch, &mut native);
+        let (hash, digest) = ch.retained_query_digest().unwrap();
+        native.observe_slice(&raw.to_le_bytes().map(BinaryField8::from_repr));
+        let mut ch = P::observe_after_queries::<H>(
+            &mut b,
+            crate::BinaryQueryContinuation::from_digest(hash, digest),
+            &[last],
+        )
+        .unwrap();
+        draw(&mut b, &mut ch, &mut native);
+        let circuit = b.build().unwrap();
+        let runs = |public: &[F]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        let public = values.map(F::from_repr);
+        assert!(runs(&public));
+        for changed in 0..3 {
+            let mut wrong = public;
+            wrong[changed] += F::from_repr(1 << 77);
+            assert!(!runs(&wrong), "changed observed value {changed}");
+        }
     }
 }
