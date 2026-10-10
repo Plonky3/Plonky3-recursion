@@ -3,6 +3,7 @@
 mod boolean_whir;
 pub use boolean_whir::BinaryNativeBooleanWhirTraceConfig;
 pub(super) use boolean_whir::NativeBooleanWhirTracePcs;
+mod mixed_whir;
 mod poly_whir;
 pub(super) use poly_whir::NativePolyWhirPcs;
 pub use poly_whir::{
