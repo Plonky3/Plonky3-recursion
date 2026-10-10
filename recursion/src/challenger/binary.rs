@@ -341,8 +341,10 @@ impl BinaryTower128Challenger {
     /// Words are range-checked when a refill hashes them: a word at an even
     /// byte offset of an even-length input goes to the host's word hash, which
     /// a native host absorbs as a raw Keccak limb; any other word is split into
-    /// checked bytes. The caller binds each word to the value it encodes. IDs
-    /// must belong to `circuit`'s expression graph.
+    /// checked bytes. Words that no later refill hashes are never
+    /// range-checked, so callers must not rely on them as a canonical split
+    /// outside the transcript. The caller binds each word to the value it
+    /// encodes. IDs must belong to `circuit`'s expression graph.
     ///
     /// # Errors
     /// Rejects an unsupported host field before adding constraints.
