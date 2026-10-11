@@ -15,6 +15,7 @@ pub mod byte_hash;
 pub mod hash;
 pub mod keccak_perm;
 pub mod mmcs;
+pub mod native_blake3;
 pub mod native_keccak;
 pub mod perm;
 pub mod poseidon1_perm;

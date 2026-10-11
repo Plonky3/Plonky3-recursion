@@ -219,7 +219,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
 
 const RATE_WORDS: usize = KECCAK256_RATE_BYTES / 2;
 
-const fn check_field<F: BinaryCoordinateField>() -> Result<(), CircuitBuilderError> {
+pub(super) const fn check_field<F: BinaryCoordinateField>() -> Result<(), CircuitBuilderError> {
     if F::COORDINATE_BITS < 16 {
         Err(CircuitBuilderError::InvalidDimension {
             expected: 16,
