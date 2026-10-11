@@ -157,8 +157,8 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
     /// Composed security bits every recursive output statement requires (`--pcs whir` only).
-    /// Each layer then uses the smallest PCS security level, shared by all of its commitments,
-    /// whose composed security meets the target.
+    /// Each layer then uses the smallest PCS security level from the target up, shared by all
+    /// of its commitments, whose composed security meets the target.
     #[arg(long, conflicts_with = "pcs_security_level")]
     security_target: Option<usize>,
     /// Merkle cap height for the recursive output proofs. Defaults to 4, or
@@ -281,9 +281,10 @@ fn mixed_options(
     }
 }
 /// Builds recursion layer `depth` at `--pcs-security-level`, requiring four composed bits; or,
-/// with `--security-target`, at the smallest PCS security level whose composed security, in
-/// the `report` of the layer's output authority, meets the target, which the layer then
-/// requires. Probe layers require one composed bit, so their reports decide the search.
+/// with `--security-target`, at the smallest PCS security level from the target up whose
+/// composed security, in the `report` of the layer's output authority, meets the target, which
+/// the layer then requires. Probe layers require one composed bit, so their reports decide the
+/// search.
 fn with_security<L>(
     depth: usize,
     args: &Args,
@@ -296,8 +297,8 @@ fn with_security<L>(
             bits: SECURITY_BITS,
         })?);
     };
-    // Each WHIR opening's term lies below its level, since it pays for the candidate set, so
-    // lower levels are not tried.
+    // Each WHIR opening's term union-composes rounds that each target the level, so in
+    // practice it does not exceed the level and no level below the target meets it.
     let mut level = target.max(args.pow_bits + 1);
     loop {
         let report = report(&build(Security { level, bits: 1 })?);
