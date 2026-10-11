@@ -5,7 +5,8 @@
 //! the bit ring switch and the packed WHIR opening, every other table through a dense WHIR
 //! opening, under a Merkle cap and with grinding. Building the second layer and its witness
 //! takes seconds, while proving it takes gigabytes of codewords, so the default test bounds the
-//! circuit size and checks that witness generation refuses a forged packed opened value.
+//! circuit size and checks that witness generation refuses a forged packed opened value or a
+//! changed child statement.
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField128, TowerLevel};
@@ -192,8 +193,9 @@ fn prepare() -> Fixture {
 }
 
 #[test]
-fn second_mixed_layer_is_bounded_and_refuses_a_forged_packed_value() {
+fn second_mixed_layer_is_bounded_and_refuses_a_forged_child() {
     let Fixture {
+        expected,
         first,
         first_proof,
         checked,
@@ -287,20 +289,26 @@ fn second_mixed_layer_is_bounded_and_refuses_a_forged_packed_value() {
             .unwrap()
     };
     let statement: Vec<F> = checked.public_values().iter().flatten().copied().collect();
+    // The first layer's public table carries the source statement unchanged: the squaring's
+    // input, then its output.
+    assert_eq!(statement, expected.concat());
     let private = checked
         .native_input()
         .private_native_values(&shape)
         .unwrap();
     assert_eq!(scratch.private_input_rows.len(), private.len());
     assert_eq!(circuit.private_input_rows.len(), private.len());
-    let run = |private: &[F]| {
+    let run = |statement: &[F], private: &[F]| {
         let mut runner = circuit.runner();
-        runner.set_public_inputs(&statement).unwrap();
+        runner.set_public_inputs(statement).unwrap();
         runner.set_private_inputs(private).unwrap();
         runner.run().map(|traces| traces.witness_trace)
     };
-    let witness = run(&private).unwrap();
+    let witness = run(&statement, &private).unwrap();
     assert_eq!(witness.num_rows(), circuit.witness_count as usize);
+    let mut wrong = statement.clone();
+    wrong[1] += F::ONE;
+    assert!(run(&wrong, &private).is_err());
 
     // The first opened value of the bit-committed Keccak table, as the child proof carries it.
     let packed = &first_proof.opening.packed.as_ref().unwrap().values;
@@ -308,7 +316,7 @@ fn second_mixed_layer_is_bounded_and_refuses_a_forged_packed_value() {
     assert_eq!(private[opened], packed[0]);
     let mut forged = private;
     forged[opened] += F::ONE;
-    assert!(run(&forged).is_err());
+    assert!(run(&statement, &forged).is_err());
 }
 
 #[test]
