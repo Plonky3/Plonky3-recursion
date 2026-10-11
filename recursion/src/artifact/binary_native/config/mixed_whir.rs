@@ -113,7 +113,9 @@ pub(in crate::artifact::binary_native) struct PackedTableParameters {
 }
 
 impl BinaryNativeMixedWhirPcsParameters {
-    /// A dense commitment of every table.
+    /// A dense commitment of every table: the preprocessing commitment's parameters. Setup
+    /// refuses them for the main commitment, which bit-commits one table through
+    /// [`Self::with_packed_table`].
     pub const fn dense(dense: BinaryNativeWhirPcsParameters<E>) -> Self {
         Self {
             dense,
