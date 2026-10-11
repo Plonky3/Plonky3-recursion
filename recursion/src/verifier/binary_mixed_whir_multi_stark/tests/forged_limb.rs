@@ -102,7 +102,7 @@ pub(super) fn patch_witness_cells(
     for (air, trace) in airs.iter().zip(traces) {
         let table = match (air.width(), air.preprocessed_width()) {
             (1, 4) => 0,
-            (5, 12) => 1,
+            (5, 14) => 1,
             (116, 119) => 2,
             _ => continue,
         };

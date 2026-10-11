@@ -413,13 +413,13 @@ fn blake3_table_shape_and_preprocessing() {
             .preprocessed_trace()
             .unwrap()
             .values
-            .as_chunks::<12>()
+            .as_chunks::<14>()
             .0
             .iter()
             .map(|row| {
-                row[6..12]
+                row[6..14]
                     .iter()
-                    .zip([1, 3, 3, 2, 4, 5])
+                    .zip([1, 3, 3, 2, 4, 5, 3, 3])
                     .filter_map(|(&selector, reads)| (selector == F::ONE).then_some(reads))
                     .sum::<usize>()
             })

@@ -14,6 +14,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
+use hashbrown::HashMap;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_blake3_air::NUM_BLAKE3_BINARY_COLS;
 use p3_bus::{
@@ -25,7 +26,7 @@ use p3_circuit::ops::native_blake3::NATIVE_BLAKE3_OUTPUT_LIMBS;
 use p3_circuit::ops::{BLAKE3_INPUT_LIMBS, KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, NpoTypeId};
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::types::WitnessId;
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{Field, PrimeCharacteristicRing};
 use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
 use p3_matrix::dense::RowMajorMatrix;
 use thiserror::Error;
@@ -40,10 +41,17 @@ use crate::native_blake3::{
     BLAKE3_PP, Blake3Call, blake3_calls, blake3_packed_words, blake3_preprocessed, blake3_trace,
     eval_blake3,
 };
-use crate::primitive_plan::PrimitivePlan;
+use crate::primitive_plan::{PrimitiveConstraint, PrimitivePlan};
 
 const MAX_NAMESPACE_BYTES: usize = BusName::MAX_LEN - ".witness".len();
-const GATE_PP: usize = 12;
+/// Gate selectors: the six of the frozen primitive codec, then the two fused gates.
+const GATE_SELECTORS: usize = 8;
+/// `out = a * k + addend`, with the constant `k` in preprocessing.
+const MUL_ADD_CONSTANT: usize = 6;
+/// [`MUL_ADD_CONSTANT`] with `a` constrained to be Boolean.
+const BOOLEAN_MUL_ADD_CONSTANT: usize = 7;
+/// Gate preprocessed columns: five slot labels, the constant, one-hot selectors.
+const GATE_PP: usize = 6 + GATE_SELECTORS;
 const HASH_WIDTH: usize = NUM_KECCAK_BINARY_COLS;
 /// Bridge main columns: a boundary's 100 state limbs, then its first 16 limbs byte-swapped.
 const BRIDGE_WIDTH: usize = KECCAK_STATE_LIMBS + KECCAK256_DIGEST_LIMBS;
@@ -113,7 +121,7 @@ struct Fanout {
     height: usize,
 }
 
-/// One primitive gate: its slot IDs, frozen selector and constant.
+/// One gate: its slot IDs, selector and constant.
 #[derive(Clone, Copy, Debug)]
 struct GateRow<F> {
     ids: [usize; 5],
@@ -256,12 +264,12 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             .iter()
             .filter(|call| call.swapped.is_some())
             .count();
-        let gate_occurrences = plan.constraints.iter().try_fold(0, |total, constraint| {
-            let (_, selector, _) = gate(constraint);
+        let gate_rows = gate_rows(&plan.constraints, plan.width);
+        let gate_occurrences = gate_rows.iter().try_fold(0, |total, row| {
             add(
                 total,
                 (0..5)
-                    .filter(|&slot| gate_slot_used(selector, slot))
+                    .filter(|&slot| gate_slot_used(row.selector, slot))
                     .count(),
             )
         })?;
@@ -282,10 +290,10 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             )?,
         )?;
         let witness_height = padded_height(n.max(minimum_height))?;
-        let gate_height = if plan.constraints.is_empty() {
+        let gate_height = if gate_rows.is_empty() {
             0
         } else {
-            padded_height(plan.constraints.len().max(minimum_height))?
+            padded_height(gate_rows.len().max(minimum_height))?
         };
         let hash_height = if !calls.is_empty() {
             padded_height(cells(calls.len(), KECCAK_BINARY_ROWS_PER_PERM)?.max(minimum_height))?
@@ -373,18 +381,6 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let main_variables = variables(main_cells)?;
         let preprocessed_variables = variables(pp_cells)?;
 
-        let gate_rows: Vec<_> = plan
-            .constraints
-            .iter()
-            .map(|constraint| {
-                let (ids, selector, constant) = gate(constraint);
-                GateRow {
-                    ids,
-                    selector,
-                    constant,
-                }
-            })
-            .collect();
         let mut occurrences = Vec::with_capacity(n);
         for row in &gate_rows {
             occurrences.extend(
@@ -753,9 +749,91 @@ fn label<F: BinaryCoordinateField>(label: usize) -> Result<F, NativeBusCircuitEr
     })
 }
 
-// Slot order and selectors come from the shared frozen primitive gate codec.
-// MulAdd retains its optional addend slot: an absent addend uses the checked
-// zero sentinel. Every other inactive slot can be omitted from the product bus.
+/// One row per primitive constraint in the frozen codec, except that a multiply-add with a
+/// constant operand becomes a [`MUL_ADD_CONSTANT`] row reading the constant from
+/// preprocessing. A Boolean check moves into the first multiply-add or product with a constant
+/// whose other operand it checks, which becomes a [`BOOLEAN_MUL_ADD_CONSTANT`] row. The fanout
+/// table equates every occurrence of a witness ID, so one check covers all of them.
+fn gate_rows<F: Field>(constraints: &[PrimitiveConstraint<F>], width: usize) -> Vec<GateRow<F>> {
+    // A witness fixed to two different values keeps its reads.
+    let mut constants = HashMap::<usize, Option<F>>::new();
+    let mut checked = vec![false; width];
+    for constraint in constraints {
+        match *constraint {
+            PrimitiveConstraint::Constant { out, value } => {
+                let fixed = constants.entry(out).or_insert(Some(value));
+                if *fixed != Some(value) {
+                    *fixed = None;
+                }
+            }
+            // Only a check whose output is its input leaves no other witness to constrain.
+            PrimitiveConstraint::Boolean { value, out } if value == out => checked[value] = true,
+            _ => {}
+        }
+    }
+    // The multiplicand, constant multiplier, addend and output of a product with a constant.
+    let product = |constraint: &PrimitiveConstraint<F>| {
+        let (a, b, addend, out) = match *constraint {
+            PrimitiveConstraint::MulAdd { a, b, c, out } => (a, b, c, out),
+            PrimitiveConstraint::Mul { a, b, out } => (a, b, None, out),
+            _ => return None,
+        };
+        let constant = |id: usize| constants.get(&id).copied().flatten();
+        match (constant(b), constant(a)) {
+            (Some(k), _) => Some((a, k, addend, out)),
+            (None, Some(k)) => Some((b, k, addend, out)),
+            (None, None) => None,
+        }
+    };
+    // The first product multiplying a checked witness takes over its check.
+    let mut fold = vec![false; constraints.len()];
+    let mut folded = vec![false; width];
+    for (i, constraint) in constraints.iter().enumerate() {
+        if let Some((multiplicand, ..)) = product(constraint)
+            && checked[multiplicand]
+            && !folded[multiplicand]
+        {
+            fold[i] = true;
+            folded[multiplicand] = true;
+        }
+    }
+    constraints
+        .iter()
+        .zip(fold)
+        .filter(|(constraint, _)| {
+            !matches!(**constraint, PrimitiveConstraint::Boolean { value, out }
+                if value == out && folded[value])
+        })
+        .map(|(constraint, fold)| match product(constraint) {
+            Some((multiplicand, constant, addend, out))
+                if fold || matches!(constraint, PrimitiveConstraint::MulAdd { .. }) =>
+            {
+                GateRow {
+                    ids: [multiplicand + 1, 0, addend.map_or(0, |c| c + 1), 0, out + 1],
+                    selector: if fold {
+                        BOOLEAN_MUL_ADD_CONSTANT
+                    } else {
+                        MUL_ADD_CONSTANT
+                    },
+                    constant,
+                }
+            }
+            _ => {
+                let (ids, selector, constant) = gate(constraint);
+                GateRow {
+                    ids,
+                    selector,
+                    constant,
+                }
+            }
+        })
+        .collect()
+}
+
+// Selectors below six come from the shared frozen primitive gate codec.
+// MulAdd and the fused gates retain the optional addend slot: an absent addend
+// uses the checked zero sentinel. Every other inactive slot can be omitted from
+// the product bus.
 fn gate_slot_used(selector: usize, slot: usize) -> bool {
     match selector {
         0 => slot == 4,
@@ -763,7 +841,8 @@ fn gate_slot_used(selector: usize, slot: usize) -> bool {
         3 => matches!(slot, 0 | 4),
         4 => slot != 3,
         5 => true,
-        _ => unreachable!("frozen primitive gate selector"),
+        MUL_ADD_CONSTANT | BOOLEAN_MUL_ADD_CONSTANT => matches!(slot, 0 | 2 | 4),
+        _ => unreachable!("native bus gate selector"),
     }
 }
 
@@ -859,7 +938,7 @@ where
             }
             Table::Gates(_) => {
                 for i in 0..5 {
-                    let active: AB::Expr = pp[6..12]
+                    let active: AB::Expr = pp[6..GATE_PP]
                         .iter()
                         .enumerate()
                         .filter(|&(selector, _)| gate_slot_used(selector, i))
@@ -881,6 +960,12 @@ where
                 b.when(pp[9]).assert_eq(out, a);
                 b.when(pp[10]).assert_eq(out, a * c + addend);
                 b.when(pp[11]).assert_eq(out, accumulator * c + addend - a);
+                let constant_product = a * pp[5] + addend;
+                b.when(pp[6 + MUL_ADD_CONSTANT])
+                    .assert_eq(out, constant_product.clone());
+                b.when(pp[6 + BOOLEAN_MUL_ADD_CONSTANT]).assert_bool(a);
+                b.when(pp[6 + BOOLEAN_MUL_ADD_CONSTANT])
+                    .assert_eq(out, constant_product);
             }
             Table::Public(_) => unreachable!("public tables have no preprocessing window"),
             Table::Keccak { weights, .. } => {

@@ -194,7 +194,7 @@ fn native_product_bus_authenticates_repeated_gate_reads() {
     let pp = prepared.airs()[gate].preprocessed_trace().unwrap();
     let row = pp
         .values
-        .as_chunks::<12>()
+        .as_chunks::<14>()
         .0
         .iter()
         .position(|row| row[8] == F::ONE)
@@ -544,7 +544,7 @@ fn patch_witness_cells<F: BinaryCoordinateField>(
     for (air, trace) in airs.iter().zip(traces) {
         let table = match (air.width(), air.preprocessed_width()) {
             (1, 4) => 0,
-            (5, 12) => 1,
+            (5, 14) => 1,
             (116, 119) => 2,
             _ => continue,
         };

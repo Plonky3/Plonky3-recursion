@@ -24,9 +24,9 @@ type F = BinaryField128;
 const TINY_AIR_IDENTITY_DIGEST: &str =
     "b1260b9a33fcffe81446dbda6a8a9b5a0b7614739843f1f8afa4f7a8c649fb3a";
 const NATIVE_BUS_IDENTITY_DIGEST: &str =
-    "47541409752fc16e3b766041f3a740e4b9feb047333630dc7011c7b97a71fee7";
+    "c3c2dc739effb67237a0be16e9f511a709c2fa0a5bf74f9329f50dd40213d3be";
 const NATIVE_BUS_PROOF_DIGEST: &str =
-    "8c1e46f686992f059080fd7e6cf29c93e9179506ba46edd26adc3f60a32ca04c";
+    "8828c05a894eea7ef37b3c2bc28915838f5573c632be75d61199fffef4389da5";
 
 fn digest(bytes: &[u8]) -> String {
     Keccak256Hash

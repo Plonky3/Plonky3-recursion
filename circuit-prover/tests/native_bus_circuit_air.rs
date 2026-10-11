@@ -109,13 +109,13 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
     let expected_occurrences = public.iter().map(Vec::len).sum::<usize>()
         + gate_pp
             .values
-            .as_chunks::<12>()
+            .as_chunks::<14>()
             .0
             .iter()
             .map(|row| {
-                row[6..12]
+                row[6..14]
                     .iter()
-                    .zip([1, 3, 3, 2, 4, 5])
+                    .zip([1, 3, 3, 2, 4, 5, 3, 3])
                     .filter_map(|(&selector, count)| (selector == F::ONE).then_some(count))
                     .sum::<usize>()
             })
