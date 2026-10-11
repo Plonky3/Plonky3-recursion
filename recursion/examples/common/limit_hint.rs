@@ -208,8 +208,8 @@ pub fn at_layer(depth: usize) -> impl Fn(VerificationError) -> Box<dyn Error> {
 #[cfg(test)]
 mod tests {
     use p3_binary_field::Poly64;
-    use p3_circuit::CircuitBuilder;
     use p3_circuit::ops::ByteHash;
+    use p3_circuit::{CircuitBuilder, CircuitConstructionLimits};
     use p3_circuit_prover::direct::DirectCircuitLimits;
     use p3_circuit_prover::native_bus::NativeBusCircuit;
     use p3_recursion::artifact::BinaryNativePolyWhirPcsParameters;
@@ -338,6 +338,38 @@ mod tests {
         assert_eq!(bumped(65, 64), 128);
         assert_eq!(bumped(100, 1000), 2000);
         assert_eq!(bumped(usize::MAX, 1), usize::MAX);
+    }
+
+    #[test]
+    fn upstream_construction_strings_still_map_to_their_flags() {
+        let roomy = CircuitConstructionLimits {
+            max_expression_nodes: 1 << 10,
+            max_pending_connects: 1 << 10,
+            max_non_primitive_calls: 1 << 10,
+            max_non_primitive_slots: 1 << 10,
+        };
+        // The builder's initial zero constant is already one expression node.
+        let nodes = CircuitBuilder::<Poly64>::with_construction_limits(CircuitConstructionLimits {
+            max_expression_nodes: 0,
+            ..roomy
+        })
+        .err()
+        .expect("a limit failure");
+        let message = text(&VerificationError::CircuitBuilder(nodes));
+        assert!(message.contains("--max-expression-nodes"), "{message}");
+
+        let mut builder =
+            CircuitBuilder::<Poly64>::with_construction_limits(CircuitConstructionLimits {
+                max_pending_connects: 0,
+                ..roomy
+            })
+            .unwrap();
+        let a = builder.public_input();
+        let b = builder.public_input();
+        builder.connect(a, b);
+        let connects = builder.check_construction_limits().unwrap_err();
+        let message = text(&VerificationError::CircuitBuilder(connects));
+        assert!(message.contains("--max-pending-connects"), "{message}");
     }
 
     #[test]
