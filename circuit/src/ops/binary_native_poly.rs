@@ -100,6 +100,29 @@ impl CircuitBuilder<Poly64> {
         Ok(words)
     }
 
+    /// Packs four low-first words into the cell `sum_j words[j] * x^(16j)`,
+    /// which is `Poly64::from_le_bytes` of their little-endian bytes, with
+    /// three fused multiply-adds and no decomposition.
+    ///
+    /// A word of degree below sixteen times `x^(16j)` has degree below 64, so
+    /// the product only shifts its coefficients up by `16 * j` once every word
+    /// has at most sixteen coefficients. The caller must establish that range,
+    /// for example by reading the words from native Keccak-f outputs, which
+    /// the native hash AIR derives from Boolean bits. No coordinates are
+    /// recorded. IDs must belong to this builder's graph.
+    pub fn native_poly64_from_unchecked_words(
+        &mut self,
+        words: [ExprId; 4],
+    ) -> Result<ExprId, CircuitBuilderError> {
+        let mut sum = words[0];
+        for (j, &word) in words.iter().enumerate().skip(1) {
+            let shift = self.define_const(Poly64::new(1 << (16 * j)));
+            sum = self.mul_add(word, shift, sum);
+        }
+        self.check_construction_limits()?;
+        Ok(sum)
+    }
+
     /// Packs eight low-first bytes into the cell `sum_k bytes[k] * x^(8k)`,
     /// which is `Poly64::from_le_bytes` of the bytes.
     ///

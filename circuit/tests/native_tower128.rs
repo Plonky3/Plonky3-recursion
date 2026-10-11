@@ -209,3 +209,49 @@ fn unchecked_words_split_and_bind_the_low_coordinates() {
     assert!(b.native_tower128_unchecked_words(&scalar, 9).is_err());
     assert_eq!(b.construction_usage().unwrap(), before);
 }
+
+/// Unchecked words pack into the scalar of their raw coordinates in order, with seven
+/// `mul_add`s and no decomposition hint. The packing alone does not range-check: a word with a
+/// sixteenth coordinate, compensated by its neighbour, packs to the same scalar, so callers
+/// take the words from a range-checked source such as a native Keccak-f output.
+#[test]
+fn unchecked_words_pack_into_their_raw_coordinates() {
+    for j in 1..8 {
+        for i in 0..16 {
+            assert_eq!(
+                F::from_repr(1 << i) * F::from_repr(1 << (16 * j)),
+                F::from_repr(1 << (16 * j + i))
+            );
+        }
+    }
+    let value = 0x8912_3456_789a_bcde_f012_3456_789a_bcdeu128;
+    let mut b = CircuitBuilder::<F>::new();
+    let words = b.alloc_public_input_array::<8>("words");
+    let expected = b.public_input();
+    let before = b.construction_usage().unwrap();
+    let packed = b.native_tower128_from_unchecked_words(words).unwrap();
+    let after = b.construction_usage().unwrap();
+    assert!(after.expression_nodes - before.expression_nodes <= 14);
+    assert_eq!(after.non_primitive_calls, before.non_primitive_calls);
+    b.connect(packed.as_expr(), expected);
+    let circuit = b.build().unwrap();
+    let runs = |public: &[F]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let mut public: Vec<F> = (0..8)
+        .map(|j| F::from_repr(value >> (16 * j) & 0xffff))
+        .collect();
+    public.push(F::from_repr(value));
+    assert!(runs(&public));
+    let mut wrong = public.clone();
+    wrong[8] += F::from_repr(1 << 77);
+    assert!(!runs(&wrong), "changed packed scalar");
+    let mut wide = public;
+    wide[2] += F::from_repr(1 << 16);
+    wide[3] += F::ONE;
+    assert!(runs(&wide), "an unchecked word may carry coordinate 16");
+}

@@ -321,3 +321,42 @@ fn packed_poly64_bytes_record_their_coordinates() {
     b.native_poly64_from_bytes(checked).unwrap();
     assert_eq!(b.construction_usage().unwrap().expression_nodes - before, 7);
 }
+
+/// Unchecked words pack into the cell of their coefficients in order, which is
+/// `Poly64::from_le_bytes` of their little-endian bytes, with three `mul_add`s and no
+/// decomposition hint. The packing alone does not range-check: a word with a sixteenth
+/// coefficient, compensated by its neighbour, packs to the same cell.
+#[test]
+fn unchecked_poly64_words_pack_into_their_coefficients() {
+    assert_shifts_without_reduction(16, (1..4).map(|j| 16 * j));
+    let value = 0x8912_3456_789a_bcdeu64;
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let words = b.alloc_public_input_array::<4>("words");
+    let expected = b.public_input();
+    let before = b.construction_usage().unwrap();
+    let packed = b.native_poly64_from_unchecked_words(words).unwrap();
+    let after = b.construction_usage().unwrap();
+    assert!(after.expression_nodes - before.expression_nodes <= 6);
+    assert_eq!(after.non_primitive_calls, before.non_primitive_calls);
+    b.connect(packed, expected);
+    let circuit = b.build().unwrap();
+    let runs = |public: &[Poly64]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let mut public: Vec<Poly64> = (0..4)
+        .map(|j| Poly64::new(value >> (16 * j) & 0xffff))
+        .collect();
+    public.push(Poly64::from_le_bytes(value.to_le_bytes()));
+    assert!(runs(&public));
+    let mut wrong = public.clone();
+    wrong[4] += Poly64::new(1 << 37);
+    assert!(!runs(&wrong), "changed packed cell");
+    let mut wide = public;
+    wide[1] += Poly64::new(1 << 16);
+    wide[2] += Poly64::ONE;
+    assert!(runs(&wide), "an unchecked word may carry coefficient 16");
+}

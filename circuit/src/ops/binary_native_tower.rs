@@ -128,6 +128,31 @@ impl CircuitBuilder<BinaryField128> {
         Ok(NativeTower128Target { value: sum })
     }
 
+    /// Packs eight low-first words into the scalar `sum_j words[j] * x_j`,
+    /// where `x_j` has the single raw coordinate `16 * j`, with seven fused
+    /// multiply-adds and no decomposition.
+    ///
+    /// In the tower basis, multiplying a scalar of at most sixteen coordinates
+    /// by `x_j` shifts its coordinates up by `16 * j`, so the packed scalar's
+    /// coordinates are the words' in order once every word has at most sixteen
+    /// coordinates. The caller must establish that range, for example by
+    /// reading the words from native Keccak-f outputs, which the native hash
+    /// AIR derives from Boolean bits. No coordinates are recorded, so a later
+    /// decomposition of the scalar is a full one. IDs must belong to this
+    /// builder's graph.
+    pub fn native_tower128_from_unchecked_words(
+        &mut self,
+        words: [ExprId; 8],
+    ) -> Result<NativeTower128Target, CircuitBuilderError> {
+        let mut sum = words[0];
+        for (j, &word) in words.iter().enumerate().skip(1) {
+            let shift = self.define_const(BinaryField128::from_repr(1 << (16 * j)));
+            sum = self.mul_add(word, shift, sum);
+        }
+        self.check_construction_limits()?;
+        Ok(NativeTower128Target { value: sum })
+    }
+
     pub fn native_tower128_to_words(
         &mut self,
         value: &NativeTower128Target,
