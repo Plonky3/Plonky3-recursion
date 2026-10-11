@@ -50,9 +50,7 @@ where
 
     fn cap_height(p: &Self::Parameters) -> usize;
     /// The compression arity of the commitment's Merkle trees.
-    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
-        MerkleArity::Two
-    }
+    fn arity(p: &Self::Parameters) -> MerkleArity;
     fn pow_bits(p: &Self::Parameters) -> usize;
     /// Whether the main commitment stores `table` as bits, so no cell of it can be a non-bit.
     fn bits_committed(_parameters: &Self::Parameters, _table: usize) -> bool {
@@ -115,6 +113,9 @@ where
 
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
+    }
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.config.pow_bits()
@@ -250,6 +251,9 @@ where
 
     fn cap_height(p: &Self::Parameters) -> usize {
         p.pcs.cap_height
+    }
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.pcs.config.pow_bits()
@@ -411,6 +415,9 @@ where
     fn cap_height(p: &Self::Parameters) -> usize {
         p.pcs.cap_height
     }
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
+    }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.pcs.config.pow_bits()
     }
@@ -571,6 +578,9 @@ where
 
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
+    }
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.config.pow_bits()
