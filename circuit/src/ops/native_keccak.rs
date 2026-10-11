@@ -15,7 +15,8 @@ use p3_symmetric::Permutation;
 use crate::builder::{NonPrimitiveOperationData, NpoLoweringContext};
 use crate::ops::binary_native::BinaryCoordinateField;
 use crate::ops::keccak_perm::{
-    KECCAK_STATE_LIMBS, KECCAK256_RATE_BYTES, keccak_limbs_to_state, keccak_state_to_limbs,
+    KECCAK_LANES, KECCAK_STATE_LIMBS, KECCAK256_RATE_BYTES, keccak_limbs_to_state,
+    keccak_state_to_limbs,
 };
 use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoConfig, NpoTypeId, Op};
 use crate::tables::TraceGeneratorFn;
@@ -74,7 +75,11 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
     /// Each word is serialized as two little-endian bytes. The native Keccak
     /// AIR and its complete wiring argument constrain every absorbed word and
     /// output limb to sixteen coordinates, without a byte-codec round trip.
-    /// Enable the native permutation before calling this.
+    /// The leading padded blocks whose words are all circuit constants below
+    /// `2^16` are absorbed while building, as in
+    /// [`Self::native_keccak256_bytes`]; a wider constant word stays in a
+    /// native Keccak-f call, which rejects it. Enable the native permutation
+    /// before calling this.
     pub fn native_keccak256_words(
         &mut self,
         words: &[ExprId],
@@ -82,7 +87,6 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         check_field::<F>()?;
         self.check_construction_limits()?;
         self.ensure_op_enabled(&NpoTypeId::native_keccak_f1600())?;
-        const RATE_WORDS: usize = KECCAK256_RATE_BYTES / 2;
         let padded_len = (words.len() / RATE_WORDS)
             .checked_add(1)
             .and_then(|blocks| blocks.checked_mul(RATE_WORDS))
@@ -97,8 +101,19 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         let high = self.define_const(F::from_raw_coordinates(0x8000).expect("checked limb width"));
         let last = padded.last_mut().expect("at least one padding block");
         *last = self.add(*last, high);
-        let mut state = [ExprId::ZERO; KECCAK_STATE_LIMBS];
-        for block in padded.as_chunks::<RATE_WORDS>().0 {
+        let blocks = padded.as_chunks::<RATE_WORDS>().0;
+        let constant: Vec<_> = blocks
+            .iter()
+            .map_while(|block| {
+                let mut limbs = [0; RATE_WORDS];
+                for (limb, &word) in limbs.iter_mut().zip(block) {
+                    *limb = self.constant_raw(word, 16)?;
+                }
+                Some(limbs)
+            })
+            .collect();
+        let mut state = self.native_keccak_constant_state(&constant)?;
+        for block in &blocks[constant.len()..] {
             for (limb, &word) in state.iter_mut().zip(block) {
                 *limb = self.add(*limb, word);
             }
@@ -111,7 +126,11 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
     ///
     /// Bytes are checked raw eight-coordinate values. Absorption uses native
     /// field addition (bitwise XOR), with Keccak's 0x01/0x80 padding and natural
-    /// digest byte order. Enable the native permutation before calling this.
+    /// digest byte order. The leading padded blocks whose bytes are all circuit
+    /// constants are absorbed while building: native Keccak-f calls start at
+    /// the first other block, from the sponge state of those blocks as
+    /// constant limbs, and a constant message has a constant digest. Enable
+    /// the native permutation before calling this.
     pub fn native_keccak256_bytes(
         &mut self,
         message: &[ExprId],
@@ -133,8 +152,19 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         let high = self.define_const(F::from_raw_coordinates(0x80).expect("checked byte width"));
         let last = padded.last_mut().expect("at least one padding block");
         *last = self.add(*last, high);
-        let mut state = [ExprId::ZERO; KECCAK_STATE_LIMBS];
-        for block in padded.as_chunks::<KECCAK256_RATE_BYTES>().0 {
+        let blocks = padded.as_chunks::<KECCAK256_RATE_BYTES>().0;
+        let constant: Vec<_> = blocks
+            .iter()
+            .map_while(|block| {
+                let mut limbs = [0; RATE_WORDS];
+                for (limb, bytes) in limbs.iter_mut().zip(block.as_chunks::<2>().0) {
+                    *limb = self.constant_raw(bytes[0], 8)? | self.constant_raw(bytes[1], 8)? << 8;
+                }
+                Some(limbs)
+            })
+            .collect();
+        let mut state = self.native_keccak_constant_state(&constant)?;
+        for block in &blocks[constant.len()..] {
             for (i, bytes) in block.as_chunks::<2>().0.iter().enumerate() {
                 let mut bits = self.binary_decompose_coordinates(bytes[0], 8)?;
                 bits.extend(self.binary_decompose_coordinates(bytes[1], 8)?);
@@ -154,7 +184,40 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             .try_into()
             .expect("sixteen low-first limbs produce 32 bytes"))
     }
+
+    /// The raw coordinates of a circuit constant below `2^bits`.
+    fn constant_raw(&self, value: ExprId, bits: usize) -> Option<u16> {
+        let raw = self.constant_value(value)?.to_raw_coordinates();
+        u16::try_from(raw).ok().filter(|_| raw >> bits == 0)
+    }
+
+    /// The Keccak sponge state, as constant limbs, after absorbing `blocks`
+    /// of rate limbs from the zero state.
+    fn native_keccak_constant_state(
+        &mut self,
+        blocks: &[[u16; RATE_WORDS]],
+    ) -> Result<[ExprId; KECCAK_STATE_LIMBS], CircuitBuilderError> {
+        if blocks.is_empty() {
+            return Ok([ExprId::ZERO; KECCAK_STATE_LIMBS]);
+        }
+        let mut lanes = [0; KECCAK_LANES];
+        for block in blocks {
+            let mut limbs = keccak_state_to_limbs(&lanes);
+            for (limb, word) in limbs.iter_mut().zip(block) {
+                *limb ^= word;
+            }
+            lanes = keccak_limbs_to_state(&limbs);
+            KeccakF.permute_mut(&mut lanes);
+        }
+        let state = keccak_state_to_limbs(&lanes).map(|raw| {
+            self.define_const(F::from_raw_coordinates(raw.into()).expect("checked limb width"))
+        });
+        self.check_construction_limits()?;
+        Ok(state)
+    }
 }
+
+const RATE_WORDS: usize = KECCAK256_RATE_BYTES / 2;
 
 const fn check_field<F: BinaryCoordinateField>() -> Result<(), CircuitBuilderError> {
     if F::COORDINATE_BITS < 16 {
