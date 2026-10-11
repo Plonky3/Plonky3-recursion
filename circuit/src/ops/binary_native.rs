@@ -166,6 +166,36 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         self.record_native_coordinates(sum, bits);
         Ok(sum)
     }
+
+    /// Returns `1` when `value` is zero and `0` otherwise.
+    ///
+    /// A hint supplies `inverse`, the inverse of a nonzero `value` and zero
+    /// otherwise. The result is `z = value * inverse + 1`, which is
+    /// `1 - value * inverse` in characteristic two, under the constraint
+    /// `value * z = 0`. A nonzero `value` forces `z = 0`, and a zero `value`
+    /// gives `z = 1` whatever the hint, so `z` is Boolean and bound to `value`
+    /// without trusting the hint. Costs one hinted witness and two gates; a
+    /// constant `value` costs nothing. IDs must belong to this builder's graph.
+    pub fn binary_is_zero(&mut self, value: ExprId) -> Result<ExprId, CircuitBuilderError> {
+        self.check_construction_limits()?;
+        if let Some(constant) = self.constant_value(value) {
+            return Ok(if constant == F::ZERO {
+                self.define_const(F::ONE)
+            } else {
+                ExprId::ZERO
+            });
+        }
+        let inverse = self
+            .push_unconstrained_op(vec![vec![value]], 1, InverseOrZeroHint, "binary_is_zero")
+            .2[0]
+            .ok_or(CircuitBuilderError::MissingOutput)?;
+        let one = self.define_const(F::ONE);
+        let zero = self.mul_add(value, inverse, one);
+        let product = self.mul(value, zero);
+        self.assert_zero(product);
+        self.check_construction_limits()?;
+        Ok(zero)
+    }
 }
 
 const fn check_width<F: BinaryCoordinateField>(n_bits: usize) -> Result<(), CircuitBuilderError> {
@@ -284,6 +314,60 @@ impl<F: BinaryCoordinateField> HintExecutor<F> for WordSplitHint {
             }
         }
         Ok(())
+    }
+
+    fn boxed(&self) -> Box<dyn HintExecutor<F>> {
+        Box::new(self.clone())
+    }
+}
+
+/// Writes the inverse of a nonzero scalar, or zero for a zero scalar.
+#[derive(Clone, Debug)]
+struct InverseOrZeroHint;
+
+impl<F: BinaryCoordinateField> HintExecutor<F> for InverseOrZeroHint {
+    fn execute(
+        &self,
+        inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        witness: &mut [Option<F>],
+    ) -> Result<(), CircuitError> {
+        let &[input] = inputs else {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "InverseOrZeroHint".into(),
+                expected: 1,
+                got: inputs.len(),
+            });
+        };
+        let &[output] = outputs else {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "InverseOrZeroHint outputs".into(),
+                expected: 1,
+                got: outputs.len(),
+            });
+        };
+        let inverse = witness
+            .get(input.0 as usize)
+            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: input })?
+            .ok_or(CircuitError::WitnessNotSet { witness_id: input })?
+            .try_inverse()
+            .unwrap_or(F::ZERO);
+        let slot = witness
+            .get_mut(output.0 as usize)
+            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: output })?;
+        match slot {
+            Some(existing) if *existing != inverse => Err(CircuitError::WitnessConflict {
+                witness_id: output,
+                existing: format!("{existing:?}"),
+                new: format!("{inverse:?}"),
+                expr_ids: vec![],
+            }),
+            Some(_) => Ok(()),
+            None => {
+                *slot = Some(inverse);
+                Ok(())
+            }
+        }
     }
 
     fn boxed(&self) -> Box<dyn HintExecutor<F>> {

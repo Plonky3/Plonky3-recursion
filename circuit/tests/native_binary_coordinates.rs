@@ -331,3 +331,37 @@ fn sparse_coordinates_enforce_construction_limits() {
         })
     ));
 }
+
+/// The zero test is bound to its input: a circuit that claims the wrong
+/// answer for a zero or a nonzero scalar has no satisfying witness.
+fn zero_test<F: BinaryCoordinateField>(nonzero: u128) {
+    let mut builder = CircuitBuilder::<F>::new();
+    let input = builder.public_input();
+    let claimed = builder.public_input();
+    let zero = builder.binary_is_zero(input).unwrap();
+    builder.connect(zero, claimed);
+    let constant = builder.define_const(F::from_raw_coordinates(nonzero).unwrap());
+    assert_eq!(
+        builder.binary_is_zero(constant).unwrap(),
+        p3_circuit::ExprId::ZERO
+    );
+    let circuit = builder.build().unwrap();
+    let value = F::from_raw_coordinates(nonzero).unwrap();
+    for (input, claimed, accepted) in [
+        (F::ZERO, F::ONE, true),
+        (F::ZERO, F::ZERO, false),
+        (value, F::ZERO, true),
+        (value, F::ONE, false),
+        (F::ONE, F::ZERO, true),
+    ] {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[input, claimed]).unwrap();
+        assert_eq!(runner.run().is_ok(), accepted);
+    }
+}
+
+#[test]
+fn zero_tests_bind_zero_and_nonzero_scalars() {
+    zero_test::<BinaryField128>(0x8000_0000_0000_0000_0000_0000_0001_0000);
+    zero_test::<Poly64>(0x8000_0000_0001_0000);
+}
