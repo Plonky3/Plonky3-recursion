@@ -73,7 +73,9 @@ type Limbs = [ExprId; LIMBS];
 ///
 /// Row `u`'s coordinate `v` is the coefficient of `beta_u tensor x^v`.
 /// Column readings decompose every row once, with the checked coordinate
-/// gadget, and keep those bits and the columns formed from them.
+/// gadget, and keep those bits and the columns formed from them. A tensor read
+/// in one or two columns can read them by the trace instead, see
+/// `trace_column`.
 #[derive(Clone, Debug)]
 pub struct NativePolyBitTensorTarget {
     rows: Vec<ExprId>,
@@ -139,13 +141,7 @@ impl NativePolyBitTensorTarget {
         b: &mut CircuitBuilder<Poly64>,
         v: usize,
     ) -> Result<NativePoly192Target, CircuitBuilderError> {
-        if v >= COLUMNS {
-            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                op: "NativePolyBitTensorColumn",
-                expected: format!("column index below {COLUMNS}"),
-                got: v,
-            });
-        }
+        check_column(v)?;
         if let Some(column) = &self.columns[v] {
             return Ok(column.clone());
         }
@@ -158,16 +154,40 @@ impl NativePolyBitTensorTarget {
             self.bits = Some(bits);
         }
         let bits = self.bits.as_ref().expect("rows decomposed above");
-        let mut limbs = [ExprId::ZERO; LIMBS];
-        for (limb, block) in limbs.iter_mut().zip(bits.chunks(COLUMNS)) {
-            // x^0 is one, so the block's first bit enters unweighted.
-            let mut sum = block[0][v];
-            for (i, row) in block.iter().enumerate().skip(1) {
-                let weight = b.define_const(Poly64::new(1 << i));
-                sum = fma(b, row[v], weight, sum);
-            }
-            *limb = sum;
+        let column_bits: Vec<ExprId> = bits.iter().map(|row| row[v]).collect();
+        let limbs = weigh_bits(b, &column_bits);
+        b.check_construction_limits()?;
+        let column = b.native_poly192_from_coefficients(limbs);
+        self.columns[v] = Some(column.clone());
+        Ok(column)
+    }
+
+    /// Column `v` without decomposing the rows: coordinate `v` of row `u` is
+    /// `Tr(delta_v * row_u)`, with `delta_v` the trace-dual of `x^v` (see
+    /// `poly64_trace_dual_basis`). The trace is field arithmetic on the row,
+    /// so every coordinate is bound to its row with no hint and lies in `F_2`
+    /// with no Boolean check, at 64 nodes per row.
+    ///
+    /// Decomposing a row costs about three nodes per coordinate, so this is
+    /// cheaper for a tensor read in one or two columns. Once the rows are
+    /// decomposed, or the column is formed, this returns `column`.
+    pub fn trace_column(
+        &mut self,
+        b: &mut CircuitBuilder<Poly64>,
+        v: usize,
+    ) -> Result<NativePoly192Target, CircuitBuilderError> {
+        check_column(v)?;
+        if self.bits.is_some() || self.columns[v].is_some() {
+            return self.column(b, v);
         }
+        let dual = b.define_const(poly64_trace_dual_basis()[v]);
+        let mut column_bits = Vec::with_capacity(ROWS);
+        for &row in &self.rows {
+            let scaled = b.mul(dual, row);
+            column_bits.push(trace(b, scaled));
+            b.check_construction_limits()?;
+        }
+        let limbs = weigh_bits(b, &column_bits);
         b.check_construction_limits()?;
         let column = b.native_poly192_from_coefficients(limbs);
         self.columns[v] = Some(column.clone());
@@ -199,7 +219,8 @@ impl NativePolyBitTensorTarget {
     /// ```
     ///
     /// This is one column reading of the columns shifted down by one, with the
-    /// ripple term in the last place.
+    /// ripple term in the last place. The carry and last tensors are read in
+    /// one column each, by `trace_column`.
     pub fn successor_reading(
         &mut self,
         b: &mut CircuitBuilder<Poly64>,
@@ -211,8 +232,8 @@ impl NativePolyBitTensorTarget {
         let mut shifted = (1..COLUMNS)
             .map(|v| self.column(b, v).map(|column| *column.coefficients()))
             .collect::<Result<Vec<_>, _>>()?;
-        let carry = carry.column(b, 0)?;
-        let last = last.column(b, COLUMNS - 1)?;
+        let carry = carry.trace_column(b, 0)?;
+        let last = last.trace_column(b, COLUMNS - 1)?;
         shifted.push(add3(b, *carry.coefficients(), *last.coefficients()));
         Ok(fold(b, shifted, point))
     }
@@ -573,6 +594,40 @@ fn invert_trace_form(dimension: usize, form: impl Fn(usize, usize) -> bool) -> V
     inverse
 }
 
+/// `sum_u bits[u] * beta_u` for one bit per row: limb `k` is
+/// `sum_i bits[64k + i] * x^i`.
+fn weigh_bits(b: &mut CircuitBuilder<Poly64>, bits: &[ExprId]) -> Limbs {
+    let mut limbs = [ExprId::ZERO; LIMBS];
+    for (limb, block) in limbs.iter_mut().zip(bits.chunks(COLUMNS)) {
+        // x^0 is one, so the block's first bit enters unweighted.
+        let mut sum = block[0];
+        for (i, &bit) in block.iter().enumerate().skip(1) {
+            let weight = b.define_const(Poly64::new(1 << i));
+            sum = fma(b, bit, weight, sum);
+        }
+        *limb = sum;
+    }
+    limbs
+}
+
+/// The absolute trace `sum_(m < 64) x^(2^m)` by doubling: with
+/// `T_k = sum_(m < 2^k) x^(2^m)`, `T_(k+1) = T_k + T_k^(2^(2^k))`. The last
+/// of each step's `2^k` squarings is fused into the sum, so `T_6` costs 63
+/// nodes.
+fn trace(b: &mut CircuitBuilder<Poly64>, x: ExprId) -> ExprId {
+    let mut sum = x;
+    let mut span = 1;
+    while span < COLUMNS {
+        let mut power = sum;
+        for _ in 1..span {
+            power = b.mul(power, power);
+        }
+        sum = b.mul_add(power, power, sum);
+        span *= 2;
+    }
+    sum
+}
+
 /// `sum_x eq(point, x) * values[x]`, with the point's first coordinate as the
 /// most significant index bit.
 fn fold(
@@ -682,6 +737,18 @@ fn add_products(
     products: &[(ExprId, ExprId)],
 ) -> ExprId {
     products.iter().fold(sum, |sum, &(x, y)| fma(b, x, y, sum))
+}
+
+fn check_column(v: usize) -> Result<(), CircuitBuilderError> {
+    if v < COLUMNS {
+        Ok(())
+    } else {
+        Err(CircuitBuilderError::NonPrimitiveOpArity {
+            op: "NativePolyBitTensorColumn",
+            expected: format!("column index below {COLUMNS}"),
+            got: v,
+        })
+    }
 }
 
 fn check_len(op: &'static str, got: usize, expected: usize) -> Result<(), CircuitBuilderError> {

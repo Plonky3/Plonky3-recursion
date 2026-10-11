@@ -311,6 +311,15 @@ fn readings_match_released_bit_ring_switch_claims() {
         n.expect(&actual, successor.carry.column(0));
         let actual = last_t.column(&mut n.b, COLUMNS - 1).unwrap();
         n.expect(&actual, successor.last.column(COLUMNS - 1));
+        // Trace columns of undecomposed tensors, one tensor per column, and of
+        // the decomposed current tensor.
+        for v in [0, 1, 32, 63] {
+            let mut fresh = n.tensor(&rows);
+            let actual = fresh.trace_column(&mut n.b, v).unwrap();
+            n.expect(&actual, current.column(v));
+            let actual = tensor_t.trace_column(&mut n.b, v).unwrap();
+            n.expect(&actual, current.column(v));
+        }
         let (circuit, public, private) = n.build();
         let every: Vec<usize> = (0..public.len()).collect();
         assert_bound(&circuit, &public, &private, &every);
@@ -415,6 +424,8 @@ fn tampered_rows_fail_the_bound_readings() {
                 (high_limb_row, basis(63)),
                 (carry_row, basis(0)),
                 (last_row, basis(63)),
+                (ROWS + 191, basis(0)),
+                (2 * ROWS + 130, basis(63)),
             ],
         ),
     ];
@@ -587,7 +598,10 @@ fn closing_weight_refuses_changed_inputs() {
 ///
 /// Column readings are sound only because every row's bits are checked: each
 /// bit is connected to its Boolean check and the row to its recomposition. A
-/// tensor's first column therefore adds at least 65 connections per row.
+/// tensor's first column therefore adds at least 65 connections per row. The
+/// carry and last tensors are read in one column each by the trace, field
+/// arithmetic on the rows with no hinted bit, so they add no connection, and
+/// the two of them cost less than one checked column of a fresh tensor.
 #[test]
 fn node_counts_at_the_native_fixed_point() {
     const CHECKED_ROW_CONNECTS: usize = COLUMNS + 1;
@@ -601,16 +615,20 @@ fn node_counts_at_the_native_fixed_point() {
     let survivor = n.exts(&sampler.exts(FIXED_HIGH));
     let batch = n.exts(&sampler.exts(BATCHED));
     let alpha = n.ext(sampler.ext());
+    let mut fresh = n.tensor(&sampler.bases(ROWS));
 
     let (start, start_connects) = (n.nodes(), n.connects());
     tensor.evaluate_columns(&mut n.b, &low).unwrap();
     let columns_and_current = n.nodes() - start;
     let column_connects = n.connects() - start_connects;
     let (start, start_connects) = (n.nodes(), n.connects());
-    carry.column(&mut n.b, 0).unwrap();
-    last.column(&mut n.b, COLUMNS - 1).unwrap();
+    carry.trace_column(&mut n.b, 0).unwrap();
+    last.trace_column(&mut n.b, COLUMNS - 1).unwrap();
     let carry_and_last = n.nodes() - start;
     let carry_and_last_connects = n.connects() - start_connects;
+    let start = n.nodes();
+    fresh.column(&mut n.b, 0).unwrap();
+    let checked_column = n.nodes() - start;
     let start = n.nodes();
     tensor
         .successor_reading(&mut n.b, &low, &mut carry, &mut last)
@@ -636,20 +654,22 @@ fn node_counts_at_the_native_fixed_point() {
     println!(
         "native poly tensor nodes: columns + current reading {columns_and_current}, \
          successor reading {successor}, carry and last columns {carry_and_last}, \
+         one checked column {checked_column}, \
          first row reading {first_rows}, two more row readings {shared_rows}, \
          closing weight (high {FIXED_HIGH}, kept {FIXED_KEPT}) {closing}; connections: \
          columns {column_connects}, carry and last columns {carry_and_last_connects}"
     );
     assert!(columns_and_current <= 60_193);
     assert!(successor <= 1_137);
-    assert!(carry_and_last <= 89_388);
+    assert!(carry_and_last <= 29_947);
     assert!(first_rows <= 1_725);
     assert!(shared_rows <= 1_464);
     assert!(closing <= 126_322);
     // The later readings reuse the batching point's equality tables.
     assert!(shared_rows < first_rows);
     assert!(column_connects >= ROWS * CHECKED_ROW_CONNECTS);
-    assert!(carry_and_last_connects >= 2 * ROWS * CHECKED_ROW_CONNECTS);
+    assert_eq!(carry_and_last_connects, 0);
+    assert!(carry_and_last < checked_column);
 }
 
 #[test]
@@ -676,6 +696,7 @@ fn malformed_shapes_return_errors() {
             .is_err()
     );
     assert!(tensor.column(&mut n.b, COLUMNS).is_err());
+    assert!(tensor.trace_column(&mut n.b, COLUMNS).is_err());
     let batch = points(BATCHED);
     let one = points(1);
     let ext = &ext_zero;
@@ -708,6 +729,13 @@ fn readings_stop_at_the_node_budget() {
     let mut tensor = n.tensor(&rows);
     tensor.column(&mut n.b, 0).unwrap();
     assert!(budget_error(tensor.column(&mut n.b, 1)));
+
+    // A trace column checks the budget after every row.
+    let budget = 4096;
+    let mut n = Native::with_node_budget(budget);
+    let mut tensor = n.tensor(&rows);
+    assert!(budget_error(tensor.trace_column(&mut n.b, 0)));
+    assert!(n.nodes() <= budget + 64);
 
     // The fixed-point closing weight adds about 100k nodes. No stretch between
     // its checkpoints adds more than about a thousand.
