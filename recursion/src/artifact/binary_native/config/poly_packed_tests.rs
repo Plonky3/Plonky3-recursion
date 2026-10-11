@@ -122,7 +122,7 @@ fn parameters() -> ProtocolParameters {
     }
 }
 
-fn pcs(bit_variables: usize) -> PackedPcs {
+fn backend(bit_variables: usize) -> Backend {
     let whir = BinaryNativePolyWhirPcsParameters::new(
         bit_variables - ABSORBED_VARIABLES,
         parameters(),
@@ -135,7 +135,11 @@ fn pcs(bit_variables: usize) -> PackedPcs {
         BinaryWhirDomain::<F>::default(),
         tree(HASH, CAP_HEIGHT),
     );
-    BooleanTraceCommitment::from_commitment(BooleanWhirPcs::new(prover, bit_variables).unwrap())
+    BooleanWhirPcs::new(prover, bit_variables).unwrap()
+}
+
+fn pcs(bit_variables: usize) -> PackedPcs {
+    BooleanTraceCommitment::from_commitment(backend(bit_variables))
 }
 
 fn protocol(log_height: usize) -> OpeningProtocol {
@@ -257,20 +261,61 @@ fn poly_packed_security_terms_are_reported() {
     let security = pcs
         .prescribed_security(&protocol(packed.log_height))
         .unwrap();
-    // The proximity term, the ring-switch tensors and the column batch.
-    assert!(security.terms.len() >= 3, "{:?}", security.terms);
+    // One claim draws no lambda, so there is no claim-batching term.
+    assert_eq!(
+        security
+            .terms
+            .iter()
+            .map(|term| term.label)
+            .collect::<Vec<_>>(),
+        ["whir-opening", "bit-ring-switch", "column-batching"]
+    );
     assert!(security.candidates().is_some());
+
+    // The one reduction sends its tensor with carry and last.
+    let backend = backend(bits);
+    let readings = backend.readings_security(1, true).unwrap();
+    assert_eq!(security.terms[..2], readings.terms[..]);
+    assert_ne!(
+        readings.terms,
+        backend.readings_security(1, false).unwrap().terms
+    );
+    // Eight batching coordinates, alpha of degree two, and two per surviving variable, over the
+    // 192 bits of a challenge and charged over every candidate.
+    let surviving = bits - ABSORBED_VARIABLES;
+    let ring_switch =
+        192.0 - ((8 + 2 + 2 * surviving) as f64).log2() - security.log2_max_candidates;
+    assert!(
+        (security.terms[1].bits.bits() - ring_switch).abs() < 1e-9,
+        "{:?} against {ring_switch}",
+        security.terms[1]
+    );
 
     // A protocol the scheme would refuse gets no assessment.
     assert!(
         pcs.prescribed_security(&protocol(packed.log_height + 1))
             .is_none()
     );
+    // A protocol of incomplete batches takes the per-column route and is still assessed.
     let partial = OpeningProtocol::new(vec![TableSpec::new(
         TableShape::new(packed.log_height, NUM_KECCAK_BINARY_COLS),
         vec![OpeningBatch::new(vec![0], vec![])],
     )]);
-    assert!(PrescribedPointPcs::<E, Challenger>::prescribed_security(&pcs, &partial).is_some());
+    assert!(pcs.prescribed_security(&partial).is_some());
+}
+
+/// A table of one element's rows reads its next row inside that element, so its reduction is
+/// charged for the tensor alone.
+#[test]
+fn one_element_poly_packed_table_is_charged_no_successor_tensors() {
+    let bits = COLUMN_VARIABLES + ABSORBED_VARIABLES;
+    let security = pcs(bits)
+        .prescribed_security(&protocol(ABSORBED_VARIABLES))
+        .unwrap();
+    assert_eq!(
+        security.terms[..2],
+        backend(bits).readings_security(1, false).unwrap().terms[..]
+    );
 }
 
 #[test]
