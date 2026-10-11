@@ -46,8 +46,6 @@ const BRIDGE_PP: usize = BRIDGE_WIDTH + 3;
 const BRIDGE_TAG: usize = BRIDGE_WIDTH;
 const BRIDGE_ACTIVE: usize = BRIDGE_WIDTH + 1;
 const BRIDGE_SWAPPED_ACTIVE: usize = BRIDGE_WIDTH + 2;
-/// Columns of the Keccak table are indexed by `COLUMN_VARIABLES` coordinates once packed.
-const COLUMN_VARIABLES: usize = HASH_WIDTH.next_power_of_two().ilog2() as usize;
 
 #[derive(Debug, Error)]
 pub enum NativeBusCircuitError {
@@ -82,7 +80,7 @@ pub enum KeccakCommitment {
 #[derive(Clone, Debug)]
 pub enum NativeBusTrace<F> {
     Dense(RowMajorMatrix<F>),
-    /// Row blocks of `1625` words each, `ceil(2^log_height / 64)` blocks in all.
+    /// Row blocks of one word per column each, `ceil(2^log_height / 64)` blocks in all.
     PackedBits {
         words: RowMajorMatrix<u64>,
         log_height: usize,
@@ -299,8 +297,8 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             add(
                 field_cells,
                 add(
-                    packed_cells::<F>(hash_height)?,
-                    packed_cells::<F>(temporary_height)?,
+                    packed_cells::<F>(hash_height, HASH_WIDTH)?,
+                    packed_cells::<F>(temporary_height, HASH_WIDTH)?,
                 )?,
             )?
         } else {
@@ -449,9 +447,18 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             .position(|air| matches!(air.table, Table::Keccak { bits: true, .. }))
     }
 
-    /// Variables of the Keccak table's bit stack: its column and row coordinates.
+    /// Position of the bit-committed hash table in [`Self::airs`], when there is one: the only
+    /// AIR that assumes a Boolean trace.
+    pub fn packed_table_index(&self) -> Option<usize> {
+        self.airs
+            .iter()
+            .position(|air| BaseAir::<F>::assumes_boolean_trace(air))
+    }
+
+    /// Variables of the bit-committed table's bit stack: its column and row coordinates.
     pub fn packed_bit_variables(&self) -> Option<usize> {
-        Some(COLUMN_VARIABLES + self.log_heights[self.keccak_table_index()?])
+        let table = self.packed_table_index()?;
+        Some(column_variables(BaseAir::<F>::width(&self.airs[table])) + self.log_heights[table])
     }
 
     pub fn public_values(&self, public: &[F]) -> Result<Vec<Vec<F>>, NativeBusCircuitError> {
@@ -636,12 +643,19 @@ fn add(a: usize, b: usize) -> Result<usize, IndexedCircuitError> {
     a.checked_add(b)
         .ok_or(IndexedCircuitError::AllocationOverflow)
 }
-/// Cells of `F::COORDINATE_BITS` bits holding the packed words of a Keccak table of `height`
-/// rows, one word per column and started block of 64 rows.
-fn packed_cells<F: BinaryCoordinateField>(height: usize) -> Result<usize, IndexedCircuitError> {
+/// Cells of `F::COORDINATE_BITS` bits holding the packed words of a table of `height` rows and
+/// `width` columns, one word per column and started block of 64 rows.
+fn packed_cells<F: BinaryCoordinateField>(
+    height: usize,
+    width: usize,
+) -> Result<usize, IndexedCircuitError> {
     const BITS: usize = u64::BITS as usize;
-    let words = cells(height.div_ceil(BITS), HASH_WIDTH)?;
+    let words = cells(height.div_ceil(BITS), width)?;
     Ok(cells(words, BITS)?.div_ceil(F::COORDINATE_BITS))
+}
+/// Coordinates indexing the columns of a packed table of `width` columns.
+const fn column_variables(width: usize) -> usize {
+    width.next_power_of_two().ilog2() as usize
 }
 /// A sixteen-coordinate limb with coordinates `0..8` and `8..16` exchanged.
 fn swap_bytes<F: BinaryCoordinateField>(limb: F) -> F {
