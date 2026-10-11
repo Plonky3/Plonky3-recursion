@@ -80,12 +80,17 @@ impl PreparedNativeBinaryPolyWhirLayer {
         )
     }
 
-    fn prepare<A, L>(
+    /// Builds the child verifier circuit and its product-bus relation as
+    /// preparation does, under the same limits and nonzero draw budget, and
+    /// stops before the output codeword budget and key generation.
+    /// `None` places no construction checkpoints, as in
+    /// [`Self::from_native_authority`].
+    pub fn verifier_circuit<A, L>(
         authority: &BinaryNativePolyWhirAuthority<A, L>,
-        options: NativeBinaryRecursionOptions,
+        options: &NativeBinaryRecursionOptions,
         circuit_limits: &DirectCircuitLimits,
-        construction_limits: Option<CircuitConstructionLimits>,
-    ) -> Result<Self, VerificationError>
+        construction_limits: Option<&CircuitConstructionLimits>,
+    ) -> Result<(Circuit<F>, NativeBusCircuit<F>), VerificationError>
     where
         A: VerifierAir<Poly64, Poly192>,
         L: BinaryNativePolyWhirLayout,
@@ -102,7 +107,7 @@ impl PreparedNativeBinaryPolyWhirLayer {
         let input_shape = verifier.input_shape();
         let public_counts: Vec<_> = input_shape.public_value_counts().collect();
         let mut builder = match construction_limits {
-            Some(limits) => CircuitBuilder::<F>::with_construction_limits(limits)?,
+            Some(limits) => CircuitBuilder::<F>::with_construction_limits(*limits)?,
             None => CircuitBuilder::<F>::new(),
         };
         builder.enable_native_keccak_f1600()?;
@@ -150,6 +155,27 @@ impl PreparedNativeBinaryPolyWhirLayer {
                 required_draws,
             )));
         }
+        Ok((circuit, bus))
+    }
+
+    fn prepare<A, L>(
+        authority: &BinaryNativePolyWhirAuthority<A, L>,
+        options: NativeBinaryRecursionOptions,
+        circuit_limits: &DirectCircuitLimits,
+        construction_limits: Option<CircuitConstructionLimits>,
+    ) -> Result<Self, VerificationError>
+    where
+        A: VerifierAir<Poly64, Poly192>,
+        L: BinaryNativePolyWhirLayout,
+    {
+        let (circuit, bus) = Self::verifier_circuit(
+            authority,
+            &options,
+            circuit_limits,
+            construction_limits.as_ref(),
+        )?;
+        let input_shape = authority.recursive_verifier().input_shape();
+        let public_counts: Vec<_> = input_shape.public_value_counts().collect();
         let main_cells = codeword_cells(bus.main_variables(), options.main.starting_log_inv_rate)?;
         let pp_cells = bus
             .preprocessed_variables()
