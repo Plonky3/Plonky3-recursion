@@ -6,6 +6,7 @@ pub(crate) mod input;
 mod layer;
 mod native_binary;
 mod native_binary_folding;
+mod native_binary_mixed;
 mod native_poly;
 pub(crate) mod prover;
 mod trusted;
@@ -33,6 +34,10 @@ pub use native_binary_folding::{
     NativeBinaryFoldingRecursionOptions, NativeBinaryFoldingRecursiveProof,
     NativeBinaryGroupedFoldingRecursiveProof, PreparedNativeBinaryGroupedLayer,
     PreparedNativeBinaryLayer,
+};
+pub use native_binary_mixed::{
+    NativeBinaryMixedRecursionOptions, NativeBinaryMixedRecursiveProof,
+    PreparedNativeBinaryMixedWhirLayer,
 };
 pub use native_poly::{NativeBinaryPolyRecursiveProof, PreparedNativeBinaryPolyWhirLayer};
 pub use p3_circuit::VerifiedStatementTargets;

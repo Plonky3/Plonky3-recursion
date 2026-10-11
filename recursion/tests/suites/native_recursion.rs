@@ -52,5 +52,7 @@ mod native_poly_whir;
 mod prepared_native_binary;
 #[path = "../prepared_native_binary_folding.rs"]
 mod prepared_native_binary_folding;
+#[path = "../prepared_native_binary_mixed.rs"]
+mod prepared_native_binary_mixed;
 #[path = "../prepared_native_poly.rs"]
 mod prepared_native_poly;
