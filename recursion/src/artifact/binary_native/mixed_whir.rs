@@ -120,11 +120,20 @@ where
     /// Main tables in AIR order: field cells, or packed bits for the bit-committed table.
     /// Trusted shapes are checked before commitment or any native transcript mutation, and the
     /// commitment refuses a non-bit cell of the bit-committed table before it binds anything.
+    /// A statement with indexed lookups reads every table as field cells, so it refuses packed
+    /// bits.
     pub fn prove_tables(
         &self,
         public: &[Vec<E>],
         tables: Vec<Table<E>>,
     ) -> Result<MultiStarkProof<BinaryNativeMixedWhirConfig>, VerificationError> {
+        if self.state.decode.indexed.is_some()
+            && tables.iter().any(|table| table.packed_bits().is_some())
+        {
+            return Err(invalid(
+                "binary native mixed WHIR indexed lookups read no packed-bit table",
+            ));
+        }
         self.state.prove_tables(&self.key, public, tables)
     }
 }
