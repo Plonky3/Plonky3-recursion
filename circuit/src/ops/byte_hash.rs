@@ -14,6 +14,10 @@ use super::binary_host::BinaryCircuitHost;
 use crate::builder::CircuitBuilderError;
 use crate::types::ExprId;
 
+mod arity;
+
+pub use arity::MmcsAritySchedule;
+
 /// Bits per limb.
 const LIMB_BITS: usize = 16;
 /// 16-bit limbs in a 32-byte digest.
