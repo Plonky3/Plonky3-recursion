@@ -50,7 +50,18 @@ macro_rules! check {
     ($base:ty, $layout:ident, $protocol:expr, $cap_height:expr, $pow:expr) => {
         check!($base, $layout, $protocol, $cap_height, $pow, 2)
     };
-    ($base:ty, $layout:ident, $protocol:expr, $cap_height:expr, $pow:expr, $folding:expr) => {{
+    ($base:ty, $layout:ident, $protocol:expr, $cap_height:expr, $pow:expr, $folding:expr) => {
+        check!($base, $layout, $protocol, $cap_height, $pow, $folding, 8)
+    };
+    (
+        $base:ty,
+        $layout:ident,
+        $protocol:expr,
+        $cap_height:expr,
+        $pow:expr,
+        $folding:expr,
+        $security:expr
+    ) => {{
         type Ch = keccak::LevelChallenger<$base>;
         type L = $layout<$base, F>;
         let protocol = $protocol;
@@ -59,7 +70,7 @@ macro_rules! check {
         let config = WhirConfig::<F, $base, Ch>::new_with_domain(
             n,
             ProtocolParameters {
-                security_level: 8,
+                security_level: $security,
                 pow_bits: $pow,
                 round_log_inv_rates: vec![],
                 folding_factor: FoldingFactor::Constant($folding),
@@ -214,6 +225,28 @@ macro_rules! check {
             wrong[index] += F::ONE;
             assert!(!run(&circuit, &public, &wrong));
         }
+        // A zero-bit site pins its grinding witness to zero; any other site
+        // observes it before the next draw, which the closing sample binds.
+        let sumchecks = std::iter::once(&proof.initial_sumcheck)
+            .chain(proof.rounds.iter().map(|round| &round.sumcheck))
+            .chain([&proof.final_sumcheck]);
+        let pow_witnesses = proof
+            .rounds
+            .iter()
+            .map(|round| &round.pow_witness)
+            .chain([&proof.final_pow_witness])
+            .chain(sumchecks.flat_map(|sumcheck| &sumcheck.pow_witnesses));
+        for witness in pow_witnesses {
+            let row = circuit.expr_to_widx[&witness.as_expr()];
+            let index = circuit
+                .private_input_rows
+                .iter()
+                .position(|&private_row| private_row == row)
+                .unwrap();
+            let mut wrong = private.clone();
+            wrong[index] += F::ONE;
+            assert!(!run(&circuit, &public, &wrong));
+        }
         let other = BinaryWhirVerifier::<$base>::new(
             &config,
             protocol,
@@ -231,7 +264,7 @@ macro_rules! check {
                 .private_native_values(&other.input_shape())
                 .is_err()
         );
-        circuit
+        (circuit, config)
     }};
 }
 
@@ -278,8 +311,17 @@ fn tower32_whir_keeps_base_rows_narrow_and_challenges_wide() {
 /// is split into checked bytes; the bounds sit about 25% above the former.
 #[test]
 fn native_sixteen_value_rows_authenticate_as_word_leaves() {
-    let tower128 = check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
+    let (tower128, _) = check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
     assert!(tower128.witness_count <= 55_000);
-    let tower32 = check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
+    let (tower32, _) = check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
     assert!(tower32.witness_count <= 47_000);
+}
+
+/// Grinding twelve of sixteen security bits puts more than eight bits on
+/// some site, which draws them from two sampled bytes; the cases above stay
+/// within the first byte.
+#[test]
+fn native_grinding_beyond_one_sampled_byte_binds_every_witness() {
+    let (_, config) = check!(F, SuffixProver, protocol(9, 1, true), 0, 12, 2, 16);
+    assert!(config.max_pow_bits() > 8);
 }
