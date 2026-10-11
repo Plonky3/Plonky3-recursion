@@ -3,13 +3,14 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use p3_binary_dft::EncodableLevel;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_binary_pcs::{ChallengeField, FoldAlphabet};
-use p3_circuit::ops::ByteHash;
-use p3_circuit::{Circuit, CircuitConstructionLimits};
+use p3_circuit::ops::{ByteHash, NativeTower128Target};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::native_bus::{
     KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir, NativeBusTrace,
@@ -20,15 +21,21 @@ use p3_multi_stark::folder::VerifierAir;
 use p3_sumcheck::layout::Table;
 use p3_whir::{ProtocolParameters, WhirDomain};
 
-use super::native_binary::{NativeBinaryRecursionOptions, codeword_cells, native_verifier_circuit};
+use super::native_binary::{
+    NativeBinaryRecursionOptions, NativeWhirChild, codeword_cells, native_verifier_circuit,
+};
+use crate::BinaryTower128Challenger;
 use crate::artifact::{
     BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirConfig,
     BinaryNativeMixedWhirPcsParameters, BinaryNativeMixedWhirProver, BinaryNativeVerifierSpec,
     BinaryNativeWhirAuthority, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
     VerifiedBinaryNativeMixedWhirProof, VerifiedBinaryNativeWhirProof,
 };
-use crate::pcs::binary::RecursiveBinaryWhirTowerField;
-use crate::verifier::{BinaryWhirMultiStarkInputShape, VerificationError};
+use crate::pcs::binary::{NativeBooleanWhirTraceProofTargets, RecursiveBinaryWhirTowerField};
+use crate::verifier::{
+    BinaryMixedWhirMultiStarkInputShape, BinaryMixedWhirMultiStarkProofTargets,
+    BinaryWhirMultiStarkInputShape, VerificationError,
+};
 
 type F = BinaryField128;
 type OutputAir = NativeBusCircuitAir<F>;
@@ -47,13 +54,16 @@ pub struct NativeBinaryMixedRecursionOptions {
 }
 
 /// Retains the child authority's identity, native verifier graph, product-bus relation, and
-/// matched mixed proving/verification keys for repeatable proving.
-pub struct PreparedNativeBinaryMixedWhirLayer<Base = F>
+/// matched mixed proving/verification keys for repeatable proving. `S` is the child verifier's
+/// input shape: dense for a dense child, mixed for a child that is itself a mixed proof.
+pub struct PreparedNativeBinaryMixedWhirLayer<Base = F, S = BinaryWhirMultiStarkInputShape<Base>>
 where
     Base: RecursiveBinaryWhirTowerField,
 {
     input_identity: Arc<[u8]>,
-    input_shape: BinaryWhirMultiStarkInputShape<Base>,
+    input_shape: S,
+    /// The child statement's field.
+    statement: PhantomData<Base>,
     public_counts: Vec<usize>,
     circuit: Circuit<F>,
     bus: NativeBusCircuit<F>,
@@ -107,32 +117,122 @@ where
         )
     }
 
-    fn prepare<A, L>(
-        authority: &BinaryNativeWhirAuthority<Base, A, L>,
+    /// Accepts only a token checked under the retained child authority. Identity is checked
+    /// before witness packing or runner allocation.
+    pub fn prove_verified(
+        &self,
+        checked: &VerifiedBinaryNativeWhirProof<Base>,
+    ) -> Result<NativeBinaryMixedRecursiveProof, VerificationError> {
+        self.prove_checked(&checked.identity, checked.public_values(), |shape| {
+            checked.native_input().private_native_values(shape)
+        })
+    }
+}
+
+impl PreparedNativeBinaryMixedWhirLayer<F, BinaryMixedWhirMultiStarkInputShape> {
+    /// Builds the full native verifier of a child whose Keccak table is committed as packed
+    /// bits, such as another mixed layer's output, and an output authority that commits the
+    /// output Keccak table as packed bits. All child plans and preprocessing come from
+    /// `authority`, independently of any proof. Native Keccak is required.
+    pub fn from_mixed_authority<A: VerifierAir<F, F>>(
+        authority: &BinaryNativeMixedWhirAuthority<A>,
+        options: NativeBinaryMixedRecursionOptions,
+        circuit_limits: &DirectCircuitLimits,
+    ) -> Result<Self, VerificationError> {
+        Self::prepare(authority, options, circuit_limits, None)
+    }
+
+    /// As [`Self::from_mixed_authority`], stopping verifier construction at periodic
+    /// entry-count checkpoints before lowering.
+    pub fn from_mixed_authority_with_construction_limits<A: VerifierAir<F, F>>(
+        authority: &BinaryNativeMixedWhirAuthority<A>,
+        options: NativeBinaryMixedRecursionOptions,
+        circuit_limits: &DirectCircuitLimits,
+        construction_limits: &CircuitConstructionLimits,
+    ) -> Result<Self, VerificationError> {
+        Self::prepare(
+            authority,
+            options,
+            circuit_limits,
+            Some(*construction_limits),
+        )
+    }
+
+    /// Accepts only a token checked under the retained child authority. Identity is checked
+    /// before witness packing or runner allocation.
+    pub fn prove_verified(
+        &self,
+        checked: &VerifiedBinaryNativeMixedWhirProof,
+    ) -> Result<NativeBinaryMixedRecursiveProof, VerificationError> {
+        self.prove_checked(&checked.identity, checked.public_values(), |shape| {
+            checked.native_input().private_native_values(shape)
+        })
+    }
+}
+
+impl<A: VerifierAir<F, F>> NativeWhirChild for BinaryNativeMixedWhirAuthority<A> {
+    type Shape = BinaryMixedWhirMultiStarkInputShape;
+    type Targets = BinaryMixedWhirMultiStarkProofTargets<
+        NativeTower128Target,
+        NativeBooleanWhirTraceProofTargets,
+    >;
+
+    fn identity(&self) -> Arc<[u8]> {
+        self.shared_identity()
+    }
+    fn transcript(&self) -> (ByteHash, &[u8]) {
+        (self.transcript_hash(), self.initial_bytes())
+    }
+    fn check_support(&self) -> Result<(), VerificationError> {
+        self.recursive_verifier().check_native_circuit_support()
+    }
+    fn shape(&self) -> Self::Shape {
+        self.recursive_verifier().input_shape()
+    }
+    fn public_counts(shape: &Self::Shape) -> Vec<usize> {
+        shape.public_value_counts().collect()
+    }
+    fn allocate(
+        shape: &Self::Shape,
+        builder: &mut CircuitBuilder<F>,
+    ) -> Result<Self::Targets, VerificationError> {
+        shape.allocate_native_targets(builder)
+    }
+    fn verify(
+        &self,
+        builder: &mut CircuitBuilder<F>,
+        challenger: BinaryTower128Challenger,
+        public: &[Vec<NativeTower128Target>],
+        proof: &Self::Targets,
+    ) -> Result<BinaryTower128Challenger, VerificationError> {
+        self.recursive_verifier()
+            .verify_native(builder, challenger, public, proof)
+    }
+}
+
+impl<Base: RecursiveBinaryWhirTowerField, S> PreparedNativeBinaryMixedWhirLayer<Base, S>
+where
+    F: ExtensionField<Base>,
+{
+    fn prepare<C: NativeWhirChild<Shape = S>>(
+        child: &C,
         options: NativeBinaryMixedRecursionOptions,
         circuit_limits: &DirectCircuitLimits,
         construction_limits: Option<CircuitConstructionLimits>,
-    ) -> Result<Self, VerificationError>
-    where
-        Base: EncodableLevel + FoldAlphabet<F> + PackedValue<Value = Base> + Ord,
-        F: ChallengeField<Base>,
-        BinaryWhirDomain<Base>: WhirDomain<Base, F>,
-        A: VerifierAir<Base, F>,
-        L: BinaryNativeWhirLayout<Base>,
-    {
+    ) -> Result<Self, VerificationError> {
         let NativeBinaryMixedRecursionOptions {
             base: options,
             packed,
         } = options;
         let (circuit, bus) = native_verifier_circuit(
-            authority,
+            child,
             &options,
             circuit_limits,
             construction_limits.as_ref(),
             KeccakCommitment::Bits,
         )?;
-        let input_shape = authority.recursive_verifier().input_shape();
-        let public_counts: Vec<_> = input_shape.public_value_counts().collect();
+        let input_shape = child.shape();
+        let public_counts = C::public_counts(&input_shape);
         let (keccak_table, bit_variables) = bus
             .keccak_table_index()
             .zip(bus.packed_bit_variables())
@@ -207,8 +307,9 @@ where
                 *limits,
             )?;
         Ok(Self {
-            input_identity: authority.shared_identity(),
+            input_identity: child.identity(),
             input_shape,
+            statement: PhantomData,
             public_counts,
             circuit,
             bus,
@@ -221,7 +322,9 @@ where
     pub const fn circuit(&self) -> &Circuit<F> {
         &self.circuit
     }
-    /// Output authority over the mixed commitment. Its statement uses output AIR order.
+    /// Output authority over the mixed commitment, suitable as the independently trusted
+    /// child of [`PreparedNativeBinaryMixedWhirLayer::from_mixed_authority`]. Its statement
+    /// uses output AIR order.
     pub const fn authority(&self) -> &BinaryNativeMixedWhirAuthority<OutputAir> {
         &self.authority
     }
@@ -258,21 +361,22 @@ where
             .collect())
     }
 
-    /// Accepts only a token checked under the retained child authority. Identity is checked
-    /// before witness packing or runner allocation.
-    pub fn prove_verified(
+    /// Checks the token's identity before `pack` or runner allocation, then runs the verifier
+    /// circuit on the token's statement and the child proof's values from `pack` and proves
+    /// its tables.
+    fn prove_checked(
         &self,
-        checked: &VerifiedBinaryNativeWhirProof<Base>,
+        identity: &[u8],
+        statement: &[Vec<Base>],
+        pack: impl FnOnce(&S) -> Result<Vec<F>, VerificationError>,
     ) -> Result<NativeBinaryMixedRecursiveProof, VerificationError> {
-        if checked.identity.as_ref() != self.input_identity.as_ref() {
+        if identity != self.input_identity.as_ref() {
             return Err(VerificationError::PreparedInputMismatch {
                 component: "native binary child authority",
             });
         }
-        let public = self.flatten_statement(checked.public_values())?;
-        let private = checked
-            .native_input()
-            .private_native_values(&self.input_shape)?;
+        let public = self.flatten_statement(statement)?;
+        let private = pack(&self.input_shape)?;
         let mut runner = self.circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;

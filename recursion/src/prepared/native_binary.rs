@@ -318,6 +318,7 @@ pub(super) trait NativeWhirChild {
     type Shape;
     type Targets;
 
+    fn identity(&self) -> Arc<[u8]>;
     fn transcript(&self) -> (ByteHash, &[u8]);
     /// Refuses a child the native carrier cannot verify, before graph allocation.
     fn check_support(&self) -> Result<(), VerificationError>;
@@ -351,6 +352,9 @@ where
     type Shape = BinaryWhirMultiStarkInputShape<Base>;
     type Targets = BinaryWhirMultiStarkProofTargets<NativeTower128Target>;
 
+    fn identity(&self) -> Arc<[u8]> {
+        self.shared_identity()
+    }
     fn transcript(&self) -> (ByteHash, &[u8]) {
         (self.transcript_hash(), self.initial_bytes())
     }
