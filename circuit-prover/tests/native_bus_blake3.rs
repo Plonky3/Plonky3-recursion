@@ -255,7 +255,8 @@ fn refused(
 }
 
 /// A changed internal bit fails the compression constraints on a call row and on a padding row
-/// in both modes; a non-bit input cell fails the dense table's booleanity constraints.
+/// in both modes; a non-bit input cell is refused in dense mode. That the dense table checks
+/// the booleanity of the input words itself is pinned by `packed_words_match_dense_bits`.
 #[test]
 fn compression_cells_are_constrained_on_every_row() {
     let (circuit, public) = chain::<F>(3, false);
