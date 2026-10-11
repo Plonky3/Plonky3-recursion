@@ -551,7 +551,7 @@ fn polynomial_whir_bounds_price_cubic_extension_rows_and_192_bit_challenges() {
 fn polynomial_whir_rejects_pow_that_native_grinding_cannot_produce() {
     let mut params = parameters(FoldingFactor::Constant(1));
     params.security_level = 248;
-    params.pow_bits = 64;
+    params.pow_bits = 60;
     params.soundness_type = SecurityAssumption::UniqueDecoding;
     let config = WhirConfig::<Poly192, Poly64, keccak::LevelChallenger<Poly64>>::new_with_domain(
         2,

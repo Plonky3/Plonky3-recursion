@@ -18,7 +18,7 @@ fn native_grinding_boundaries_use_the_base_alphabet_width() {
                 let config = WhirConfig::<BinaryField128, $field, keccak::LevelChallenger<$field>>::new_with_domain(
                         2,
                         ProtocolParameters {
-                            security_level: 125 + difficulty, pow_bits: difficulty, round_log_inv_rates: vec![],
+                            security_level: 124 + difficulty, pow_bits: difficulty, round_log_inv_rates: vec![],
                             folding_factor: FoldingFactor::Constant(1),
                             soundness_type: SecurityAssumption::UniqueDecoding,
                             starting_log_inv_rate: 1,
