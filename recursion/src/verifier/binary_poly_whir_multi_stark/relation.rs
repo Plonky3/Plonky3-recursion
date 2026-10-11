@@ -104,7 +104,37 @@ impl PolyMultiStarkRelation {
         A: Air<InteractionSymbolicBuilder<Poly64, Poly192>>
             + Air<BusSymbolicBuilder<Poly64, Poly192>>,
     {
-        if airs.is_empty() || airs.len() != heights.len() || heights.contains(&0) {
+        Self::build_with_bit_tables(
+            airs,
+            heights,
+            &alloc::vec![false; airs.len()],
+            pow_bits,
+            max_tau_draws,
+            has_preprocessing,
+            limits,
+        )
+    }
+
+    /// As [`Self::build`], where `bits_committed[i]` states that the main commitment stores
+    /// AIR `i`'s trace as bits. Only such an AIR may declare bit columns.
+    pub(super) fn build_with_bit_tables<A>(
+        airs: &[&A],
+        heights: &[usize],
+        bits_committed: &[bool],
+        pow_bits: usize,
+        max_tau_draws: usize,
+        has_preprocessing: bool,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, OpeningProtocol, Option<OpeningProtocol>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<Poly64, Poly192>>
+            + Air<BusSymbolicBuilder<Poly64, Poly192>>,
+    {
+        if airs.is_empty()
+            || airs.len() != heights.len()
+            || airs.len() != bits_committed.len()
+            || heights.contains(&0)
+        {
             return Err(invalid(
                 "polynomial MultiStark trusted instance shape mismatch",
             ));
@@ -123,9 +153,9 @@ impl PolyMultiStarkRelation {
         usage.add_instances(limits, airs.len())?;
         let mut plans = Vec::with_capacity(airs.len());
         let mut declarations = Vec::with_capacity(airs.len());
-        for (&air, &height) in airs.iter().zip(heights) {
+        for ((&air, &height), &bits) in airs.iter().zip(heights).zip(bits_committed) {
             let (plan, bus) =
-                BinaryPolyAirConstraintPlan::with_interaction_limits(air, height, limits)?;
+                BinaryPolyAirConstraintPlan::with_interaction_limits(air, height, limits, bits)?;
             declarations.push(bus);
             if plan.preprocessed_width() != 0 && !has_preprocessing {
                 return Err(invalid(

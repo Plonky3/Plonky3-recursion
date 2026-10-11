@@ -229,3 +229,52 @@ fn embedded_bus_products_charge_no_additional_air_instances() {
         .is_err()
     );
 }
+
+#[derive(Clone, Copy)]
+struct BooleanAssumingAir;
+impl<F> BaseAir<F> for BooleanAssumingAir {
+    fn width(&self) -> usize {
+        1
+    }
+    fn assumes_boolean_trace(&self) -> bool {
+        true
+    }
+}
+impl<AB: AirBuilder + BusInteractionBuilder> Air<AB> for BooleanAssumingAir {
+    fn eval(&self, b: &mut AB) {
+        let x = b.main().current_slice()[0];
+        b.assert_zero(x * x - x);
+    }
+}
+
+#[test]
+fn poly_boolean_assuming_air_requires_a_bit_committed_table() {
+    let limits = VerifierLimits::default();
+    assert!(
+        BinaryPolyAirConstraintPlan::with_interaction_limits(
+            &BooleanAssumingAir,
+            2,
+            &limits,
+            false
+        )
+        .is_err()
+    );
+    assert!(
+        BinaryPolyAirConstraintPlan::with_interaction_limits(&BooleanAssumingAir, 2, &limits, true)
+            .is_ok()
+    );
+}
+
+#[test]
+fn poly_bit_flag_leaves_non_boolean_identities_unchanged() {
+    let limits = VerifierLimits::default();
+    let [(unflagged, _), (flagged, _)] = [false, true].map(|bits| {
+        BinaryPolyAirConstraintPlan::with_interaction_limits(&BusAir, 2, &limits, bits).unwrap()
+    });
+    let identity = |plan: &BinaryPolyAirConstraintPlan| {
+        let mut w = crate::artifact::wire::Writer::new(1 << 20);
+        plan.write_identity(&mut w).unwrap();
+        w.finish().unwrap()
+    };
+    assert_eq!(identity(&unflagged), identity(&flagged));
+}

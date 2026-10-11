@@ -1013,22 +1013,27 @@ pub struct BinaryPolyAirConstraintPlan {
 
 impl BinaryPolyAirConstraintPlan {
     /// Internal constructor for a relation that closes retained bus and indexed claims.
+    /// `bits_committed` states that the surrounding commitment stores this AIR's main
+    /// trace as bits, which an AIR with bit columns requires.
     pub(super) fn with_interaction_limits<A>(
         air: &A,
         log_height: usize,
         limits: &VerifierLimits,
+        bits_committed: bool,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<p3_binary_field::Poly64>>), VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>
             + Air<BusSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>,
     {
-        let (program, declarations) = AirProgram::build::<
-            p3_binary_field::Poly64,
-            p3_binary_field::Poly192,
-            A,
-        >(air, log_height, limits, true, false, |value| {
-            value.to_bits() as u128
-        })?;
+        let (program, declarations) =
+            AirProgram::build::<p3_binary_field::Poly64, p3_binary_field::Poly192, A>(
+                air,
+                log_height,
+                limits,
+                true,
+                bits_committed,
+                |value| value.to_bits() as u128,
+            )?;
         Ok((Self { program }, declarations))
     }
 
@@ -1042,7 +1047,7 @@ impl BinaryPolyAirConstraintPlan {
         A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>
             + Air<BusSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>,
     {
-        let output = Self::with_interaction_limits(air, log_height, limits)?;
+        let output = Self::with_interaction_limits(air, log_height, limits, false)?;
         if !output.0.program.indexed.is_empty() {
             return Err(invalid(
                 "binary Poly AIR indexed claims require a supported reduction",
