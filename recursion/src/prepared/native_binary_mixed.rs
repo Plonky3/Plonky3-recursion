@@ -20,9 +20,7 @@ use p3_multi_stark::folder::VerifierAir;
 use p3_sumcheck::layout::Table;
 use p3_whir::{ProtocolParameters, WhirDomain};
 
-use super::native_binary::{
-    NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer, codeword_cells,
-};
+use super::native_binary::{NativeBinaryRecursionOptions, codeword_cells, native_verifier_circuit};
 use crate::artifact::{
     BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirConfig,
     BinaryNativeMixedWhirPcsParameters, BinaryNativeMixedWhirProver, BinaryNativeVerifierSpec,
@@ -126,7 +124,7 @@ where
             base: options,
             packed,
         } = options;
-        let (circuit, bus) = PreparedNativeBinaryWhirLayer::<Base>::verifier_circuit_with_keccak(
+        let (circuit, bus) = native_verifier_circuit(
             authority,
             &options,
             circuit_limits,
