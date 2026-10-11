@@ -61,6 +61,7 @@ mod grouped_oracle;
 mod grouped_pcs;
 mod grouped_trace;
 mod input;
+mod merkle_arity;
 mod nonzero;
 mod poly_generic_sumcheck;
 mod poly_interpolation;
@@ -130,6 +131,7 @@ pub use grouped_trace::{
     BinaryGroupedBooleanTraceVerifier, NativeBinaryGroupedBooleanTraceInput,
 };
 pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
+pub use merkle_arity::MerkleArity;
 pub use nonzero::{
     BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailOutput,
     BinaryNonzeroChallengeTailPlan,
