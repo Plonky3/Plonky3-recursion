@@ -5,7 +5,10 @@ pub use boolean_whir::BinaryNativeBooleanWhirTraceConfig;
 pub(super) use boolean_whir::NativeBooleanWhirTracePcs;
 mod mixed_whir;
 pub(super) use mixed_whir::MixedWhirProof;
-pub use mixed_whir::{BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters};
+pub use mixed_whir::{
+    BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters,
+    BinaryNativePolyMixedWhirConfig, BinaryNativePolyMixedWhirPcsParameters,
+};
 pub(crate) use mixed_whir::{MixedWhirError, MixedWhirPcs};
 mod poly_whir;
 pub(super) use poly_whir::NativePolyWhirPcs;

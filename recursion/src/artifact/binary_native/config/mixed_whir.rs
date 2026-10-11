@@ -1,4 +1,5 @@
-//! Closed Tower128 composite of a dense WHIR commitment and one packed-bit table commitment.
+//! Closed composite of a dense WHIR commitment and one packed-bit table commitment, over
+//! Tower128 values and challenges or Poly64 values and Poly192 challenges.
 //!
 //! ```text
 //!     witness      tables in instance order; one configured table goes to the bit commitment,
@@ -15,7 +16,7 @@
 
 use alloc::vec;
 
-use p3_binary_field::{BinaryField128, BitCoordinates, TowerLevel};
+use p3_binary_field::{BinaryField128, BitCoordinates, Poly64, Poly192, TowerLevel};
 use p3_binary_pcs::whir::{
     BinaryWhirDomain, BooleanWhirData, BooleanWhirError, BooleanWhirPcs, BooleanWhirProof,
 };
@@ -67,8 +68,13 @@ pub type MixedWhirProof = NativeMixedWhirProof<BinaryField128, BinaryField128>;
 /// Mixed commitment parameters over Tower128 values and challenges.
 pub type BinaryNativeMixedWhirPcsParameters =
     NativeMixedWhirPcsParameters<BinaryNativeWhirPcsParameters<BinaryField128>>;
+/// Mixed commitment parameters over Poly64 values and Poly192 challenges.
+pub type BinaryNativePolyMixedWhirPcsParameters =
+    NativeMixedWhirPcsParameters<BinaryNativePolyWhirPcsParameters>;
 /// Mixed configuration over Tower128 values and challenges.
 pub type BinaryNativeMixedWhirConfig = NativeMixedWhirConfig<BinaryField128, BinaryField128>;
+/// Mixed configuration over Poly64 values and Poly192 challenges.
+pub type BinaryNativePolyMixedWhirConfig = NativeMixedWhirConfig<Poly64, Poly192>;
 
 /// Why the composite commitment refused a witness, an opening or a proof.
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +109,17 @@ impl MixedWhirPartParameters for BinaryNativeWhirPcsParameters<BinaryField128> {
     fn whir(
         &self,
     ) -> &WhirConfig<BinaryField128, BinaryField128, BinaryNativeChallenger<BinaryField128>> {
+        &self.config
+    }
+    fn trees(&self) -> (ByteHash, MerkleArity, usize) {
+        (self.hash, self.arity, self.cap_height)
+    }
+}
+
+impl MixedWhirPartParameters for BinaryNativePolyWhirPcsParameters {
+    type Val = Poly64;
+    type Challenge = Poly192;
+    fn whir(&self) -> &WhirConfig<Poly192, Poly64, BinaryNativeChallenger<Poly64>> {
         &self.config
     }
     fn trees(&self) -> (ByteHash, MerkleArity, usize) {
@@ -813,5 +830,7 @@ where
     }
 }
 
+#[cfg(test)]
+mod poly_tests;
 #[cfg(test)]
 mod tests;

@@ -45,7 +45,7 @@ const ABSORBED_VARIABLES: usize = 6;
 const COLUMN_VARIABLES: usize = 11;
 
 /// A chain of `calls` Keccak-f permutations from a public input state to a public output state.
-fn keccak_chain(calls: usize) -> (Circuit<F>, Vec<F>) {
+pub(super) fn keccak_chain(calls: usize) -> (Circuit<F>, Vec<F>) {
     let mut builder = CircuitBuilder::<F>::new();
     builder.enable_native_keccak_f1600().unwrap();
     let mut state = builder.alloc_public_input_array::<100>("input").to_vec();

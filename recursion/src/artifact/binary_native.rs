@@ -42,6 +42,7 @@ pub use config::{
     BinaryNativeBooleanTraceConfig, BinaryNativeBooleanWhirTraceConfig, BinaryNativeChallenger,
     BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedConfig,
     BinaryNativeHash, BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters,
+    BinaryNativePolyMixedWhirConfig, BinaryNativePolyMixedWhirPcsParameters,
     BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
     BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
 };
