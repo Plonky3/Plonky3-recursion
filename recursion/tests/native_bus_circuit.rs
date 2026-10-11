@@ -2155,39 +2155,58 @@ fn native_blake3_rows_bind_their_counter_and_flags_to_the_witness() {
     }
 }
 
-/// The constant inputs of a call are fixed by constant gates. A message whose first
-/// `prefix_words` limbs are circuit constants and whose last three are public starts its last
-/// blocks from precomputed chaining values and fixed counter, length and flags limbs. A prover
-/// who runs the circuit with one other constant and claims the digest that follows satisfies
-/// every table but that constant's gate, so the proof is refused. Each target is an input limb
-/// of a call, here the first nonzero one of `candidates`, read by no other operation.
+/// The constant inputs of a call are fixed by constant gates. `hash` returns the BLAKE3 digest
+/// units of a message of `bits`-wide units, here `prefix_bytes` constant bytes and three public
+/// units, and the circuit binds them to public inputs. The message starts its last blocks from
+/// precomputed chaining values and fixed counter, length and flags limbs. A prover who runs the
+/// circuit with one other constant and claims the digest that follows satisfies every table but
+/// that constant's gate, so the proof is refused. Each target is an input limb of a call, here
+/// the first nonzero one of `candidates`, read by no other operation.
 fn reject_forged_blake3_constants(
-    prefix_words: usize,
+    bits: usize,
+    hash: impl Fn(&mut CircuitBuilder<F>, &[ExprId]) -> Vec<ExprId>,
+    prefix_bytes: usize,
     calls_expected: usize,
     targets: &[(usize, &[usize])],
 ) {
-    let units: Vec<u16> = (0..prefix_words as u16 + 3)
-        .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
+    let prefix = prefix_bytes * 8 / bits;
+    let units: Vec<u16> = (0..prefix as u16 + 3)
+        .map(|i| (i.wrapping_mul(0x9e37) ^ 0x5a5a) >> (16 - bits))
         .collect();
-    let message: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+    let message: Vec<u8> = units
+        .iter()
+        .flat_map(|unit| unit.to_le_bytes().into_iter().take(bits / 8))
+        .collect();
+    // The digest units of sixteen low-first digest limbs.
+    let digest = |limbs: &[u16]| -> Vec<u16> {
+        if bits == 16 {
+            limbs.to_vec()
+        } else {
+            limbs
+                .iter()
+                .flat_map(|limb| limb.to_le_bytes())
+                .map(u16::from)
+                .collect()
+        }
+    };
     let statement = |digest: &[u16]| -> Vec<F> {
-        units[prefix_words..]
+        units[prefix..]
             .iter()
             .chain(digest)
-            .map(|&limb| limb_value(limb))
+            .map(|&unit| limb_value(unit))
             .collect()
     };
     let build = || {
         let mut b = CircuitBuilder::<F>::new();
         b.enable_native_blake3_compress().unwrap();
-        let mut input: Vec<_> = units[..prefix_words]
+        let mut input: Vec<_> = units[..prefix]
             .iter()
             .map(|&unit| b.define_const(limb_value(unit)))
             .collect();
         input.extend(b.alloc_public_input_array::<3>("message suffix"));
-        for limb in b.native_blake3_words(&input).unwrap() {
+        for unit in hash(&mut b, &input) {
             let expected = b.public_input();
-            b.connect(limb, expected);
+            b.connect(unit, expected);
         }
         b.build().unwrap()
     };
@@ -2196,7 +2215,7 @@ fn reject_forged_blake3_constants(
     let prepared = NativeBusCircuit::new(&circuit, "prefix").unwrap();
     let calls = blake3_calls(&circuit);
     assert_eq!(calls.len(), calls_expected);
-    let honest_digest = bytes_to_limbs(&Blake3.hash_iter(message.iter().copied()));
+    let honest_digest = digest(&bytes_to_limbs(&Blake3.hash_iter(message.iter().copied())));
     let honest = statement(&honest_digest);
     let mut runner = circuit.runner();
     runner.set_public_inputs(&honest).unwrap();
@@ -2262,13 +2281,14 @@ fn reject_forged_blake3_constants(
             let output = words_to_limbs(&blake3_compress(&words)[..8]);
             forged_limbs.extend(outputs.iter().copied().zip(output));
         }
-        let claimed_digest: Vec<u16> = calls
+        let claimed_limbs: Vec<u16> = calls
             .last()
             .unwrap()
             .1
             .iter()
             .map(|id| forged_limbs[id])
             .collect();
+        let claimed_digest = digest(&claimed_limbs);
         assert_ne!(claimed_digest, honest_digest);
         let claimed = statement(&claimed_digest);
 
@@ -2309,7 +2329,24 @@ fn reject_forged_blake3_constants(
 fn native_product_buses_fix_the_precomputed_chaining_value_of_constant_blake3_words() {
     // Input limbs 32..48 are the chaining value, 52 the block length and 54 the flags.
     reject_forged_blake3_constants(
-        32,
+        16,
+        |b, message| b.native_blake3_words(message).unwrap().to_vec(),
+        64,
+        1,
+        &[(0, &(32..48).collect::<Vec<_>>()), (0, &[52]), (0, &[54])],
+    );
+}
+
+/// A first block of constant bytes, folded pairwise into raw limbs, is compressed while
+/// building: the second block starts from its precomputed chaining value, and carries the fixed
+/// block length and flags of its last block.
+#[test]
+fn native_product_buses_fix_the_precomputed_chaining_value_of_constant_blake3_bytes() {
+    // Input limbs 32..48 are the chaining value, 52 the block length and 54 the flags.
+    reject_forged_blake3_constants(
+        8,
+        |b, message| b.native_blake3_bytes(message).unwrap().to_vec(),
+        64,
         1,
         &[(0, &(32..48).collect::<Vec<_>>()), (0, &[52]), (0, &[54])],
     );
@@ -2320,5 +2357,11 @@ fn native_product_buses_fix_the_precomputed_chaining_value_of_constant_blake3_wo
 #[test]
 fn native_product_buses_fix_the_precomputed_child_and_counter_of_blake3_chunks() {
     // Input limb 48 is the low counter limb.
-    reject_forged_blake3_constants(512, 2, &[(1, &(0..16).collect::<Vec<_>>()), (0, &[48])]);
+    reject_forged_blake3_constants(
+        16,
+        |b, message| b.native_blake3_words(message).unwrap().to_vec(),
+        1024,
+        2,
+        &[(1, &(0..16).collect::<Vec<_>>()), (0, &[48])],
+    );
 }
