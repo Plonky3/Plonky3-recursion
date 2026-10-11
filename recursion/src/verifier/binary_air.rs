@@ -79,6 +79,8 @@ struct AirProgram {
     preprocessed_width: usize,
     preprocessed_next_columns: Vec<usize>,
     periods: Vec<Vec<u128>>,
+    /// Bytes the native transcript binds for the periodic values, as the AIR states them.
+    periodic_statement: Vec<u8>,
     log_height: usize,
     degree: usize,
     usage: InputResourceUsage,
@@ -194,6 +196,9 @@ where
     }
     pub fn preprocessed_next_columns(&self) -> &[usize] {
         &self.program.preprocessed_next_columns
+    }
+    pub(super) fn periodic_statement(&self) -> &[u8] {
+        &self.program.periodic_statement
     }
     pub const fn log_height(&self) -> usize {
         self.program.log_height
@@ -498,7 +503,7 @@ impl AirProgram {
                 component: "binary AIR symbolic columns",
             })?;
         usage.add_metadata_entries(limits, columns)?;
-        if air.assumes_boolean_trace() {
+        if air.boolean_columns() != 0 {
             return Err(invalid("binary AIR requires a Boolean trace commitment"));
         }
         let next_columns = air.main_next_row_columns();
@@ -533,6 +538,7 @@ impl AirProgram {
             .iter()
             .map(|period| period.iter().copied().map(base_raw).collect())
             .collect();
+        let periodic_statement = air.periodic_statement();
         let pins = air.public_boundary_io();
         let pin_nodes =
             pins.len()
@@ -716,6 +722,7 @@ impl AirProgram {
                 preprocessed_width: layout.preprocessed_width,
                 preprocessed_next_columns,
                 periods,
+                periodic_statement,
                 log_height,
                 degree,
                 usage,
@@ -1097,6 +1104,9 @@ impl BinaryPolyAirConstraintPlan {
     }
     pub fn preprocessed_next_columns(&self) -> &[usize] {
         &self.program.preprocessed_next_columns
+    }
+    pub(super) fn periodic_statement(&self) -> &[u8] {
+        &self.program.periodic_statement
     }
     pub const fn log_height(&self) -> usize {
         self.program.log_height

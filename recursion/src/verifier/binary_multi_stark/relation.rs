@@ -202,7 +202,7 @@ where
                     num_public_values: air.public_value_count(),
                     main_next_row_columns: air.next_columns().to_vec(),
                     preprocessed_next_row_columns: air.preprocessed_next_columns().to_vec(),
-                    periodic_statement: Vec::new(),
+                    periodic_statement: air.periodic_statement().to_vec(),
                 })
                 .collect(),
             pow_bits,

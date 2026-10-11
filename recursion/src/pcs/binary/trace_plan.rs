@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 
 use p3_binary_field::BinaryField128;
 use p3_field::PrimeCharacteristicRing;
-use p3_sumcheck::OpeningProtocol;
-use p3_sumcheck::layout::plan_stacked_layout;
+use p3_sumcheck::layout::{Selector, TablePlacement, plan_stacked_layout};
+use p3_sumcheck::{OpeningProtocol, TableShape};
 
 use super::BinaryRingClaimSpec;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
@@ -24,12 +24,27 @@ pub(super) struct TracePlan {
 
 #[derive(Clone, Debug)]
 pub(super) enum Route {
-    Batched {
-        width: usize,
-        columns: usize,
-        next: bool,
-    },
+    Batched(Vec<TableRun>),
     Columns(Vec<ColumnClaim>),
+}
+
+/// The batches of one table, run through one column-batching transcript.
+#[derive(Clone, Debug)]
+pub(super) struct TableRun {
+    pub table: usize,
+    pub width: usize,
+    pub columns: usize,
+    pub next: bool,
+    pub batches: usize,
+    pub blocks: Vec<ColumnBlock>,
+}
+
+/// One aligned run of a table's column slots, read as one claim at a lifted point.
+#[derive(Clone, Debug)]
+pub(super) struct ColumnBlock {
+    pub selector: Vec<bool>,
+    pub first: usize,
+    pub variables: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -131,41 +146,21 @@ impl TracePlan {
         }
         // Every request is now nonempty and the checked claim count bounds the
         // batch count. Only checked metadata reaches the native placement helper.
-        let (_, placements) = plan_stacked_layout(&shapes);
+        let (arity, placements) = plan_stacked_layout(&shapes);
         let mut by_table = vec![None; shapes.len()];
         for placement in &placements {
             by_table[placement.idx()] = Some(placement);
         }
-        let next = protocol
-            .iter_openings()
-            .next()
-            .is_some_and(|(_, b)| !b.next().is_empty());
-        let width = shapes[0].width();
-        let complete =
-            |columns: &[usize]| columns.len() == width && columns.iter().copied().eq(0..width);
-        let batched = shapes.len() == 1
-            && protocol.iter_openings().all(|(_, batch)| {
-                complete(batch.current())
-                    && if next {
-                        complete(batch.next())
-                    } else {
-                        batch.next().is_empty()
-                    }
-            });
         let mut specs = Vec::new();
-        let route = if batched {
-            specs.resize(
-                point_arities.len(),
-                BinaryRingClaimSpec {
+        let route = if let Some(runs) = batched_runs(&protocol, &shapes, arity, &by_table) {
+            for run in &runs {
+                let spec = BinaryRingClaimSpec {
                     current: true,
-                    next_rows: next.then_some(shapes[0].num_variables()),
-                },
-            );
-            Route::Batched {
-                width,
-                columns: p3_util::log2_ceil_usize(width),
-                next,
+                    next_rows: run.next.then_some(shapes[run.table].num_variables()),
+                };
+                specs.extend(core::iter::repeat_n(spec, run.batches * run.blocks.len()));
             }
+            Route::Batched(runs)
         } else {
             let mut claims = Vec::new();
             let mut cursor = 0;
@@ -223,6 +218,100 @@ impl TracePlan {
             usage,
         })
     }
+}
+
+/// The complete runs the native batched route takes, if the protocol has them.
+///
+/// Every batch reads its table's whole width at the current row, and either none of it or
+/// all of it one row ahead, the same way across the table's batches.
+fn batched_runs(
+    protocol: &OpeningProtocol,
+    shapes: &[TableShape],
+    arity: usize,
+    by_table: &[Option<&TablePlacement>],
+) -> Option<Vec<TableRun>> {
+    let used = shapes
+        .iter()
+        .map(|shape| shape.width() << shape.num_variables())
+        .sum::<usize>();
+    let mut runs: Vec<TableRun> = Vec::new();
+    for (table, batch) in protocol.iter_openings() {
+        let width = shapes[table].width();
+        let complete = |columns: &[usize]| columns.iter().copied().eq(0..width);
+        let next = !batch.next().is_empty();
+        if !complete(batch.current()) || (next && !complete(batch.next())) {
+            return None;
+        }
+        match runs.last_mut() {
+            Some(run) if run.table == table => {
+                if run.next != next {
+                    return None;
+                }
+                run.batches += 1;
+            }
+            _ => runs.push(TableRun {
+                table,
+                width,
+                columns: p3_util::log2_ceil_usize(width),
+                next,
+                batches: 1,
+                blocks: column_blocks(by_table[table]?, shapes[table], arity, used)?,
+            }),
+        }
+    }
+    Some(runs)
+}
+
+/// Split a table's column slots into aligned blocks, largest first.
+///
+/// A block may run past the table only where no table follows it, so one table alone is
+/// one block of the width padded to a power of two.
+fn column_blocks(
+    placement: &TablePlacement,
+    shape: TableShape,
+    arity: usize,
+    used: usize,
+) -> Option<Vec<ColumnBlock>> {
+    let rows = shape.num_variables();
+    let selectors = placement.selectors();
+    let start = selectors.first()?.index();
+    if !selectors
+        .iter()
+        .enumerate()
+        .all(|(column, selector)| selector.index() == start + column)
+    {
+        return None;
+    }
+    let slots = 1usize << (arity - rows);
+    let end = start + shape.width();
+    let free_tail = end << rows >= used;
+    let column_variables = p3_util::log2_ceil_usize(shape.width());
+
+    let mut blocks = Vec::new();
+    let mut position = start;
+    while position < end {
+        let mut variables = column_variables.min(position.trailing_zeros() as usize);
+        loop {
+            let stop = position + (1 << variables);
+            if stop <= end || (free_tail && stop <= slots) || variables == 0 {
+                break;
+            }
+            variables -= 1;
+        }
+        let selector = Selector::new(arity - rows - variables, position >> variables)
+            .point::<BinaryField128>()
+            .as_slice()
+            .iter()
+            .map(|&v| v == BinaryField128::ONE)
+            .collect();
+        blocks.push(ColumnBlock {
+            selector,
+            first: position - start,
+            variables,
+        });
+        position += 1 << variables;
+    }
+    Some(blocks)
 }
 
 fn invalid(message: &'static str) -> VerificationError {

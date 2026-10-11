@@ -10,7 +10,8 @@ use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
-use p3_sumcheck::OpeningBatch;
+use p3_sumcheck::layout::plan_stacked_layout;
+use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableSpec};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -27,7 +28,8 @@ use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 #[derive(Clone, Debug)]
 pub(super) struct TraceRouting<E> {
     pub plan: TracePlan,
-    column_seed: Vec<E>,
+    /// One column-batching seed per batched table run.
+    column_seeds: Vec<Vec<E>>,
 }
 
 pub(super) enum TraceEntry {
@@ -45,29 +47,60 @@ where
         + DeserializeOwned,
 {
     pub fn new(plan: TracePlan) -> Result<Self, VerificationError> {
-        let num_variables = plan.num_variables;
-        let column_seed = if matches!(plan.route, Route::Batched { .. }) {
-            let points = plan
-                .point_arities
-                .iter()
-                .map(|&n| Point::new(vec![E::ZERO; n]))
-                .collect::<Vec<_>>();
-            let mut tap = SeedTap::new();
-            let captured = route(
-                num_variables,
-                &plan.protocol,
-                &points,
-                &vec![E::ZERO; plan.value_count],
-                &mut tap,
-            )?;
-            if captured.openings.len() != plan.specs.len() {
-                return Err(invalid("binary trace route disagrees with native planning"));
+        let column_seeds = match &plan.route {
+            Route::Batched(runs) => {
+                let captured =
+                    Self::route_zeros(plan.num_variables, &plan.protocol, &mut SeedTap::new())?;
+                if captured.openings.len() != plan.specs.len() {
+                    return Err(invalid("binary trace route disagrees with native planning"));
+                }
+                // Each run opens its own transcript, whose seed only its table's batches fix.
+                runs.iter()
+                    .map(|run| {
+                        let shape = plan.protocol.table_shapes()[run.table];
+                        let schedule = plan
+                            .protocol
+                            .iter_openings()
+                            .filter(|&(table, _)| table == run.table)
+                            .map(|(_, batch)| batch.clone())
+                            .collect();
+                        let protocol = OpeningProtocol::new(vec![TableSpec::new(shape, schedule)]);
+                        let (arity, _) = plan_stacked_layout(&[shape]);
+                        let mut tap = SeedTap::new();
+                        Self::route_zeros(arity, &protocol, &mut tap)?;
+                        Ok(tap.binary_seed())
+                    })
+                    .collect::<Result<Vec<_>, VerificationError>>()?
             }
-            tap.binary_seed()
-        } else {
-            vec![]
+            Route::Columns(_) => vec![],
         };
-        Ok(Self { plan, column_seed })
+        Ok(Self { plan, column_seeds })
+    }
+
+    /// Replays the native route over zero points and values through `tap`.
+    fn route_zeros(
+        num_variables: usize,
+        protocol: &OpeningProtocol,
+        tap: &mut SeedTap<E>,
+    ) -> Result<super::trace_native::TraceReadings<E>, VerificationError> {
+        let shapes = protocol.table_shapes();
+        let points = protocol
+            .iter_openings()
+            .map(|(table, _)| Point::new(vec![E::ZERO; shapes[table].num_variables()]))
+            .collect::<Vec<_>>();
+        let values =
+            protocol
+                .checked_num_claims()
+                .ok_or(VerificationError::ResourceArithmeticOverflow {
+                    component: "binary trace values",
+                })?;
+        route(
+            num_variables,
+            protocol,
+            &points,
+            &vec![E::ZERO; values],
+            tap,
+        )
     }
 
     /// Binds every allocated ring claim to the native trace route. The owning
@@ -98,56 +131,81 @@ where
             constrain_width(circuit, value, E::RAW_BITS);
         }
         let entry = match &self.plan.route {
-            Route::Batched {
-                width,
-                columns,
-                next,
-            } => {
-                let mut challenger = match entry {
-                    TraceEntry::Ready(mut ch) => {
-                        observe_seed::<E, BF, EF>(circuit, &mut ch, &self.column_seed)?;
-                        ch
+            Route::Batched(runs) => {
+                let mut entry = entry;
+                let mut points = points.iter();
+                let mut values = values;
+                let mut claims = claims.iter();
+                for (run, seed) in runs.iter().zip(&self.column_seeds) {
+                    let mut challenger = match entry {
+                        TraceEntry::Ready(mut ch) => {
+                            observe_seed::<E, BF, EF>(circuit, &mut ch, seed)?;
+                            ch
+                        }
+                        TraceEntry::AfterQueries(token) => {
+                            let bytes = seed_bytes_with_host::<E, PrimeBinaryEncoding<BF>, EF>(
+                                circuit, seed,
+                            )?;
+                            token.resume_with_observation::<BF, EF>(circuit, &bytes)?
+                        }
+                    };
+                    let per_batch = run.width * (1 + usize::from(run.next));
+                    let (run_values, rest) = values.split_at(per_batch * run.batches);
+                    values = rest;
+                    for (point, values) in points
+                        .by_ref()
+                        .take(run.batches)
+                        .zip(run_values.chunks_exact(per_batch))
+                    {
+                        let (current, successor) = values.split_at(run.width);
+                        observe_values::<BF, EF>(circuit, &mut challenger, point, E::RAW_BITS)?;
+                        observe_values::<BF, EF>(circuit, &mut challenger, current, E::RAW_BITS)?;
+                        if run.next {
+                            observe_values::<BF, EF>(
+                                circuit,
+                                &mut challenger,
+                                successor,
+                                E::RAW_BITS,
+                            )?;
+                        }
+                        let column_point = (0..run.columns)
+                            .map(|_| sample_challenge::<E, BF, EF>(circuit, &mut challenger))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        // Block `b` reads its columns at the first `j_b` column coordinates.
+                        for block in &run.blocks {
+                            let claim = claims.next().expect("checked ring claim count");
+                            let columns =
+                                block.first..(block.first + (1 << block.variables)).min(run.width);
+                            let block_point = &column_point[..block.variables];
+                            let mut lifted = block
+                                .selector
+                                .iter()
+                                .map(|&bit| circuit.binary128_constant(u128::from(bit)))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            lifted.extend_from_slice(block_point);
+                            lifted.extend_from_slice(point);
+                            bind_point(circuit, &claim.point, &lifted)?;
+                            let current_value =
+                                combine_columns(circuit, &current[columns.clone()], block_point)?;
+                            assert_equal(
+                                circuit,
+                                claim.current.as_ref().expect("checked current request"),
+                                &current_value,
+                            );
+                            if run.next {
+                                let next_value =
+                                    combine_columns(circuit, &successor[columns], block_point)?;
+                                assert_equal(
+                                    circuit,
+                                    claim.next.as_ref().expect("checked next request"),
+                                    &next_value,
+                                );
+                            }
+                        }
                     }
-                    TraceEntry::AfterQueries(token) => {
-                        let bytes = seed_bytes_with_host::<E, PrimeBinaryEncoding<BF>, EF>(
-                            circuit,
-                            &self.column_seed,
-                        )?;
-                        token.resume_with_observation::<BF, EF>(circuit, &bytes)?
-                    }
-                };
-                let run = width * (1 + usize::from(*next));
-                for ((point, values), claim) in
-                    points.iter().zip(values.chunks_exact(run)).zip(claims)
-                {
-                    let (current, successor) = values.split_at(*width);
-                    observe_values::<BF, EF>(circuit, &mut challenger, point, E::RAW_BITS)?;
-                    observe_values::<BF, EF>(circuit, &mut challenger, current, E::RAW_BITS)?;
-                    if *next {
-                        observe_values::<BF, EF>(circuit, &mut challenger, successor, E::RAW_BITS)?;
-                    }
-                    let column_point = (0..*columns)
-                        .map(|_| sample_challenge::<E, BF, EF>(circuit, &mut challenger))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let mut lifted = column_point.clone();
-                    lifted.extend_from_slice(point);
-                    bind_point(circuit, &claim.point, &lifted)?;
-                    let current_value = combine_columns(circuit, current, &column_point)?;
-                    assert_equal(
-                        circuit,
-                        claim.current.as_ref().expect("checked current request"),
-                        &current_value,
-                    );
-                    if *next {
-                        let next_value = combine_columns(circuit, successor, &column_point)?;
-                        assert_equal(
-                            circuit,
-                            claim.next.as_ref().expect("checked next request"),
-                            &next_value,
-                        );
-                    }
+                    entry = TraceEntry::Ready(challenger);
                 }
-                TraceEntry::Ready(challenger)
+                entry
             }
             Route::Columns(routes) => {
                 for (route, claim) in routes.iter().zip(claims) {

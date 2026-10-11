@@ -319,6 +319,7 @@ enum Unsupported {
     Preprocessed,
     Periodic,
     Boolean,
+    BitColumns,
     BadPin,
     Empty,
     Constant,
@@ -346,6 +347,13 @@ impl<F: Field> BaseAir<F> for UnsupportedAir {
     }
     fn assumes_boolean_trace(&self) -> bool {
         matches!(self.0, Unsupported::Boolean)
+    }
+    fn boolean_columns(&self) -> usize {
+        match self.0 {
+            Unsupported::Boolean => 2,
+            Unsupported::BitColumns => 1,
+            _ => 0,
+        }
     }
     fn main_next_row_columns(&self) -> Vec<usize> {
         match self.0 {
@@ -477,6 +485,7 @@ fn unsupported_obligations_and_invalid_declarations_are_rejected() {
         Unsupported::DuplicateNext,
         Unsupported::OutOfRangeNext,
         Unsupported::Boolean,
+        Unsupported::BitColumns,
         Unsupported::BadPin,
         Unsupported::Empty,
         Unsupported::Constant,
