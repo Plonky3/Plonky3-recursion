@@ -153,3 +153,63 @@ fn native_inverse_candidate_and_raw_constants_are_constrained() {
     runner.set_public_inputs(&zero).unwrap();
     assert!(runner.run().is_err());
 }
+
+/// `x^i * x^shift = x^(i + shift)` below degree 64: multiplying a cell of at
+/// most `width` coefficients by `x^shift` only shifts them.
+fn assert_shifts_without_reduction(width: usize, shifts: impl IntoIterator<Item = usize>) {
+    for shift in shifts {
+        for i in 0..width {
+            assert_eq!(
+                Poly64::new(1 << i) * Poly64::new(1 << shift),
+                Poly64::new(1 << (i + shift))
+            );
+        }
+    }
+}
+
+#[test]
+fn unchecked_poly64_words_split_and_bind_the_low_coefficients() {
+    assert_shifts_without_reduction(16, [16, 32, 48]);
+    let value = 0x8912_3456_789a_bcdeu64;
+    for count in 0..=4 {
+        let mut b = CircuitBuilder::<Poly64>::new();
+        let input = b.public_input();
+        let expected = (0..count).map(|_| b.public_input()).collect::<Vec<_>>();
+        let words = b.native_poly64_unchecked_words(input, count).unwrap();
+        assert_eq!(words.len(), count);
+        for (&word, &expected) in words.iter().zip(&expected) {
+            b.connect(word, expected);
+        }
+        let circuit = b.build().unwrap();
+        let runs = |public: &[Poly64]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        let low = if count == 4 {
+            value
+        } else {
+            value & ((1 << (16 * count)) - 1)
+        };
+        let mut public = vec![Poly64::new(low)];
+        public.extend((0..count).map(|j| Poly64::new(low >> (16 * j) & 0xffff)));
+        assert!(runs(&public), "{count} words");
+        if count > 0 {
+            let mut wrong = public.clone();
+            wrong[count] += Poly64::ONE;
+            assert!(!runs(&wrong), "changed top word of {count}");
+        }
+        if count < 4 {
+            let mut high = public.clone();
+            high[0] += Poly64::new(1 << (16 * count));
+            assert!(!runs(&high), "coefficient above {count} words");
+        }
+    }
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let input = b.public_input();
+    let before = b.construction_usage().unwrap();
+    assert!(b.native_poly64_unchecked_words(input, 5).is_err());
+    assert_eq!(b.construction_usage().unwrap(), before);
+}

@@ -1,8 +1,12 @@
 //! Native cubic challenge arithmetic over `Poly64` circuit cells.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use p3_binary_field::Poly64;
 use p3_field::PrimeCharacteristicRing;
 
+use super::binary_native::WordSplitHint;
 use crate::{CircuitBuilder, CircuitBuilderError, ExprId};
 
 /// `a0 + a1*y + a2*y²`, with native Poly64 coefficients and `y³ = y + 1`.
@@ -44,6 +48,56 @@ impl CircuitBuilder<Poly64> {
             output.copy_from_slice(&self.binary_decompose_coordinates(coefficient, 64)?);
         }
         Ok(bits)
+    }
+
+    /// Splits a Poly64 cell into `count` low-first sixteen-coefficient words
+    /// without range-checking them.
+    ///
+    /// The hinted words satisfy `value = sum_j words[j] * x^(16j)`. A word of
+    /// degree below sixteen times `x^(16j)` has degree below `16 * (j + 1)`,
+    /// at most 63 for `j < 4`, so the product needs no reduction modulo the
+    /// field polynomial and only shifts the word's coefficients up by
+    /// `16 * j`. Once every word is constrained to sixteen coordinates, the
+    /// words are therefore the unique split of `value`'s coefficients, and
+    /// `value` has no coefficient at or above `16 * count`. The caller must
+    /// establish that range, for example by absorbing every word through
+    /// [`Self::native_keccak256_words`], whose AIR range-checks absorbed
+    /// words. A zero count constrains `value` to zero. IDs must belong to this
+    /// builder's graph.
+    pub fn native_poly64_unchecked_words(
+        &mut self,
+        value: ExprId,
+        count: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        if count > 4 {
+            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: 64,
+                n_bits: count.saturating_mul(16),
+            });
+        }
+        self.check_construction_limits()?;
+        let words = if count == 0 {
+            Vec::new()
+        } else {
+            self.push_unconstrained_op(
+                vec![vec![value]],
+                count,
+                WordSplitHint,
+                "native_poly64_unchecked_words",
+            )
+            .2
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(CircuitBuilderError::MissingOutput)?
+        };
+        let mut sum = words.first().copied().unwrap_or(ExprId::ZERO);
+        for (j, &word) in words.iter().enumerate().skip(1) {
+            let shift = self.define_const(Poly64::new(1 << (16 * j)));
+            sum = self.mul_add(word, shift, sum);
+        }
+        self.connect(value, sum);
+        self.check_construction_limits()?;
+        Ok(words)
     }
 
     pub const fn native_poly192_from_coefficients(
