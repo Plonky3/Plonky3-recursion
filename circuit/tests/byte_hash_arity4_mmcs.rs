@@ -9,7 +9,7 @@ use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, MmcsAritySchedule, bytes_to_limbs};
-use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit::{AluOpKind, CircuitBuilder, ExprId, WitnessId};
 use p3_commit::Mmcs;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_keccak::Keccak256Hash;
@@ -415,6 +415,108 @@ fn native_polynomial_openings_match_p3_arity_four_trees() {
 #[test]
 fn prime_openings_match_p3_arity_four_trees() {
     check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>>(&prime());
+}
+
+/// Index bits are Boolean. The first four rows of a sixteen-row matrix are
+/// equal, so an opening of index 0 places the same digest in every slot of
+/// the first level whatever the flags of that level's two index bits: the
+/// opening holds with either bit 0 or 1, and with `non_boolean` only the
+/// Booleanity check of that bit fails.
+fn check_non_boolean_index_bits<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
+    carrier: &Carrier<F>,
+    non_boolean: F,
+) {
+    let mmcs = keccak_mmcs::<4>(0);
+    let values = (0..16u8)
+        .flat_map(|row| [row / 4, 0x5a ^ (row / 4)])
+        .map(BinaryField8::from_repr)
+        .collect();
+    let (commitment, data) = mmcs.commit(vec![RowMajorMatrix::new(values, 2)]);
+    let opening = mmcs.open_batch(0, &data);
+    let proof = &opening.opening_proof;
+    assert!(proof[..3].iter().all(|sibling| *sibling == proof[0]));
+
+    let mut b = (carrier.builder)();
+    let mut inputs = |count| (0..count).map(|_| b.public_input()).collect::<Vec<_>>();
+    let rows = [inputs(1)];
+    let bits = inputs(4);
+    let siblings: Vec<_> = proof.iter().map(|_| inputs(16)).collect();
+    let cap = [inputs(16)];
+    b.verify_byte_hash_mmcs_opening_words_with_host_arity::<H, 4>(
+        ByteHash::Keccak256,
+        &rows,
+        &[16],
+        &bits,
+        &siblings,
+        &cap,
+    )
+    .unwrap();
+    let circuit = b.build().unwrap();
+
+    let encode = |bytes: &[u8]| {
+        bytes_to_limbs(bytes)
+            .into_iter()
+            .map(|word| H::encode_u16(word).unwrap())
+            .collect::<Vec<F>>()
+    };
+    let row: Vec<u8> = opening.opened_values[0]
+        .iter()
+        .map(|x| x.to_repr())
+        .collect();
+    let mut public = encode(&row);
+    let bits_start = public.len();
+    public.extend([F::ZERO; 4]);
+    for digest in proof.iter().chain(commitment.roots()) {
+        public.extend(encode(digest));
+    }
+    // The runner forwards `BoolCheck` operands, so every run completes. This
+    // returns the witnesses of the rows whose `b·(b − 1) = 0` the ALU AIR
+    // rejects.
+    let non_boolean_rows = |position: usize, bit: F| -> Vec<WitnessId> {
+        let mut public = public.clone();
+        public[bits_start + position] = bit;
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&public).unwrap();
+        let alu = runner.run().unwrap().alu_trace;
+        alu.op_kind
+            .iter()
+            .zip(&alu.values)
+            .zip(&alu.indices)
+            .filter(|&((&kind, &[value, ..]), _)| {
+                kind == AluOpKind::BoolCheck && !(value * (value - F::ONE)).is_zero()
+            })
+            .map(|(_, &[witness, ..])| witness)
+            .collect()
+    };
+    for (position, bit) in bits[..2].iter().enumerate() {
+        for boolean in [F::ZERO, F::ONE] {
+            assert!(
+                non_boolean_rows(position, boolean).is_empty(),
+                "index bit {position} = {boolean:?}"
+            );
+        }
+        assert_eq!(
+            non_boolean_rows(position, non_boolean),
+            [circuit.expr_to_widx[bit]],
+            "index bit {position} non-Boolean"
+        );
+    }
+}
+
+#[test]
+fn non_boolean_index_bits_fail_their_booleanity_check() {
+    check_non_boolean_index_bits::<BinaryField128, NativeBinaryEncoding>(
+        &native(),
+        BinaryField128::from_raw_coordinates(2).unwrap(),
+    );
+    check_non_boolean_index_bits::<Poly64, NativeBinaryEncoding>(
+        &native(),
+        Poly64::from_raw_coordinates(2).unwrap(),
+    );
+    check_non_boolean_index_bits::<BabyBear, PrimeBinaryEncoding<BabyBear>>(
+        &prime(),
+        BabyBear::TWO,
+    );
 }
 
 /// At arity two the arity entry points build the pairwise opening: the same
