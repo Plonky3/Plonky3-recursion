@@ -405,9 +405,9 @@ mod tests {
         }
     }
 
-    /// A value observed after a query draw is split into the unchecked words
-    /// of a live observation, which the next refill range-checks as Keccak
-    /// lanes, rather than decomposed into checked bits.
+    /// A value observed after a query draw costs exactly a live observation:
+    /// its unchecked word split, which the next refill range-checks as Keccak
+    /// lanes.
     #[test]
     fn native_poly_after_query_observations_cost_a_live_observation() {
         let mut b = CircuitBuilder::<Poly64>::new();
