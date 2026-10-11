@@ -3,7 +3,6 @@
 
 use core::ops::Range;
 
-use p3_field::PrimeField64;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
@@ -120,51 +119,6 @@ fn minimal_proof() -> Mixed {
     minimal_proof_with(TestAir::Square, BIT_VARIABLES)
 }
 
-/// Offsets of the dense and the packed opening's witnesses within the private inputs.
-fn opening_offsets(
-    input: &NativeBinaryMixedWhirMultiStarkInput,
-    shape: &BinaryMixedWhirMultiStarkInputShape,
-) -> (usize, usize) {
-    assert!(input.bus.is_none() && input.indexed.is_none());
-    let commitment = (2 << CAP_HEIGHT) * 16;
-    let sumcheck = input
-        .sumcheck
-        .private_values::<BabyBear>(&shape.relation.sumcheck)
-        .unwrap()
-        .len();
-    let dense = commitment + sumcheck;
-    let packed = dense
-        + input
-            .dense
-            .private_values::<BabyBear>(&shape.dense)
-            .unwrap()
-            .len();
-    (dense, packed)
-}
-
-/// Offsets of the dense and the packed opening's witnesses within the native circuit's private
-/// inputs, one scalar per field.
-fn native_opening_offsets(
-    input: &NativeBinaryMixedWhirMultiStarkInput,
-    shape: &BinaryMixedWhirMultiStarkInputShape,
-) -> (usize, usize) {
-    assert!(input.bus.is_none() && input.indexed.is_none());
-    let commitment = (2 << CAP_HEIGHT) * 16;
-    let sumcheck = input
-        .sumcheck
-        .private_native_values(&shape.relation.sumcheck)
-        .unwrap()
-        .len();
-    let dense = commitment + sumcheck;
-    let packed = dense
-        + input
-            .dense
-            .private_native_values(&shape.dense)
-            .unwrap()
-            .len();
-    (dense, packed)
-}
-
 /// The positions of `needle` within `haystack[range]`.
 fn occurrences<T: PartialEq>(haystack: &[T], needle: &[T], range: Range<usize>) -> Vec<usize> {
     range
@@ -175,23 +129,43 @@ fn occurrences<T: PartialEq>(haystack: &[T], needle: &[T], range: Range<usize>) 
 /// A named change to a circuit's private inputs.
 type WitnessTamper<'a, T> = (&'static str, &'a dyn Fn(&mut Vec<T>));
 
-fn flip(value: &mut BabyBear) {
-    *value = BabyBear::from_u64(value.as_canonical_u64() ^ 1);
+/// One proof's honest import with the continued challenge both circuits pin, and its imports
+/// with a tampered Merkle sibling, once the import has refused every other tamper class.
+struct Imports {
+    verifier: BinaryMixedWhirMultiStarkVerifier,
+    honest: NativeBinaryMixedWhirMultiStarkInput,
+    continued: F,
+    siblings: Vec<NativeBinaryMixedWhirMultiStarkInput>,
 }
 
-/// The honest witness satisfies the prime circuit, and each tamper class, applied to the one
+impl Imports {
+    fn new(mixed: &Mixed) -> Self {
+        let verifier = mixed.verifier();
+        let (honest, continued) = mixed.honest_import(&verifier);
+        let siblings = mixed.assert_tampers_refused_by_import(&verifier);
+        Self {
+            verifier,
+            honest,
+            continued,
+            siblings,
+        }
+    }
+}
+
+/// The honest witness satisfies `H`'s circuit, and each tamper class, applied to the one
 /// witness it names, makes witness generation fail.
-fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
-    let verifier = mixed.verifier();
-    let shape = verifier.input_shape();
-    let (input, private) = mixed.honest_private_values(&verifier);
-    let siblings = mixed.assert_tampers_refused_by_import(&verifier);
+fn assert_circuit_accepts_and_refuses_tampers<H: Host>(mixed: &Mixed, imports: &Imports) {
+    let shape = imports.verifier.input_shape();
+    let private = private_inputs::<H>(&imports.honest, &shape, imports.continued);
+    let circuit = H::circuit(&imports.verifier);
+    let public = mixed.public_values::<H>();
+    assert!(
+        accepts(&circuit, &private, &public),
+        "the {} circuit refused the honest witness",
+        H::NAME
+    );
 
-    let circuit = prime_circuit(&verifier);
-    let public = mixed.public_limbs();
-    assert!(accepts(&circuit, &private, &public));
-
-    let (dense, packed) = opening_offsets(&input, &shape);
+    let (dense, packed) = opening_offsets::<H>(&imports.honest, &shape);
     let mut proof = mixed.proof_copy();
     // Tensor rows can repeat; a row whose value occurs once names its witness alone.
     let tensor_row = packed_opening(&mut proof).opening.reduction.claims[0]
@@ -199,8 +173,7 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
         .rows()
         .iter()
         .find_map(|&row| {
-            let row: Vec<_> = limbs(row).collect();
-            match occurrences(&private, &row, packed..private.len()).as_slice() {
+            match occurrences(&private, &H::encode(row), packed..private.len()).as_slice() {
                 &[position] => Some(position),
                 _ => None,
             }
@@ -208,8 +181,8 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
         .unwrap();
     // A Merkle sibling enters the transcript nowhere, so the continuation is unchanged.
     let [dense_sibling, packed_sibling] = [0, 1].map(|i| {
-        let mut values = siblings[i].private_values::<BabyBear>(&shape).unwrap();
-        values.extend_from_slice(&private[private.len() - 8..]);
+        let mut values = H::witnesses(&imports.siblings[i], &shape);
+        values.extend_from_slice(&private[values.len()..]);
         values
     });
     // Each sibling tamper changes only the witnesses of the opening it names.
@@ -217,12 +190,16 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
     assert_eq!(dense_sibling[packed..], private[packed..]);
     assert_eq!(packed_sibling[..packed], private[..packed]);
     let roots = 16 << CAP_HEIGHT;
-    let tampers: [WitnessTamper<'_, BabyBear>; 6] = [
+    let tampers: [WitnessTamper<'_, H::CF>; 6] = [
         // Each opening's witnesses start with its opened values.
-        ("packed opened value", &|private| flip(&mut private[packed])),
-        ("dense opened value", &|private| flip(&mut private[dense])),
+        ("packed opened value", &|private| {
+            H::flip(&mut private[packed]);
+        }),
+        ("dense opened value", &|private| {
+            H::flip(&mut private[dense]);
+        }),
         ("ring-switch tensor row", &|private| {
-            flip(&mut private[tensor_row]);
+            H::flip(&mut private[tensor_row]);
         }),
         ("cap with swapped halves", &|private| {
             private[..2 * roots].rotate_left(roots);
@@ -240,82 +217,15 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
         assert_ne!(tampered, private);
         assert!(
             !accepts(&circuit, &tampered, &public),
-            "the prime circuit accepted a tampered {name}"
-        );
-    }
-}
-
-/// The native counterpart of [`assert_prime_circuit_accepts_and_refuses_tampers`]: the same
-/// honest witness and tamper classes, one scalar per field.
-fn assert_native_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
-    let verifier = mixed.verifier();
-    let shape = verifier.input_shape();
-    let (input, private) = mixed.honest_native_private_values(&verifier);
-    let siblings = mixed.assert_tampers_refused_by_import(&verifier);
-
-    let (circuit, _) = native_circuit(&verifier);
-    let public = mixed.public_values();
-    assert!(accepts(&circuit, &private, &public));
-
-    let (dense, packed) = native_opening_offsets(&input, &shape);
-    let mut proof = mixed.proof_copy();
-    // Tensor rows can repeat; a row whose value occurs once names its witness alone.
-    let tensor_row = packed_opening(&mut proof).opening.reduction.claims[0]
-        .tensor
-        .rows()
-        .iter()
-        .find_map(
-            |row| match occurrences(&private, &[*row], packed..private.len()).as_slice() {
-                &[position] => Some(position),
-                _ => None,
-            },
-        )
-        .unwrap();
-    // A Merkle sibling enters the transcript nowhere, so the continuation is unchanged.
-    let [dense_sibling, packed_sibling] = [0, 1].map(|i| {
-        let mut values = siblings[i].private_native_values(&shape).unwrap();
-        values.push(*private.last().unwrap());
-        values
-    });
-    // Each sibling tamper changes only the witnesses of the opening it names.
-    assert_eq!(dense_sibling[..dense], private[..dense]);
-    assert_eq!(dense_sibling[packed..], private[packed..]);
-    assert_eq!(packed_sibling[..packed], private[..packed]);
-    let roots = 16 << CAP_HEIGHT;
-    let tampers: [WitnessTamper<'_, F>; 6] = [
-        // Each opening's witnesses start with its opened values.
-        ("packed opened value", &|private| private[packed] += F::ONE),
-        ("dense opened value", &|private| private[dense] += F::ONE),
-        ("ring-switch tensor row", &|private| {
-            private[tensor_row] += F::ONE;
-        }),
-        ("cap with swapped halves", &|private| {
-            private[..2 * roots].rotate_left(roots);
-        }),
-        ("dense WHIR Merkle sibling", &|private| {
-            private.clone_from(&dense_sibling);
-        }),
-        ("packed WHIR Merkle sibling", &|private| {
-            private.clone_from(&packed_sibling);
-        }),
-    ];
-    for (name, tamper) in tampers {
-        let mut tampered = private.clone();
-        tamper(&mut tampered);
-        assert_ne!(tampered, private);
-        assert!(
-            !accepts(&circuit, &tampered, &public),
-            "the native circuit accepted a tampered {name}"
+            "the {} circuit accepted a tampered {name}",
+            H::NAME
         );
     }
 }
 
 #[test]
 fn small_mixed_proof_imports_and_refuses_tampers() {
-    let mixed = small_proof();
-    let verifier = mixed.verifier();
-    mixed.honest_private_values(&verifier);
-    mixed.assert_tampers_refused_by_import(&verifier);
+    Imports::new(&small_proof());
 }
 
 /// The prime and the native verifier agree on one proof: each circuit accepts the honest
@@ -323,8 +233,9 @@ fn small_mixed_proof_imports_and_refuses_tampers() {
 #[test]
 fn minimal_mixed_proof_satisfies_both_circuits_and_refuses_tampers() {
     let mixed = minimal_proof();
-    assert_prime_circuit_accepts_and_refuses_tampers(&mixed);
-    assert_native_circuit_accepts_and_refuses_tampers(&mixed);
+    let imports = Imports::new(&mixed);
+    assert_circuit_accepts_and_refuses_tampers::<Prime>(&mixed, &imports);
+    assert_circuit_accepts_and_refuses_tampers::<Native>(&mixed, &imports);
 }
 
 /// The preprocessing opening follows the packed one in the transcript, which the circuit's
@@ -334,9 +245,9 @@ fn preprocessing_after_the_packed_opening_satisfies_the_prime_circuit() {
     let mixed = minimal_proof_with(TestAir::Dense, ABSORBED_VARIABLES);
     assert!(mixed.proof.preprocessed_opening.is_some());
     let verifier = mixed.verifier();
-    let (_, private) = mixed.honest_private_values(&verifier);
+    let (_, private) = mixed.honest_private_values::<Prime>(&verifier);
     let circuit = prime_circuit(&verifier);
-    assert!(accepts(&circuit, &private, &mixed.public_limbs()));
+    assert!(accepts(&circuit, &private, &mixed.public_values::<Prime>()));
 }
 
 /// The only prime-circuit test of the packed opening's successor route. The successor's carry
@@ -347,14 +258,16 @@ fn preprocessing_after_the_packed_opening_satisfies_the_prime_circuit() {
 #[test]
 #[ignore = "builds a prime-field mixed verifier with successor tensors: about 12 GB in debug, 21.5 GB with circuit diagnostics; run explicitly"]
 fn small_mixed_proof_satisfies_the_prime_circuit_and_refuses_tampers() {
-    assert_prime_circuit_accepts_and_refuses_tampers(&small_proof());
+    let mixed = small_proof();
+    assert_circuit_accepts_and_refuses_tampers::<Prime>(&mixed, &Imports::new(&mixed));
 }
 
 /// The successor route with its carry and last tensors, preprocessing, and the Boolean table
 /// between two dense ones, in the native circuit.
 #[test]
 fn small_mixed_proof_satisfies_the_native_circuit_and_refuses_tampers() {
-    assert_native_circuit_accepts_and_refuses_tampers(&small_proof());
+    let mixed = small_proof();
+    assert_circuit_accepts_and_refuses_tampers::<Native>(&mixed, &Imports::new(&mixed));
 }
 
 /// The native verifier checks the packed opening's target shapes with the dense opening's,

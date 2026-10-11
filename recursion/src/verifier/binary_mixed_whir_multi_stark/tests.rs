@@ -331,29 +331,13 @@ impl Mixed {
         (input, continued)
     }
 
-    /// The honest import and the prime circuit's private inputs.
-    fn honest_private_values(
+    /// The honest import and the private inputs of `H`'s circuit.
+    fn honest_private_values<H: Host>(
         &self,
         verifier: &BinaryMixedWhirMultiStarkVerifier,
-    ) -> (NativeBinaryMixedWhirMultiStarkInput, Vec<BabyBear>) {
+    ) -> (NativeBinaryMixedWhirMultiStarkInput, Vec<H::CF>) {
         let (input, continued) = self.honest_import(verifier);
-        let mut private = input
-            .private_values::<BabyBear>(&verifier.input_shape())
-            .unwrap();
-        private.extend(limbs(continued));
-        (input, private)
-    }
-
-    /// The honest import and the native circuit's private inputs.
-    fn honest_native_private_values(
-        &self,
-        verifier: &BinaryMixedWhirMultiStarkVerifier,
-    ) -> (NativeBinaryMixedWhirMultiStarkInput, Vec<F>) {
-        let (input, continued) = self.honest_import(verifier);
-        let mut private = input
-            .private_native_values(&verifier.input_shape())
-            .unwrap();
-        private.push(continued);
+        let private = private_inputs::<H>(&input, &verifier.input_shape(), continued);
         (input, private)
     }
 
@@ -407,16 +391,13 @@ impl Mixed {
         postcard::from_bytes(&postcard::to_allocvec(&self.proof).unwrap()).unwrap()
     }
 
-    fn public_limbs(&self) -> Vec<BabyBear> {
+    /// The public inputs of `H`'s circuit.
+    fn public_values<H: Host>(&self) -> Vec<H::CF> {
         self.public
             .iter()
             .flatten()
-            .flat_map(|&v| limbs(v))
+            .flat_map(|&v| H::encode(v))
             .collect()
-    }
-
-    fn public_values(&self) -> Vec<F> {
-        self.public.iter().flatten().copied().collect()
     }
 }
 
@@ -578,6 +559,163 @@ fn accepts<CF: Field>(circuit: &Circuit<CF>, private: &[CF], public: &[CF]) -> b
     runner.set_private_inputs(private).unwrap();
     runner.set_public_inputs(public).unwrap();
     runner.run().is_ok()
+}
+
+/// A verifier circuit's field and its encoding of the mixed verifier's inputs.
+trait Host {
+    type CF: Field;
+    /// Names the circuit in assertion messages.
+    const NAME: &'static str;
+
+    /// The verifier circuit, with its continuation pin.
+    fn circuit(verifier: &BinaryMixedWhirMultiStarkVerifier) -> Circuit<Self::CF>;
+
+    /// The scalars of one field value.
+    fn encode(value: F) -> Vec<Self::CF>;
+
+    /// The scalars of an import's witnesses, in allocation order.
+    fn witnesses(
+        input: &NativeBinaryMixedWhirMultiStarkInput,
+        shape: &BinaryMixedWhirMultiStarkInputShape,
+    ) -> Vec<Self::CF>;
+
+    /// The scalar counts of the relation's bus and sumcheck witnesses, which follow the cap,
+    /// and of the dense opening's witnesses, which follow them.
+    fn relation_and_dense_scalars(
+        input: &NativeBinaryMixedWhirMultiStarkInput,
+        shape: &BinaryMixedWhirMultiStarkInputShape,
+    ) -> (usize, usize);
+
+    /// Flips the lowest bit of a scalar, which keeps it within its encoding's range.
+    fn flip(value: &mut Self::CF);
+}
+
+/// The prime-field circuit: eight sixteen-bit BabyBear limbs per field value.
+struct Prime;
+
+impl Host for Prime {
+    type CF = BabyBear;
+    const NAME: &'static str = "prime";
+
+    fn circuit(verifier: &BinaryMixedWhirMultiStarkVerifier) -> Circuit<BabyBear> {
+        prime_circuit(verifier)
+    }
+
+    fn encode(value: F) -> Vec<BabyBear> {
+        limbs(value).collect()
+    }
+
+    fn witnesses(
+        input: &NativeBinaryMixedWhirMultiStarkInput,
+        shape: &BinaryMixedWhirMultiStarkInputShape,
+    ) -> Vec<BabyBear> {
+        input.private_values(shape).unwrap()
+    }
+
+    fn relation_and_dense_scalars(
+        input: &NativeBinaryMixedWhirMultiStarkInput,
+        shape: &BinaryMixedWhirMultiStarkInputShape,
+    ) -> (usize, usize) {
+        let bus = input
+            .bus
+            .as_ref()
+            .zip(shape.relation.bus.as_ref())
+            .map_or(0, |(bus, shape)| {
+                bus.private_values::<BabyBear>(&shape.product)
+                    .unwrap()
+                    .len()
+            });
+        let sumcheck = input
+            .sumcheck
+            .private_values::<BabyBear>(&shape.relation.sumcheck)
+            .unwrap()
+            .len();
+        let dense = input
+            .dense
+            .private_values::<BabyBear>(&shape.dense)
+            .unwrap()
+            .len();
+        (bus + sumcheck, dense)
+    }
+
+    fn flip(value: &mut BabyBear) {
+        *value = BabyBear::from_u64(value.as_canonical_u64() ^ 1);
+    }
+}
+
+/// The native Tower128 circuit: one scalar per field value.
+struct Native;
+
+impl Host for Native {
+    type CF = F;
+    const NAME: &'static str = "native";
+
+    fn circuit(verifier: &BinaryMixedWhirMultiStarkVerifier) -> Circuit<F> {
+        native_circuit(verifier).0
+    }
+
+    fn encode(value: F) -> Vec<F> {
+        vec![value]
+    }
+
+    fn witnesses(
+        input: &NativeBinaryMixedWhirMultiStarkInput,
+        shape: &BinaryMixedWhirMultiStarkInputShape,
+    ) -> Vec<F> {
+        input.private_native_values(shape).unwrap()
+    }
+
+    fn relation_and_dense_scalars(
+        input: &NativeBinaryMixedWhirMultiStarkInput,
+        shape: &BinaryMixedWhirMultiStarkInputShape,
+    ) -> (usize, usize) {
+        let bus = input
+            .bus
+            .as_ref()
+            .zip(shape.relation.bus.as_ref())
+            .map_or(0, |(bus, shape)| {
+                bus.private_native_values(&shape.product).unwrap().len()
+            });
+        let sumcheck = input
+            .sumcheck
+            .private_native_values(&shape.relation.sumcheck)
+            .unwrap()
+            .len();
+        let dense = input
+            .dense
+            .private_native_values(&shape.dense)
+            .unwrap()
+            .len();
+        (bus + sumcheck, dense)
+    }
+
+    /// Characteristic two: adding one flips the lowest coordinate.
+    fn flip(value: &mut F) {
+        *value += F::ONE;
+    }
+}
+
+/// The private inputs of `H`'s circuit: the import's witnesses, then the continued challenge.
+fn private_inputs<H: Host>(
+    input: &NativeBinaryMixedWhirMultiStarkInput,
+    shape: &BinaryMixedWhirMultiStarkInputShape,
+    continued: F,
+) -> Vec<H::CF> {
+    let mut private = H::witnesses(input, shape);
+    private.extend(H::encode(continued));
+    private
+}
+
+/// Offsets of the dense and the packed opening's witnesses within the private inputs of `H`'s
+/// circuit, after the cap's two halves of sixteen limbs per root and the relation's witnesses.
+fn opening_offsets<H: Host>(
+    input: &NativeBinaryMixedWhirMultiStarkInput,
+    shape: &BinaryMixedWhirMultiStarkInputShape,
+) -> (usize, usize) {
+    assert!(input.indexed.is_none());
+    let (relation, dense) = H::relation_and_dense_scalars(input, shape);
+    let dense_offset = (2 << CAP_HEIGHT) * 16 + relation;
+    (dense_offset, dense_offset + dense)
 }
 
 const DENSE_VARIABLES: usize = 4;

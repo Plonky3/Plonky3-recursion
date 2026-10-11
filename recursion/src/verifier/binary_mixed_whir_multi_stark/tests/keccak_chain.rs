@@ -97,7 +97,7 @@ fn keccak_chain_imports_with_the_native_continuation() {
     let mixed = keccak_chain_proof();
     assert!(mixed.proof.opening.packed.is_some());
     let verifier = mixed.verifier();
-    mixed.honest_private_values(&verifier);
+    mixed.honest_private_values::<Prime>(&verifier);
     mixed.assert_tampers_refused_by_import(&verifier);
 }
 
@@ -108,9 +108,9 @@ fn keccak_chain_imports_with_the_native_continuation() {
 fn keccak_chain_satisfies_the_prime_circuit() {
     let mixed = keccak_chain_proof();
     let verifier = mixed.verifier();
-    let (_, private) = mixed.honest_private_values(&verifier);
+    let (_, private) = mixed.honest_private_values::<Prime>(&verifier);
     let circuit = prime_circuit(&verifier);
-    assert!(accepts(&circuit, &private, &mixed.public_limbs()));
+    assert!(accepts(&circuit, &private, &mixed.public_values::<Prime>()));
 }
 
 /// The native circuit accepts the honest chain and refuses it once an opened value of the
@@ -119,9 +119,9 @@ fn keccak_chain_satisfies_the_prime_circuit() {
 fn keccak_chain_satisfies_the_native_circuit() {
     let mixed = keccak_chain_proof();
     let verifier = mixed.verifier();
-    let (_, private) = mixed.honest_native_private_values(&verifier);
+    let (_, private) = mixed.honest_private_values::<Native>(&verifier);
     let (circuit, _) = native_circuit(&verifier);
-    let public = mixed.public_values();
+    let public = mixed.public_values::<Native>();
     assert!(accepts(&circuit, &private, &public));
     // The packed opening's witnesses start with the opened Keccak values.
     let values = &mixed.proof.opening.packed.as_ref().unwrap().values;
