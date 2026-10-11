@@ -378,7 +378,7 @@ fn folding_options(depth: usize, args: &Args) -> NativeBinaryFoldingRecursionOpt
         initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
-        security_bits: 4,
+        security_bits: SECURITY_BITS,
         max_pcs_codeword_cells: args.max_pcs_codeword_cells(),
         artifact_limits: ArtifactLimits {
             verifier: VerifierLimits {
