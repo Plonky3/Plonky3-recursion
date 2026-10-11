@@ -101,15 +101,18 @@ pub trait BinaryCircuitHost<F: Field + Eq + Hash>: BinaryCircuitEncoding<F> + Si
     }
 
     /// Range-checks the words of a proof-supplied Merkle sibling digest, which
-    /// an MMCS opening selects against the current digest under a Boolean
-    /// index bit to form the inputs of [`Self::compress`].
+    /// an MMCS opening places with the current digest and the level's other
+    /// siblings under Boolean index bits to form the inputs of
+    /// [`Self::compress`] or [`Self::compress_n`].
     ///
     /// Callers must pass the same sibling to
     /// [`CircuitBuilder::verify_byte_hash_mmcs_opening_words_with_host`],
     /// [`CircuitBuilder::verify_byte_hash_mmcs_opening_bytes_with_host`],
+    /// [`CircuitBuilder::verify_byte_hash_mmcs_opening_words_with_host_arity`],
+    /// [`CircuitBuilder::verify_byte_hash_mmcs_opening_bytes_with_host_arity`],
     /// [`CircuitBuilder::verify_byte_hash_mmcs_subtree_words_with_host`] or
     /// [`CircuitBuilder::verify_byte_hash_mmcs_subtree_bytes_with_host`] and
-    /// read it nowhere else: a host whose [`Self::compress`] range-checks its
+    /// read it nowhere else: a host whose compressions range-check their
     /// inputs relies on that opening and adds no constraint here.
     fn constrain_sibling(
         builder: &mut CircuitBuilder<F>,
@@ -234,10 +237,11 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
         }
     }
 
-    /// Adds no constraint. Under a Boolean index bit the two selected digests
-    /// are the current digest and the sibling, so each sibling word equals a
-    /// word that [`Self::compress`] absorbs as a first-block native Keccak
-    /// lane, which the native Keccak AIR constrains to sixteen coordinates.
+    /// Adds no constraint. Under Boolean index bits the selected digests are
+    /// the current digest and the level's siblings, each in exactly one input,
+    /// so each sibling word equals a word that [`Self::compress`] or
+    /// [`Self::compress_n`] absorbs as a first-block native Keccak lane, which
+    /// the native Keccak AIR constrains to sixteen coordinates.
     fn constrain_sibling(
         _builder: &mut CircuitBuilder<F>,
         _sibling: &[ExprId],
