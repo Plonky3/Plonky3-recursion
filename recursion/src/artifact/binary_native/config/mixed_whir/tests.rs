@@ -180,7 +180,7 @@ fn whir(num_variables: usize) -> DensePcs {
     WhirProver::new(
         whir_parameters(num_variables).config,
         BinaryWhirDomain::<E>::default(),
-        tree(HASH, CAP_HEIGHT),
+        NativeWhirMmcs::new(HASH, MerkleArity::Two, CAP_HEIGHT),
     )
 }
 
@@ -661,7 +661,8 @@ fn bit_region_is_the_packed_table_alone() {
     for table in [0, KECCAK + 1] {
         assert_eq!(pcs.bit_region(table, NUM_KECCAK_BINARY_COLS), 0);
     }
-    let dense_only = MixedWhirPcs::new(dense_main_pcs(), None, CAP_HEIGHT).unwrap();
+    let dense_only =
+        MixedWhirPcs::new(dense_main_pcs(), None, MerkleArity::Two, CAP_HEIGHT).unwrap();
     for table in [0, KECCAK] {
         assert_eq!(dense_only.bit_region(table, NUM_KECCAK_BINARY_COLS), 0);
     }
@@ -732,8 +733,14 @@ fn constructors_refuse_unsupported_configurations() {
     let preprocessed = MixedWhirPcs::from_parameters(&whir_parameters(DENSE_VARIABLES), None);
     assert!(Config::new(mixed_pcs(KECCAK), Some(preprocessed.unwrap())).is_ok());
     assert!(Config::new(mixed_pcs(KECCAK), Some(mixed_pcs(KECCAK))).is_err());
-    // Both parts' roots together must have a `usize` count.
-    assert!(MixedWhirPcs::new(dense_main_pcs(), None, usize::BITS as usize - 1).is_err());
+    // Both parts' roots together must have a `usize` count: `2^63` roots per part do not, and
+    // neither do `4^32`.
+    for (arity, cap_height) in [
+        (MerkleArity::Two, usize::BITS as usize - 1),
+        (MerkleArity::Four, usize::BITS as usize / 2),
+    ] {
+        assert!(MixedWhirPcs::new(dense_main_pcs(), None, arity, cap_height).is_err());
+    }
 }
 
 /// Three chained Keccak-f calls through the native bus, with the Keccak table bit-committed.

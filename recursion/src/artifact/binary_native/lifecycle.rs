@@ -78,11 +78,9 @@ where
     check_boolean_assumptions::<F, E, A, K>(&airs, &spec.main)?;
     let refs = airs.iter().collect::<Vec<_>>();
     let roots = if let Some(pp) = &spec.preprocessed {
-        let cap_height = K::cap_height(pp);
-        if cap_height >= usize::BITS as usize {
-            return Err(invalid("binary native preprocessing cap shift is invalid"));
-        }
-        let roots = 1usize << cap_height;
+        let roots = K::arity(pp)
+            .cap_roots(K::cap_height(pp))
+            .ok_or_else(|| invalid("binary native preprocessing cap shift is invalid"))?;
         usage.add_cap_roots(&limits.verifier, roots)?;
         usage.add_scalar_elements(
             &limits.verifier,

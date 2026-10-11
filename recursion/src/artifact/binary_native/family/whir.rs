@@ -31,9 +31,12 @@ where
     type Recursive = BinaryWhirMultiStarkVerifier<F>;
     type Input = NativeBinaryWhirMultiStarkInput<F>;
     type Decode = codec::MultiDecode<codec::WhirDecode>;
-    type Trees = NativeMmcs<F>;
+    type Trees = NativeWhirMmcs<F>;
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
+    }
+    fn arity(p: &Self::Parameters) -> MerkleArity {
+        p.arity
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.config.max_pow_bits()
@@ -76,7 +79,7 @@ where
                 &main.config,
                 L::variable_order(),
                 main.hash,
-                MerkleArity::Two,
+                main.arity,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
@@ -84,7 +87,7 @@ where
                     config: pp.config.clone(),
                     order: L::variable_order(),
                     hash: pp.hash,
-                    arity: MerkleArity::Two,
+                    arity: pp.arity,
                     cap_height: pp.cap_height,
                     commitment: MerkleCap::new(vec![[0; 32]; roots]),
                 },
@@ -97,7 +100,7 @@ where
                 &main.config,
                 L::variable_order(),
                 main.hash,
-                MerkleArity::Two,
+                main.arity,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
@@ -108,7 +111,7 @@ where
         Ok(recursive)
     }
     fn trees(p: &Self::Parameters) -> Self::Trees {
-        tree(p.hash, p.cap_height)
+        NativeWhirMmcs::new(p.hash, p.arity, p.cap_height)
     }
     fn build_config(
         spec: &BinaryNativeVerifierSpec<Self::Parameters>,

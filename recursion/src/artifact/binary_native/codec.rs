@@ -20,7 +20,7 @@ use p3_sumcheck::generic_degree::GenericDegreeProof;
 use p3_sumcheck::{OpeningBatch, SumcheckData};
 use scalar::ScalarWire;
 
-use super::config::NativeMmcs;
+use super::config::{NativeMmcs, NativeWhirMmcs};
 use super::{BinaryNativeAuthority, BinaryNativeConfig, VerifiedBinaryNativeProof};
 use crate::artifact::wire::{Reader, Writer, checked_product, decode_framed, encode_framed};
 use crate::artifact::{ArtifactError, ArtifactKind, ArtifactLimits, ExpectedVerifierArtifact};

@@ -14,6 +14,7 @@ use p3_sumcheck::PrescribedPointPcs;
 pub(super) use whir::WhirFamily;
 
 use super::*;
+use crate::pcs::binary::MerkleArity;
 
 type NativeBooleanTraceError<E> =
     p3_binary_pcs::BooleanTraceError<E, <NativeMmcs<E> as p3_commit::Mmcs<E>>::Error>;
@@ -48,6 +49,10 @@ where
     type Trees;
 
     fn cap_height(p: &Self::Parameters) -> usize;
+    /// The compression arity of the commitment's Merkle trees.
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
+    }
     fn pow_bits(p: &Self::Parameters) -> usize;
     /// Whether the main commitment stores `table` as bits, so no cell of it can be a non-bit.
     fn bits_committed(_parameters: &Self::Parameters, _table: usize) -> bool {

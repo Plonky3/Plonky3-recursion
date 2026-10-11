@@ -3,15 +3,15 @@
 //! ```text
 //!     witness      tables in instance order; one configured table goes to the bit commitment,
 //!                  every other table to the dense stacked commitment, order kept
-//!     commitment   one cap: the dense roots, then the packed roots, 2^c of each
+//!     commitment   one cap: the dense roots, then the packed roots, arity^c of each
 //!     transcript   dense binding, then packed binding, inside one main-commitment bracket
 //!     opening      dense tables at their points, then the packed table at its point
 //! ```
 //!
 //! Each part runs its own library transcript in sequence. Nothing is sampled between the two
 //! bindings, since WHIR draws its out-of-domain samples when it opens. The split position is
-//! a function of the configured cap height alone, and the packed table index is fixed by the
-//! configuration, so the prover cannot move a root or a table across the boundary.
+//! a function of the configured tree arity and cap height alone, and the packed table index is
+//! fixed by the configuration, so the prover cannot move a root or a table across the boundary.
 
 use alloc::vec;
 
@@ -34,14 +34,15 @@ use p3_whir::{PcsProof, VerifierError, WhirConfigError, WhirProver, WhirProverDa
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::pcs::binary::MerkleArity;
 
 type E = BinaryField128;
 type Cap = MerkleCap<E, [u8; 32]>;
 type Challenger = BinaryNativeChallenger<E>;
 type DensePcs = NativeWhirPcs<E, SuffixProver<E, E>>;
 type PackedError = BooleanTraceCommitmentError<BooleanWhirError>;
-type PackedData = BooleanTraceCommitmentData<E, BooleanWhirData<E, E, NativeMmcs<E>>>;
-type PackedProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, E, NativeMmcs<E>>>;
+type PackedData = BooleanTraceCommitmentData<E, BooleanWhirData<E, E, NativeWhirMmcs<E>>>;
+type PackedProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, E, NativeWhirMmcs<E>>>;
 /// One part's share of an opening: its tables' batches, and their points in order.
 type Part = (OpeningProtocol, Vec<Point<E>>);
 
@@ -61,7 +62,7 @@ pub enum MixedWhirError<D> {
 
 /// Dense stacked WHIR over every table but one, and a bit commitment over that one table.
 ///
-/// Both parts' Merkle trees have one hash and one cap height, which
+/// Both parts' Merkle trees have one hash, one arity and one cap height, which
 /// [`Self::from_parameters`] enforces, so each part contributes `cap_roots` roots to the
 /// shared commitment.
 pub struct MixedWhirPcs {
@@ -73,7 +74,7 @@ pub struct MixedWhirPcs {
 /// Prover data of both parts, and where each instance's table is retained.
 #[derive(Clone)]
 pub struct MixedWhirData {
-    dense: WhirProverData<E, E, NativeMmcs<E>, SuffixProver<E, E>>,
+    dense: WhirProverData<E, E, NativeWhirMmcs<E>, SuffixProver<E, E>>,
     packed: Option<PackedData>,
     slots: Vec<Slot>,
 }
@@ -88,14 +89,15 @@ enum Slot {
 /// The dense opening, then the packed opening when a table is bit-committed.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MixedWhirProof {
-    pub dense: PcsProof<E, E, NativeMmcs<E>>,
+    pub dense: PcsProof<E, E, NativeWhirMmcs<E>>,
     pub packed: Option<PackedProof>,
 }
 
 /// Trusted parameters of the mixed commitment: dense WHIR over every table but the packed one,
 /// and, when there is a packed table, a packed-bit WHIR commitment of it.
 ///
-/// Both parts use one hash and one cap height, which [`Self::with_packed_table`] enforces.
+/// Both parts use one hash, one tree arity and one cap height, which
+/// [`Self::with_packed_table`] enforces.
 /// The preprocessing commitment holds no packed table.
 #[derive(Clone)]
 pub struct BinaryNativeMixedWhirPcsParameters {
@@ -124,17 +126,19 @@ impl BinaryNativeMixedWhirPcsParameters {
     }
 
     /// A dense commitment of every table but `table`, and `packed`, a commitment of the
-    /// `bit_variables`-variable bit stack of `table`. Packed parameters naming another hash or
-    /// cap height than the dense ones are refused.
+    /// `bit_variables`-variable bit stack of `table`. Packed parameters naming another hash,
+    /// tree arity or cap height than the dense ones are refused.
     pub fn with_packed_table(
         dense: BinaryNativeWhirPcsParameters<E>,
         packed: BinaryNativeWhirPcsParameters<E>,
         table: usize,
         bit_variables: usize,
     ) -> Result<Self, VerificationError> {
-        if (packed.hash, packed.cap_height) != (dense.hash, dense.cap_height) {
+        if (packed.hash, packed.arity, packed.cap_height)
+            != (dense.hash, dense.arity, dense.cap_height)
+        {
             return Err(super::super::invalid(
-                "binary native mixed WHIR parts differ in hash or cap height",
+                "binary native mixed WHIR parts differ in hash, tree arity or cap height",
             ));
         }
         Ok(Self {
@@ -149,28 +153,30 @@ impl BinaryNativeMixedWhirPcsParameters {
 }
 
 impl MixedWhirPcs {
-    /// Build both parts from checked parameters, on Merkle trees of the dense part's hash and
-    /// cap height.
+    /// Build both parts from checked parameters, on Merkle trees of the dense part's hash, arity
+    /// and cap height.
     ///
     /// `packed` holds the bit commitment's parameters, the table it commits and the table's
-    /// bit arity. Parameters naming another hash or cap height are refused.
+    /// bit arity. Parameters naming another hash, tree arity or cap height are refused.
     pub(crate) fn from_parameters(
         dense: &BinaryNativeWhirPcsParameters<E>,
         packed: Option<(&BinaryNativeWhirPcsParameters<E>, usize, usize)>,
     ) -> Result<Self, VerificationError> {
-        let (hash, cap_height) = (dense.hash, dense.cap_height);
+        let (hash, arity, cap_height) = (dense.hash, dense.arity, dense.cap_height);
         let whir = |parameters: &BinaryNativeWhirPcsParameters<E>| -> DensePcs {
             WhirProver::new(
                 parameters.config.clone(),
                 BinaryWhirDomain::<E>::default(),
-                tree(hash, cap_height),
+                NativeWhirMmcs::new(hash, arity, cap_height),
             )
         };
         let packed = packed
             .map(|(parameters, table, bit_variables)| {
-                if (parameters.hash, parameters.cap_height) != (hash, cap_height) {
+                if (parameters.hash, parameters.arity, parameters.cap_height)
+                    != (hash, arity, cap_height)
+                {
                     return Err(super::super::invalid(
-                        "binary native mixed WHIR parts differ in hash or cap height",
+                        "binary native mixed WHIR parts differ in hash, tree arity or cap height",
                     ));
                 }
                 let bits = BooleanWhirPcs::new(whir(parameters), bit_variables).map_err(|_| {
@@ -179,26 +185,29 @@ impl MixedWhirPcs {
                 Ok((BooleanTraceCommitment::from_commitment(bits), table))
             })
             .transpose()?;
-        Self::new(whir(dense), packed, cap_height)
+        Self::new(whir(dense), packed, arity, cap_height)
     }
 
     /// Pair a dense commitment with an optional bit commitment of table `packed.1`.
     ///
-    /// `cap_height` is the cap height of both parts' Merkle trees.
+    /// Both parts' Merkle trees compress `arity` digests per node and have caps of
+    /// `cap_height` levels.
     fn new(
         dense: DensePcs,
         packed: Option<(NativeBooleanWhirTracePcs, usize)>,
+        arity: MerkleArity,
         cap_height: usize,
     ) -> Result<Self, VerificationError> {
-        if cap_height >= usize::BITS as usize - 1 {
-            return Err(super::super::invalid(
-                "binary native mixed WHIR cap height is invalid",
-            ));
-        }
+        let cap_roots = arity
+            .cap_roots(cap_height)
+            .filter(|roots| roots.checked_mul(2).is_some())
+            .ok_or_else(|| {
+                super::super::invalid("binary native mixed WHIR cap height is invalid")
+            })?;
         Ok(Self {
             dense,
             packed,
-            cap_roots: 1 << cap_height,
+            cap_roots,
         })
     }
 

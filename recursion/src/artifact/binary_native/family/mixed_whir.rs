@@ -32,9 +32,12 @@ impl NativeFamily<E, E> for MixedWhirFamily {
     type Recursive = MixedWhirRecursive;
     type Input = NativeBinaryMixedWhirMultiStarkInput;
     type Decode = codec::MultiDecode<codec::MixedWhirDecode>;
-    type Trees = NativeMmcs<E>;
+    type Trees = NativeWhirMmcs<E>;
     fn cap_height(p: &Self::Parameters) -> usize {
         p.dense.cap_height
+    }
+    fn arity(p: &Self::Parameters) -> MerkleArity {
+        p.dense.arity
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.packed
@@ -114,14 +117,14 @@ impl NativeFamily<E, E> for MixedWhirFamily {
                 &main.dense.config,
                 &packed.whir.config,
                 main.dense.hash,
-                MerkleArity::Two,
+                main.dense.arity,
                 main.dense.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
                 BinaryMixedWhirMultiStarkPreprocessing {
                     config: pp.dense.config.clone(),
                     hash: pp.dense.hash,
-                    arity: MerkleArity::Two,
+                    arity: pp.dense.arity,
                     cap_height: pp.dense.cap_height,
                     commitment: MerkleCap::new(vec![[0; 32]; roots]),
                 },
@@ -135,7 +138,7 @@ impl NativeFamily<E, E> for MixedWhirFamily {
                 &main.dense.config,
                 &packed.whir.config,
                 main.dense.hash,
-                MerkleArity::Two,
+                main.dense.arity,
                 main.dense.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
@@ -151,15 +154,15 @@ impl NativeFamily<E, E> for MixedWhirFamily {
         })
     }
     fn trees(p: &Self::Parameters) -> Self::Trees {
-        tree(p.dense.hash, p.dense.cap_height)
+        NativeWhirMmcs::new(p.dense.hash, p.dense.arity, p.dense.cap_height)
     }
     fn build_config(
         spec: &BinaryNativeVerifierSpec<Self::Parameters>,
         _main: &Self::Trees,
         _preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
-        // Each commitment builds its trees from its dense parameters' hash and cap height, the
-        // trees the lifecycle passes in and its native import replays.
+        // Each commitment builds its trees from its dense parameters' hash, tree arity and cap
+        // height, the trees the lifecycle passes in and its native import replays.
         let pcs = |p: &BinaryNativeMixedWhirPcsParameters| {
             MixedWhirPcs::from_parameters(
                 &p.dense,

@@ -34,13 +34,13 @@ use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 use super::*;
 use crate::artifact::binary_native::{
-    BinaryNativeChallenger, BinaryNativeWhirPcsParameters, MixedWhirPcs, tree,
+    BinaryNativeChallenger, BinaryNativeWhirPcsParameters, MixedWhirPcs,
 };
 
 type Config = BinaryNativeMixedWhirConfig;
 type BooleanTraceProof = p3_binary_pcs::BooleanTraceCommitmentProof<
     F,
-    p3_binary_pcs::whir::BooleanWhirProof<F, F, NativeMmcs<F>>,
+    p3_binary_pcs::whir::BooleanWhirProof<F, F, NativeWhirMmcs<F>>,
 >;
 
 const HASH: ByteHash = ByteHash::Keccak256;
@@ -307,7 +307,7 @@ impl Mixed {
         proof: &MultiStarkProof<Config>,
         ch: &mut BinaryNativeChallenger<F>,
     ) -> Result<NativeBinaryMixedWhirMultiStarkInput, VerificationError> {
-        let mmcs = tree::<F>(HASH, CAP_HEIGHT);
+        let mmcs = NativeWhirMmcs::<F>::new(HASH, MerkleArity::Two, CAP_HEIGHT);
         verifier.import_native(
             self.parameters.dense.configuration(),
             self.parameters.packed().configuration(),
@@ -412,7 +412,7 @@ fn packed_opening(proof: &mut MultiStarkProof<Config>) -> &mut BooleanTraceProof
 
 /// The first sibling digest of a WHIR opening's first query round, which authenticates rows
 /// against the committed cap.
-fn first_sibling(whir: &mut WhirProof<F, F, NativeMmcs<F>>) -> &mut [u8; 32] {
+fn first_sibling(whir: &mut WhirProof<F, F, NativeWhirMmcs<F>>) -> &mut [u8; 32] {
     let openings = whir
         .rounds
         .first_mut()

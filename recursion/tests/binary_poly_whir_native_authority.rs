@@ -8,6 +8,7 @@ use p3_recursion::artifact::{
     ArtifactError, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
     BinaryNativeVerifierSpec, CanonicalBinaryStatement, ExpectedVerifierArtifact,
 };
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::verifier::VerifierLimits;
 use p3_sumcheck::layout::{PrefixProver, SuffixProver};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -43,11 +44,17 @@ macro_rules! check {
     ($f:ty, $layout:ident) => {{
         type F = Poly64;
         type L = $layout<F, Poly192>;
-        for hash in [ByteHash::Keccak256, ByteHash::Blake3] {
+        for (hash, arity) in [
+            (ByteHash::Keccak256, MerkleArity::Two),
+            (ByteHash::Keccak256, MerkleArity::Four),
+            (ByteHash::Blake3, MerkleArity::Two),
+            (ByteHash::Blake3, MerkleArity::Four),
+        ] {
             let main = BinaryNativePolyWhirPcsParameters::with_limits(
                 3,
                 parameters(),
                 hash,
+                arity,
                 0,
                 &VerifierLimits::default(),
             )
@@ -146,7 +153,14 @@ fn checked_poly_whir_owners_decode_both_layouts_and_hashes() {
 fn poly_whir_parameters_reject_unbounded_constructor_work_before_native_derivation() {
     let limits = VerifierLimits::default();
     let make = |n, params| {
-        BinaryNativePolyWhirPcsParameters::with_limits(n, params, ByteHash::Blake3, 0, &limits)
+        BinaryNativePolyWhirPcsParameters::with_limits(
+            n,
+            params,
+            ByteHash::Blake3,
+            MerkleArity::Two,
+            0,
+            &limits,
+        )
     };
     assert!(make(usize::MAX, parameters()).is_err());
     let mut params = parameters();

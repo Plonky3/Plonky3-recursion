@@ -53,7 +53,7 @@ pub use config::{
     )
 )]
 pub(crate) use config::{MixedWhirError, MixedWhirPcs};
-pub(crate) use config::{NativeMmcs, tree};
+pub(crate) use config::{NativeMmcs, NativeWhirMmcs, tree};
 use family::{NativeFamily, RawFamily};
 use lifecycle::State;
 use p3_binary_dft::EncodableLevel;

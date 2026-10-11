@@ -16,6 +16,7 @@ pub use poly_whir::{
 mod poly_packed_tests;
 mod transcript;
 mod whir;
+mod whir_mmcs;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 
@@ -36,6 +37,7 @@ use tracing::instrument;
 use transcript::NativeTranscript;
 pub(super) use whir::NativeWhirPcs;
 pub use whir::{BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters};
+pub(crate) use whir_mmcs::NativeWhirMmcs;
 
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::VerificationError;
@@ -77,14 +79,16 @@ impl CryptographicHasher<u8, [u8; 32]> for BinaryNativeHash {
     }
 }
 
-pub(crate) type NativeMmcs<F> = MerkleTreeMmcs<
+/// A native byte-hash Merkle tree whose nodes compress `N` digests.
+pub(crate) type NativeArityMmcs<F, const N: usize> = MerkleTreeMmcs<
     F,
     u8,
     SerializingHasher<BinaryNativeHash>,
-    CompressionFunctionFromHasher<BinaryNativeHash, 2, 32>,
-    2,
+    CompressionFunctionFromHasher<BinaryNativeHash, N, 32>,
+    N,
     32,
 >;
+pub(crate) type NativeMmcs<F> = NativeArityMmcs<F, 2>;
 pub(super) type NativePcs<F, E> = BinaryPcs<F, E, NativeMmcs<F>, NativeMmcs<E>>;
 type Binary<'a, F> = BinaryChallenger<F, &'a mut NativeTranscript>;
 

@@ -31,7 +31,9 @@ use crate::artifact::{
     BinaryNativeWhirAuthority, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
     VerifiedBinaryNativeMixedWhirProof, VerifiedBinaryNativeWhirProof,
 };
-use crate::pcs::binary::{NativeBooleanWhirTraceProofTargets, RecursiveBinaryWhirTowerField};
+use crate::pcs::binary::{
+    MerkleArity, NativeBooleanWhirTraceProofTargets, RecursiveBinaryWhirTowerField,
+};
 use crate::verifier::{
     BinaryMixedWhirMultiStarkInputShape, BinaryMixedWhirMultiStarkProofTargets,
     BinaryWhirMultiStarkInputShape, VerificationError,
@@ -274,6 +276,7 @@ where
                 variables,
                 protocol,
                 ByteHash::Keccak256,
+                MerkleArity::Two,
                 options.cap_height,
                 &limits.verifier,
             )

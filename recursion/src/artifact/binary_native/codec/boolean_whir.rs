@@ -10,7 +10,7 @@ use super::super::{
 use super::*;
 type E = BinaryField128;
 
-type TraceProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, E, NativeMmcs<E>>>;
+type TraceProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, E, NativeWhirMmcs<E>>>;
 
 impl<A: VerifierAir<E, E>> BinaryNativeBooleanWhirTraceAuthority<A> {
     pub fn encode_statement(&self, public: &[Vec<E>]) -> Result<Vec<u8>, ArtifactError> {

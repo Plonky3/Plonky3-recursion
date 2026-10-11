@@ -246,7 +246,7 @@ fn non_bit_state_meets_the_constraints_and_every_commitment_refuses_it() {
         main: WhirProver::new(
             dense.config.clone(),
             BinaryWhirDomain::<E>::default(),
-            tree(HASH, 0),
+            NativeWhirMmcs::new(HASH, MerkleArity::Two, 0),
         ),
         preprocessed: None,
     };

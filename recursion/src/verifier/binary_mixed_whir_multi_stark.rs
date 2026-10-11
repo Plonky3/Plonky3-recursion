@@ -44,7 +44,7 @@ use super::{
     NativeBinaryProductGkrInput, VerificationError, VerifierLimits,
 };
 use crate::BinaryTower128Challenger;
-use crate::artifact::binary_native::{BinaryNativeMixedWhirConfig, NativeMmcs};
+use crate::artifact::binary_native::{BinaryNativeMixedWhirConfig, NativeWhirMmcs};
 use crate::pcs::binary::{
     BinaryBooleanWhirTraceInputShape, BinaryBooleanWhirTraceProofTargets,
     BinaryBooleanWhirTraceVerifier, BinaryGenericSumcheckProofTargets, BinaryWhirInputShape,
@@ -56,7 +56,7 @@ mod native;
 
 type F = BinaryField128;
 /// A WHIR configuration and the byte Merkle tree it commits with.
-type WhirParameters<'a, C> = (&'a WhirConfig<BinaryField128, F, C>, &'a NativeMmcs<F>);
+type WhirParameters<'a, C> = (&'a WhirConfig<BinaryField128, F, C>, &'a NativeWhirMmcs<F>);
 
 /// Proof-independent input shape including the trusted AIR program.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -753,7 +753,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
         &self,
         dense: &WhirConfig<BinaryField128, F, C>,
         packed: &WhirConfig<BinaryField128, F, C>,
-        mmcs: &NativeMmcs<F>,
+        mmcs: &NativeWhirMmcs<F>,
         preprocessed: Option<WhirParameters<'_, C>>,
         public: &[Vec<F>],
         proof: &MultiStarkProof<BinaryNativeMixedWhirConfig>,

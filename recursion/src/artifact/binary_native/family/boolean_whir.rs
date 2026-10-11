@@ -23,9 +23,12 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
     type Recursive = BinaryBooleanWhirTraceMultiStarkVerifier;
     type Input = NativeBinaryBooleanWhirTraceMultiStarkInput;
     type Decode = codec::MultiDecode<codec::BooleanTraceDecode<codec::WhirDecode>>;
-    type Trees = NativeMmcs<E>;
+    type Trees = NativeWhirMmcs<E>;
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
+    }
+    fn arity(p: &Self::Parameters) -> MerkleArity {
+        p.arity
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.config.max_pow_bits()
@@ -52,14 +55,14 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
                 heights,
                 &main.config,
                 main.hash,
-                MerkleArity::Two,
+                main.arity,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
                 BinaryBooleanWhirTraceMultiStarkPreprocessing {
                     config: pp.config.clone(),
                     hash: pp.hash,
-                    arity: MerkleArity::Two,
+                    arity: pp.arity,
                     cap_height: pp.cap_height,
                     commitment: MerkleCap::new(vec![[0; 32]; roots]),
                 },
@@ -71,7 +74,7 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
                 heights,
                 &main.config,
                 main.hash,
-                MerkleArity::Two,
+                main.arity,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
@@ -82,7 +85,7 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
         Ok(recursive)
     }
     fn trees(p: &Self::Parameters) -> Self::Trees {
-        tree(p.hash, p.cap_height)
+        NativeWhirMmcs::new(p.hash, p.arity, p.cap_height)
     }
     fn build_config(
         spec: &BinaryNativeVerifierSpec<Self::Parameters>,
@@ -151,7 +154,7 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
 
 fn build_pcs(
     p: &BinaryNativeWhirPcsParameters<E>,
-    base: &NativeMmcs<E>,
+    base: &NativeWhirMmcs<E>,
 ) -> Result<NativeBooleanWhirTracePcs, VerificationError> {
     let bit_arity = p.config.num_variables().checked_add(7).ok_or(
         VerificationError::ResourceArithmeticOverflow {
