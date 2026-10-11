@@ -1288,6 +1288,12 @@ where
         .collect()
 }
 
+/// Observes each cap digest as its sixteen natural-order little-endian limbs.
+///
+/// A host that hashes words whole observes the limbs as words: every
+/// commitment is followed by a draw, whose refill range-checks each limb, as a
+/// hash lane or, at an odd offset or in an odd-length input, as checked bytes.
+/// Any other host range-checks each limb and splits it into bytes here.
 pub(crate) fn observe_cap_with_host<H, EF>(
     circuit: &mut CircuitBuilder<EF>,
     challenger: &mut BinaryTower128Challenger,
@@ -1299,6 +1305,10 @@ where
 {
     if cap.iter().any(|digest| digest.len() != 16) {
         return Err(shape_error("binary PCS digest width mismatch"));
+    }
+    if H::hashes_words_whole(challenger.hash()) {
+        challenger.observe_words_with_host::<H, EF>(circuit, &cap.concat())?;
+        return Ok(());
     }
     for digest in cap {
         let digest = digest.as_slice().try_into().expect("checked digest width");
@@ -1482,7 +1492,11 @@ mod host_tests {
             assert!(observe_values_with_host::<H, CF>(&mut b, &mut ch, &[], width).is_err());
         }
         native.observe(Digest::<BinaryField32, u8, 32>::from(digest));
+        // The cap limbs are observed as words for the next refill to absorb
+        // as Keccak lanes, with no decomposition or other node here.
+        let before = b.construction_usage().unwrap();
         observe_cap_with_host::<H, CF>(&mut b, &mut ch, &[cap.to_vec()]).unwrap();
+        assert_eq!(b.construction_usage().unwrap(), before);
         native.observe_slice(
             <BinaryField128 as BasedVectorSpace<BinaryField32>>::as_basis_coefficients_slice(
                 &dense,
@@ -1523,6 +1537,14 @@ mod host_tests {
             let mut wrong = public.clone();
             wrong[index] += CF::ONE;
             assert!(!run(&wrong));
+        }
+        // A cap word with coordinate 16 keeps its low sixteen coordinates, so
+        // only the range check of its Keccak lane refuses it.
+        let wide = CF::from_raw_coordinates(1 << 16).unwrap();
+        for index in [0, 15] {
+            let mut wrong = public.clone();
+            wrong[index] += wide;
+            assert!(!run(&wrong), "wide cap word {index}");
         }
     }
 

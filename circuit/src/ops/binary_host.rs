@@ -100,6 +100,16 @@ pub trait BinaryCircuitHost<F: Field + Eq + Hash>: BinaryCircuitEncoding<F> + Si
         Ok(None)
     }
 
+    /// Whether [`Self::hash_words`] and [`Self::hash_words_to_limbs`] absorb
+    /// each word whole, as a hash input lane that the hash itself constrains
+    /// to sixteen bits. Words such a hash absorbs need no other range check
+    /// and cost no more than their checked bytes; any other host splits every
+    /// word into checked bytes before hashing.
+    fn hashes_words_whole(hash: ByteHash) -> bool {
+        let _ = hash;
+        false
+    }
+
     /// Range-checks the words of a proof-supplied Merkle sibling digest, which
     /// an MMCS opening places with the current digest and the level's other
     /// siblings under Boolean index bits to form the inputs of
@@ -235,6 +245,13 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
             }
             ByteHash::Blake3 => Ok(None),
         }
+    }
+
+    /// Keccak-256 absorbs each word as a native Keccak lane, which the native
+    /// Keccak AIR constrains to sixteen coordinates, or, in a leading block of
+    /// constants, checks it while building.
+    fn hashes_words_whole(hash: ByteHash) -> bool {
+        matches!(hash, ByteHash::Keccak256)
     }
 
     /// Adds no constraint. Under Boolean index bits the selected digests are

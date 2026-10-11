@@ -224,6 +224,11 @@ impl BinaryQueryContinuation {
 }
 
 impl BinaryTower128Challenger {
+    /// The fixed byte hash of this transcript.
+    pub(crate) const fn hash(&self) -> ByteHash {
+        self.hash
+    }
+
     /// A positive-width field draw or uniform-bit draw leaves the full forward
     /// digest as the retained input, including when no output remains.
     pub(crate) fn retained_query_digest(
