@@ -195,14 +195,12 @@ impl BinaryPolyPolicy<Poly64> for NativePoly64Relation {
         ch: &mut BinaryTower128Challenger,
         values: &[ExprId],
     ) -> Result<(), VerificationError> {
-        let mut bytes = Vec::new();
+        // The refill that hashes these words range-checks each one.
+        let mut words = Vec::with_capacity(4 * values.len());
         for &value in values {
-            let bits = b.binary_decompose_coordinates(value, 64)?;
-            for bits in bits.as_chunks::<8>().0 {
-                bytes.push(H::recompose_word(b, bits)?);
-            }
+            words.extend(b.native_poly64_unchecked_words(value, 4)?);
         }
-        Ok(ch.observe_bytes_with_host::<H, Poly64>(b, &bytes)?)
+        Ok(ch.observe_words_with_host::<H, Poly64>(b, &words)?)
     }
     fn scale_base_constant(
         b: &mut CircuitBuilder<Poly64>,
@@ -223,8 +221,16 @@ impl BinaryProtocolPolicy<Poly64> for NativePoly64Relation {
         ch: &mut BinaryTower128Challenger,
         values: &[NativePoly192Target],
     ) -> Result<(), VerificationError> {
-        let bytes = native_bytes::<H>(b, values)?;
-        Ok(ch.observe_bytes_with_host::<H, Poly64>(b, &bytes)?)
+        // The codec emits coefficient 0, then 1, then 2, each as eight
+        // little-endian bytes. The refill that hashes these words
+        // range-checks each one.
+        let mut words = Vec::with_capacity(12 * values.len());
+        for value in values {
+            for &coefficient in value.coefficients() {
+                words.extend(b.native_poly64_unchecked_words(coefficient, 4)?);
+            }
+        }
+        Ok(ch.observe_words_with_host::<H, Poly64>(b, &words)?)
     }
     fn observe_after_queries<H: BinaryCircuitHost<Poly64>>(
         b: &mut CircuitBuilder<Poly64>,
@@ -292,6 +298,7 @@ mod tests {
     use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
     use p3_field::PrimeCharacteristicRing;
     use p3_keccak::Keccak256Hash;
+    use p3_symmetric::Hash as Digest;
 
     use super::*;
 
@@ -386,6 +393,100 @@ mod tests {
                     .and_then(|()| runner.run())
                     .is_err()
             );
+        }
+    }
+
+    /// Poly64 and Poly192 values observed as words sample like the native
+    /// transcript: in an odd-length input, word-aligned after a refill, at
+    /// odd offsets between single bytes, and across a two-block input. A
+    /// changed coefficient changes the draws.
+    #[test]
+    fn native_poly_word_observations_match_the_native_transcript() {
+        const BYTE: u8 = 201;
+        let initial = [3u8, 251, 7];
+        let raw: [u64; 30] = core::array::from_fn(|i| {
+            0x8123_4567_89ab_cdefu64.rotate_left(11 * i as u32) ^ i as u64
+        });
+        let mut native =
+            BinaryChallenger::<Poly64, HashChallenger<u8, Keccak256Hash, 32>>::from_hasher(
+                initial.to_vec(),
+                Keccak256Hash,
+            );
+        let mut b = CircuitBuilder::<Poly64>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let initial = initial.map(|byte| b.define_const(H::encode_u16(u16::from(byte)).unwrap()));
+        let byte = [b.define_const(H::encode_u16(u16::from(BYTE)).unwrap())];
+        let base = b.alloc_public_input_array::<6>("base values");
+        let coefficients = b.alloc_public_input_array::<24>("extension coefficients");
+        let wide: Vec<_> = coefficients
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|&coefficients| b.native_poly192_from_coefficients(coefficients))
+            .collect();
+        let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<H, Poly64>(
+            &mut b,
+            ByteHash::Keccak256,
+            &initial,
+        )
+        .unwrap();
+        // (byte before, base values, extension values, byte after)
+        let phases = [
+            (false, 0..2, 0..0, false),
+            (false, 2..2, 0..1, false),
+            (true, 2..3, 1..2, true),
+            (false, 3..6, 2..8, false),
+        ];
+        for (before, bases, wides, after) in phases {
+            if before {
+                native.observe(Digest::<Poly64, u8, 1>::from([BYTE]));
+                ch.observe_bytes_with_host::<H, Poly64>(&mut b, &byte)
+                    .unwrap();
+            }
+            for i in bases.clone() {
+                native.observe(Poly64::new(raw[i]));
+            }
+            P::observe_base::<H>(&mut b, &mut ch, &base[bases]).unwrap();
+            for i in wides.clone() {
+                native.observe_algebra_element(Poly192::new(core::array::from_fn(|k| {
+                    Poly64::new(raw[6 + 3 * i + k])
+                })));
+            }
+            P::observe::<H>(&mut b, &mut ch, &wide[wides]).unwrap();
+            if after {
+                native.observe(Digest::<Poly64, u8, 1>::from([BYTE]));
+                ch.observe_bytes_with_host::<H, Poly64>(&mut b, &byte)
+                    .unwrap();
+            }
+            let expected = native.sample_algebra_element::<Poly192>();
+            let actual = P::sample::<H>(&mut b, &mut ch).unwrap();
+            let expected = b.native_poly192_constant(expected.coefficients().map(Poly64::to_bits));
+            P::assert_equal(&mut b, &actual, &expected);
+            let expected = native.sample_bits(13);
+            for (i, bit) in ch
+                .sample_bits_with_host::<H, Poly64>(&mut b, 13)
+                .unwrap()
+                .into_iter()
+                .enumerate()
+            {
+                let value = b.define_const(Poly64::from_bool(expected >> i & 1 != 0));
+                b.connect(bit, value);
+            }
+        }
+        let circuit = b.build().unwrap();
+        let runs = |public: &[Poly64]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        let public = raw.map(Poly64::new);
+        assert!(runs(&public));
+        for changed in [0, 2, 5, 6, 10, 29] {
+            let mut wrong = public;
+            wrong[changed] += Poly64::new(1 << 37);
+            assert!(!runs(&wrong), "changed observed coefficient {changed}");
         }
     }
 }
