@@ -5,7 +5,7 @@
 //!
 //! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap height 4) keep every
 //! layer within the default limits. When a layer exceeds one anyway, the error names the flag
-//! that raises it and the value the layer needs.
+//! that raises it and a value to start from.
 //!
 //! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
 //! last layer; wall time, maximum resident set and peak memory footprint of the whole run):

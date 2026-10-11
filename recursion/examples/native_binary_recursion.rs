@@ -12,30 +12,39 @@
 //! The defaults (WHIR with packed Keccak tables at log inverse rate 3 and every other table at
 //! rate 1, PCS security level 32 with 24 grinding bits, Merkle cap height 4) keep every layer
 //! within the default limits. When a layer exceeds one anyway, the error names the flag that
-//! raises it and the value the layer needs.
+//! raises it and a value to start from.
 //!
 //! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
 //! last layer; wall time, maximum resident set and peak memory footprint of the whole run):
 //!
-//! | Command                                  | witnesses | codeword cells | last layer | wall   | resident | footprint |
-//! |------------------------------------------|-----------|----------------|------------|--------|----------|-----------|
-//! | `--layers 2`                             | 873,971   | 109,051,904    | 10.7 s     | 12.3 s | 6.1 GB   | 5.8 GB    |
-//! | `--layers 3`                             | 1,154,682 | 109,051,904    | 10.0 s     | 23.1 s | 6.5 GB   | 5.9 GB    |
-//! | `--keccak-commitment dense --layers 3`   | 941,172   | 335,544,320    | 13.0 s     | 27.7 s | 16.7 GB  | 12.4 GB   |
-//! | `--pcs folding --layers 2`               | 1,063,069 | 603,979,776    | 20.0 s     | 21.4 s | 26.6 GB  | 27.8 GB   |
-//! | `--log-inv-rate 2 --layers 2`            | 815,367   | 209,715,200    | 9.8 s      | 11.3 s | 9.2 GB   | 7.8 GB    |
+//! | Command                                | witnesses | codeword cells |
+//! |----------------------------------------|-----------|----------------|
+//! | `--layers 2`                           | 873,971   | 109,051,904    |
+//! | `--layers 3`                           | 1,154,682 | 109,051,904    |
+//! | `--keccak-commitment dense --layers 3` | 941,172   | 335,544,320    |
+//! | `--pcs folding --layers 2`             | 1,063,069 | 603,979,776    |
+//! | `--log-inv-rate 2 --layers 2`          | 815,367   | 209,715,200    |
 //!
-//! Layer 1 takes 0.5 to 1.0 s with 19,596 witnesses (36,317 with `--pcs folding`). The default
-//! codeword-cell limit is 2^29 at `--log-inv-rate 1`, doubled for each further rate bit and for
-//! `--pcs folding`, which multiplies every dense codeword.
+//! | Command                                | last layer | wall   | resident | footprint |
+//! |----------------------------------------|------------|--------|----------|-----------|
+//! | `--layers 2`                           | 10.7 s     | 12.3 s | 6.1 GB   | 5.8 GB    |
+//! | `--layers 3`                           | 10.0 s     | 23.1 s | 6.5 GB   | 5.9 GB    |
+//! | `--keccak-commitment dense --layers 3` | 13.0 s     | 27.7 s | 16.7 GB  | 12.4 GB   |
+//! | `--pcs folding --layers 2`             | 20.0 s     | 21.4 s | 26.6 GB  | 27.8 GB   |
+//! | `--log-inv-rate 2 --layers 2`          | 9.8 s      | 11.3 s | 9.2 GB   | 7.8 GB    |
+//!
+//! Layer 1 takes 0.9 s with 19,596 witnesses, and 0.6 s with 36,317 under `--pcs folding`. The
+//! default codeword-cell limit is 2^29 at `--log-inv-rate 1`, doubled for each further rate bit
+//! and for `--pcs folding`, which multiplies every dense codeword.
 //!
 //! `--pcs folding` takes the same security level and grinding bits. Its coset leaves default to
 //! cap height 1.
 //!
 //! Each layer prints the security report of its output statement. Without
-//! `--security-target`, every output requires four bits of composed security. The binary-bus
-//! term caps the composed security whatever the PCS level, so a `--security-target` above the
-//! cap is refused. Proofs are non-hiding. Limits count field cells or graph entries, not bytes.
+//! `--security-target`, every output requires four bits of composed security and the defaults
+//! give about 29. The binary-bus term caps the composed security whatever the PCS level, so a
+//! `--security-target` above the cap is refused. Proofs are non-hiding. Limits count field cells or graph entries, not
+//! bytes.
 
 use std::error::Error;
 use std::time::Instant;
