@@ -543,3 +543,43 @@ where
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use p3_keccak_air::NUM_ROUNDS;
+    use p3_test_utils::binary_field_params::BinaryField128;
+
+    use super::*;
+
+    /// Without calls every row is a padding output row, whose only set cell is the output-row
+    /// flag after the round flags; no bit is set at or past the height.
+    #[test]
+    fn packed_words_without_calls_are_padding_rows() {
+        const BITS: usize = u64::BITS as usize;
+        let witness = WitnessTrace::<BinaryField128>::new(vec![]);
+        for height in [32, 64, 128] {
+            let words = keccak_packed_words(&[], &witness, height).unwrap();
+            assert_eq!(words.width, NUM_KECCAK_BINARY_COLS);
+            assert_eq!(
+                words.values.len(),
+                NUM_KECCAK_BINARY_COLS * height.div_ceil(BITS)
+            );
+            for (index, &word) in words.values.iter().enumerate() {
+                let (block, column) = (
+                    index / NUM_KECCAK_BINARY_COLS,
+                    index % NUM_KECCAK_BINARY_COLS,
+                );
+                let rows = (height - BITS * block).min(BITS);
+                let expected = if column == NUM_ROUNDS {
+                    u64::MAX >> (BITS - rows)
+                } else {
+                    0
+                };
+                assert_eq!(
+                    word, expected,
+                    "height {height}, block {block}, column {column}"
+                );
+            }
+        }
+    }
+}
