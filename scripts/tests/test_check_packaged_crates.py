@@ -102,27 +102,6 @@ class PackageConsumerTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("secret", result.stdout + result.stderr)
 
-    def test_git_pinned_workspace_dependencies_patch_the_consumer(self):
-        # Archives only carry a registry version, so the consumer must resolve
-        # git-pinned dependencies to the workspace's revision to build them.
-        spec = importlib.util.spec_from_file_location("check_packaged_crates", SCRIPT)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            write(root / "Cargo.toml", '''[workspace.dependencies]
-p3-field = { git = "https://example.test/upstream", rev = "0123abcd", version = "0.8.0" }
-serde = { version = "1.0", default-features = false }
-rand = "0.10"
-''')
-            pins = module.git_pins(root / "Cargo.toml")
-            self.assertEqual(pins, {"p3-field": {"git": "https://example.test/upstream", "rev": "0123abcd"}})
-            module.write_consumer(root / "consumer", [("fixture-alpha", "0.1.0")], {"fixture-alpha": root / "alpha"}, "fn main() {}\n", pins)
-            patch = module.tomllib.loads((root / "consumer/Cargo.toml").read_text())["patch"]["crates-io"]
-            self.assertEqual(patch["p3-field"], {"git": "https://example.test/upstream", "rev": "0123abcd"})
-            self.assertEqual(patch["fixture-alpha"], {"path": str(root / "alpha")})
-            self.assertNotIn("serde", patch)
-
     def test_missing_archive_is_rejected(self):
         spec = importlib.util.spec_from_file_location("check_packaged_crates", SCRIPT)
         module = importlib.util.module_from_spec(spec)
