@@ -25,7 +25,7 @@ use p3_multi_stark::{
 };
 use p3_sumcheck::TableShape;
 use p3_sumcheck::layout::{Table, plan_stacked_layout};
-use p3_whir::pcs::proof::QueryOpenings;
+use p3_whir::pcs::proof::{QueryOpenings, WhirProof};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 use super::*;
@@ -331,11 +331,12 @@ impl Mixed {
 
     /// Every tamper class but a Merkle sibling is refused by the native import, which leaves
     /// the caller's transcript as it was. A tampered sibling is restored into a different path
-    /// witness, which only the circuit's path authentication refuses; that witness is returned.
+    /// witness, which only the circuit's path authentication refuses; those witnesses are
+    /// returned in [`SIBLINGS`] order.
     fn assert_tampers_refused_by_import(
         &self,
         verifier: &BinaryMixedWhirMultiStarkVerifier,
-    ) -> NativeBinaryMixedWhirMultiStarkInput {
+    ) -> Vec<NativeBinaryMixedWhirMultiStarkInput> {
         for (name, tamper) in TAMPERS {
             let mut proof = self.proof_copy();
             tamper(&mut proof);
@@ -351,16 +352,26 @@ impl Mixed {
                 "a refused {name} moved the transcript"
             );
         }
-        let mut proof = self.proof_copy();
-        dense_sibling(&mut proof)[0] ^= 1;
         let shape = verifier.input_shape();
-        let honest = self.import(verifier, &self.proof, &mut challenger());
-        let tampered = self.import(verifier, &proof, &mut challenger()).unwrap();
-        assert_ne!(
-            tampered.private_values::<BabyBear>(&shape).unwrap(),
-            honest.unwrap().private_values::<BabyBear>(&shape).unwrap()
-        );
-        tampered
+        let honest = self
+            .import(verifier, &self.proof, &mut challenger())
+            .unwrap()
+            .private_values::<BabyBear>(&shape)
+            .unwrap();
+        SIBLINGS
+            .iter()
+            .map(|(name, tamper)| {
+                let mut proof = self.proof_copy();
+                tamper(&mut proof);
+                let tampered = self.import(verifier, &proof, &mut challenger()).unwrap();
+                assert_ne!(
+                    tampered.private_values::<BabyBear>(&shape).unwrap(),
+                    honest,
+                    "a tampered {name} left the witness as it was"
+                );
+                tampered
+            })
+            .collect()
     }
 
     /// The configuration is not `Clone`, so a proof copy goes through its encoding.
@@ -381,20 +392,33 @@ fn packed_opening(proof: &mut MultiStarkProof<Config>) -> &mut BooleanTraceProof
     proof.opening.packed.as_mut().unwrap()
 }
 
-/// The first sibling digest of the dense WHIR opening's first query round.
-fn dense_sibling(proof: &mut MultiStarkProof<Config>) -> &mut [u8; 32] {
-    let whir = &mut proof.opening.dense.whir;
+/// The first sibling digest of a WHIR opening's first query round, which authenticates rows
+/// against the committed cap.
+fn first_sibling(whir: &mut WhirProof<F, F, NativeMmcs<F>>) -> &mut [u8; 32] {
     let openings = whir
         .rounds
         .first_mut()
         .map_or(&mut whir.final_openings, |round| &mut round.openings);
-    match openings {
-        QueryOpenings::Base(o) => &mut o.proof.sibling_hashes[0],
-        QueryOpenings::Extension(o) => &mut o.proof.sibling_hashes[0],
-    }
+    let siblings = match openings {
+        QueryOpenings::Base(o) => &mut o.proof.sibling_hashes,
+        QueryOpenings::Extension(o) => &mut o.proof.sibling_hashes,
+    };
+    siblings
+        .first_mut()
+        .expect("the queries leave a sibling digest to send")
 }
 
 type Tamper = fn(&mut MultiStarkProof<Config>);
+
+/// Tampers of one Merkle sibling digest in the dense and in the packed WHIR opening.
+const SIBLINGS: [(&str, Tamper); 2] = [
+    ("dense WHIR Merkle sibling", |proof| {
+        first_sibling(&mut proof.opening.dense.whir)[0] ^= 1;
+    }),
+    ("packed WHIR Merkle sibling", |proof| {
+        first_sibling(&mut packed_opening(proof).opening.opening.whir)[0] ^= 1;
+    }),
+];
 
 /// Tampers that change what the transcript or the opening checks read.
 const TAMPERS: [(&str, Tamper); 4] = [

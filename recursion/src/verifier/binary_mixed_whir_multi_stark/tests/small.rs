@@ -76,15 +76,15 @@ fn small_proof() -> Mixed {
     )
 }
 
-/// The smallest mixed relation: no preprocessing, and a Boolean table read at one row only, so
-/// the ring switch sends one tensor.
+/// The smallest mixed relation whose openings both send Merkle siblings: no preprocessing, and
+/// a Boolean table read at one row only, so the ring switch sends one tensor. With fewer row
+/// variables the queries open every leaf of the packed codeword's tree.
 fn minimal_proof() -> Mixed {
     const SQUARE_VARIABLES: usize = FOLDING;
-    const BOOLEAN_VARIABLES: usize = 7;
     let public = vec![vec![F::ONE + F::ONE], vec![], vec![F::ZERO]];
     let tables = vec![
         square_rows(public[0][0], SQUARE_VARIABLES),
-        bit_rows(BOOLEAN_VARIABLES),
+        bit_rows(BIT_VARIABLES),
         square_rows(public[2][0], SQUARE_VARIABLES),
     ];
     Mixed::prove(
@@ -93,7 +93,7 @@ fn minimal_proof() -> Mixed {
             TestAir::Bits { next: vec![] },
             TestAir::Square,
         ],
-        vec![SQUARE_VARIABLES, BOOLEAN_VARIABLES, SQUARE_VARIABLES],
+        vec![SQUARE_VARIABLES, BIT_VARIABLES, SQUARE_VARIABLES],
         public,
         BITS,
         tables,
@@ -142,7 +142,7 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
     let verifier = mixed.verifier();
     let shape = verifier.input_shape();
     let (input, private) = mixed.honest_private_values(&verifier);
-    let sibling = mixed.assert_tampers_refused_by_import(&verifier);
+    let siblings = mixed.assert_tampers_refused_by_import(&verifier);
 
     let circuit = prime_circuit(&verifier);
     let public = mixed.public_limbs();
@@ -164,10 +164,17 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
         })
         .unwrap();
     // A Merkle sibling enters the transcript nowhere, so the continuation is unchanged.
-    let mut sibling = sibling.private_values::<BabyBear>(&shape).unwrap();
-    sibling.extend_from_slice(&private[private.len() - 8..]);
+    let [dense_sibling, packed_sibling] = [0, 1].map(|i| {
+        let mut values = siblings[i].private_values::<BabyBear>(&shape).unwrap();
+        values.extend_from_slice(&private[private.len() - 8..]);
+        values
+    });
+    // Each sibling tamper changes only the witnesses of the opening it names.
+    assert_eq!(dense_sibling[..dense], private[..dense]);
+    assert_eq!(dense_sibling[packed..], private[packed..]);
+    assert_eq!(packed_sibling[..packed], private[..packed]);
     let roots = 16 << CAP_HEIGHT;
-    let tampers: [WitnessTamper<'_>; 5] = [
+    let tampers: [WitnessTamper<'_>; 6] = [
         // Each opening's witnesses start with its opened values.
         ("packed opened value", &|private| flip(&mut private[packed])),
         ("dense opened value", &|private| flip(&mut private[dense])),
@@ -177,8 +184,11 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
         ("cap with swapped halves", &|private| {
             private[..2 * roots].rotate_left(roots);
         }),
-        ("WHIR Merkle sibling", &|private| {
-            private.clone_from(&sibling);
+        ("dense WHIR Merkle sibling", &|private| {
+            private.clone_from(&dense_sibling);
+        }),
+        ("packed WHIR Merkle sibling", &|private| {
+            private.clone_from(&packed_sibling);
         }),
     ];
     for (name, tamper) in tampers {
