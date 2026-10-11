@@ -4,12 +4,12 @@ use p3_air::BaseAir;
 use p3_binary_field::BinaryField128;
 use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::{CircuitBuilder, CircuitConstructionLimits};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
 use p3_field::PrimeCharacteristicRing;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
-    BinaryNativeWhirPcsParameters,
+    BinaryNativeWhirPcsParameters, VerifiedBinaryNativeWhirProof,
 };
 use p3_recursion::prepared::{
     NativeBinaryMixedRecursionOptions, NativeBinaryRecursionOptions,
@@ -55,8 +55,27 @@ fn options() -> NativeBinaryMixedRecursionOptions {
     }
 }
 
-#[test]
-fn mixed_output_layer_proves_and_binds_the_original_statement() {
+fn run(circuit: &Circuit<F>, public: &[F], private: &[F]) -> bool {
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(public)
+        .and_then(|()| runner.set_private_inputs(private))
+        .and_then(|()| runner.run())
+        .is_ok()
+}
+
+/// A small dense child statement, its checked proof, a checked proof of the same statement
+/// under a foreign child authority, the checked proof's private native verifier values, and
+/// the L1 layer over the child authority.
+struct Fixture {
+    public: Vec<Vec<F>>,
+    checked: VerifiedBinaryNativeWhirProof<F>,
+    foreign: VerifiedBinaryNativeWhirProof<F>,
+    private: Vec<F>,
+    layer: PreparedNativeBinaryMixedWhirLayer,
+}
+
+fn prepare() -> Fixture {
     let [input, factor, constant] = [0xfedcba9876543210, 0x8123456789abcdef, 0x8912]
         .map(|raw| F::from_raw_coordinates(raw).unwrap());
     let mut builder = CircuitBuilder::<F>::new();
@@ -127,6 +146,51 @@ fn mixed_output_layer_proves_and_binds_the_original_statement() {
         },
     )
     .unwrap();
+    let private = checked
+        .native_input()
+        .private_native_values(&authority.recursive_verifier().input_shape())
+        .unwrap();
+    Fixture {
+        public,
+        checked,
+        foreign,
+        private,
+        layer,
+    }
+}
+
+/// The child statement and every verifier value reach the layer circuit: witness generation
+/// accepts the checked child and fails once any of them changes.
+#[test]
+fn tampered_child_fails_mixed_layer_witness_generation() {
+    let Fixture {
+        public,
+        private,
+        layer,
+        ..
+    } = prepare();
+    // A Tower128 child statement is the layer circuit's public input unchanged.
+    let flat = &public[0];
+    assert!(run(layer.circuit(), flat, &private));
+    let mut wrong = flat.clone();
+    wrong[1] += F::ONE;
+    assert!(!run(layer.circuit(), &wrong, &private));
+    for index in [0, 16, private.len() - 1] {
+        let mut wrong = private.clone();
+        wrong[index] += F::ONE;
+        assert!(!run(layer.circuit(), flat, &wrong));
+    }
+}
+
+#[test]
+fn mixed_output_layer_proves_and_binds_the_original_statement() {
+    let Fixture {
+        public,
+        checked,
+        foreign,
+        layer,
+        ..
+    } = prepare();
     assert!(matches!(
         layer.prove_verified(&foreign),
         Err(VerificationError::PreparedInputMismatch { .. })
@@ -149,7 +213,7 @@ fn mixed_output_layer_proves_and_binds_the_original_statement() {
             .copied()
             .collect::<Vec<_>>()
     );
-    let mut wrong = public.clone();
+    let mut wrong = public;
     wrong[0][1] += F::ONE;
     assert!(layer.verify(&outer, &wrong).is_err());
     assert!(layer.verify(&outer, &[]).is_err());
