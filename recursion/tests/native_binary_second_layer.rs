@@ -251,8 +251,10 @@ fn second_native_layer_verifier_is_bounded_and_refuses_forged_proof_fields() {
     // runner refuses such a lane; in a proof, the Keccak AIR rejects it.
     let wide = F::from_raw_coordinates(1 << 16).unwrap();
     let initial = &targets.opening.rounds[0].paths[0];
-    let last = &targets.opening.final_paths[0];
-    for sibling in [initial[0][3], last[last.len() - 1][12]] {
+    let last = targets.opening.final_paths[0]
+        .last()
+        .expect("the final oracle has a Merkle path below its cap");
+    for sibling in [initial[0][3], last[12]] {
         assert!(private[position(sibling)].to_raw_coordinates() < 1 << 16);
         assert!(matches!(
             forge(sibling, wide),
