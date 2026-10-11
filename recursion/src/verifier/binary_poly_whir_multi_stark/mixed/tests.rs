@@ -524,10 +524,15 @@ fn opening_offsets(
 /// A named change to the circuit's private inputs.
 type WitnessTamper<'a> = (&'static str, &'a dyn Fn(&mut Vec<F>));
 
+/// Expression nodes of the native verifier of the chain with its Keccak table bit-committed,
+/// on trees of arity two, as measured. Either arity's bound is 1.2 times this count, updatable
+/// when the native transcript, the WHIR kernel or the Keccak AIR change.
+const MEASURED_POLY_MIXED_NODES: usize = 845_488;
+
 /// At either tree arity, the native import of the honest chain ends where the multi-stark
-/// verifier does, and the native circuit accepts it with that continuation. Each tamper class
-/// is refused: by the import before it moves the transcript, and in the circuit applied to the
-/// one witness it names.
+/// verifier does, and the native circuit accepts it with that continuation, within the measured
+/// node bound. Each tamper class is refused: by the import before it moves the transcript, and
+/// in the circuit applied to the one witness it names.
 #[test]
 fn keccak_chain_satisfies_the_native_circuit_and_refuses_tampers() {
     for arity in ARITIES {
@@ -543,6 +548,10 @@ fn keccak_chain_satisfies_the_native_circuit_and_refuses_tampers() {
         let (circuit, nodes) = native_circuit(&verifier);
         std::println!(
             "native Poly64 mixed verifier of {CALLS} Keccak-f calls, {arity:?}: {nodes} nodes"
+        );
+        assert!(
+            nodes * 5 <= MEASURED_POLY_MIXED_NODES * 6,
+            "{arity:?}: {nodes} mixed native verifier nodes"
         );
         let public: Vec<F> = chain.public.iter().flatten().copied().collect();
         assert!(
