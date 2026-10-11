@@ -57,8 +57,8 @@ impl ClosedBinaryCircuit<BinaryField128, BinaryField128> for BinaryMixedWhirMult
     }
 }
 
-/// Owns one trusted binary relation, whose Keccak-like bit table is committed as packed bits
-/// beside a dense commitment of every other table, and its prepared prime-field prover.
+/// Owns one trusted binary relation, whose one Boolean-assuming table is committed as packed
+/// bits beside a dense commitment of every other table, and its prepared prime-field prover.
 /// Construction uses only the trusted plan and transcript configuration; proving accepts
 /// bounded witness material and the original binary statement.
 pub struct PreparedBinaryMixedWhirMultiStarkLayer<SC: StarkGenericConfig + 'static, const D: usize>
