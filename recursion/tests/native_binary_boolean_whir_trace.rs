@@ -607,10 +607,10 @@ fn round_counts_other_than_every_round_are_refused() {
     assert!(imported.private_native_values(&shape).is_err());
 }
 
-/// Generic column routes, batched routes over several tables, and hashes without a native
-/// circuit are refused before any constraint is added.
+/// Generic column routes and batched routes over several tables are refused before any
+/// constraint is added.
 #[test]
-fn unsupported_routes_and_hashes_are_refused() {
+fn unsupported_routes_are_refused() {
     let generic = OpeningProtocol::new(vec![
         TableSpec::new(
             TableShape::new(7, 2),
@@ -633,16 +633,12 @@ fn unsupported_routes_and_hashes_are_refused() {
             vec![OpeningBatch::new(vec![0, 1, 2], vec![])],
         ),
     ]);
-    let batched = Case::new(8, 1, true, 1).protocol();
-    for (protocol, hash) in [
-        (generic, ByteHash::Keccak256),
-        (several_tables, ByteHash::Keccak256),
-        (batched, ByteHash::Blake3),
-    ] {
+    for protocol in [generic, several_tables] {
         let n = plan_stacked_layout(&protocol.table_shapes()).0;
         let config = packed_config(n - ABSORBED, 8, 1);
         let verifier =
-            BinaryBooleanWhirTraceVerifier::new(&config, protocol.clone(), hash, 0).unwrap();
+            BinaryBooleanWhirTraceVerifier::new(&config, protocol.clone(), ByteHash::Keccak256, 0)
+                .unwrap();
         let mut b = CircuitBuilder::<F>::new();
         let cap = vec![
             b.alloc_public_input_array::<16>("packed commitment root")

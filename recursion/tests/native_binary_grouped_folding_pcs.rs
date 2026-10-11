@@ -7,7 +7,7 @@ use p3_binary_pcs::{BinaryPcs, BinaryPcsConfig, BinaryPcsParams, GroupedCodeword
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, NativeTower128Target, bytes_to_limbs};
-use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError, NpoTypeId};
 use p3_commit::MultilinearPcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
@@ -348,7 +348,7 @@ fn grouped_cap_at_log_inv_rate_leaves_an_empty_round_path() {
 }
 
 #[test]
-fn grouped_native_support_checks_every_site_size_the_cap_and_the_hash() {
+fn grouped_native_support_checks_every_site_size_and_the_cap() {
     // Arity-4 folds over six variables leave a final arity-2 batch.
     let config = BinaryPcsConfig::try_new_with_folding::<F, F>(6, params(1), 4).unwrap();
     let make = |hash, cap_height, base, rounds| {
@@ -364,14 +364,6 @@ fn grouped_native_support_checks_every_site_size_the_cap_and_the_hash() {
     };
     let shape_error =
         |error: &VerificationError| matches!(error, VerificationError::InvalidProofShape(_));
-    let unsupported = |error: &VerificationError| {
-        matches!(
-            error,
-            VerificationError::CircuitBuilder(
-                CircuitBuilderError::UnsupportedNonPrimitiveOp { .. }
-            )
-        )
-    };
     // The last grouped tree has 2^log_inv_rate leaves, so a larger cap is
     // rejected before any native tree could be built.
     let error = make(ByteHash::Keccak256, 2, Folding, Folding).unwrap_err();
@@ -415,9 +407,25 @@ fn grouped_native_support_checks_every_site_size_the_cap_and_the_hash() {
             .unwrap_err();
         assert!(shape_error(&error), "{error}");
     }
-    reject(
-        &make(ByteHash::Blake3, 0, Folding, Folding).unwrap(),
-        &unsupported,
+    // The native host evaluates Blake3, so its targets allocate, while its
+    // openings need the native Blake3 compression the builder does not allow.
+    let blake3 = make(ByteHash::Blake3, 0, Folding, Folding).unwrap();
+    let mut b = native_builder();
+    let (cap, points, _, ch) = twin_inputs(&mut b);
+    let targets = blake3
+        .input_shape()
+        .allocate_native_targets(&mut b)
+        .unwrap();
+    let error = blake3
+        .verify_at_native(&mut b, ch, &cap, &points, &targets)
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            VerificationError::CircuitBuilder(CircuitBuilderError::OpNotAllowed { op })
+                if *op == NpoTypeId::native_blake3_compress()
+        ),
+        "{error}"
     );
     // The effective size decides, not the policy: these are exactly the cosets.
     let equivalent = make(ByteHash::Keccak256, 0, Codeword(16), Message(16)).unwrap();

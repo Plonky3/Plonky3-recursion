@@ -5,7 +5,7 @@ use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, NativeTower128Target};
-use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError, NpoTypeId};
 use p3_circuit_prover::native_bus::NativeBusCircuit;
 use p3_field::{ExtensionField, PrimeCharacteristicRing};
 use p3_recursion::BinaryTower128Challenger;
@@ -82,8 +82,21 @@ fn tower32_folding_child_is_closed_in_a_tower128_verifier() {
     close_bus_proof::<BinaryField32>();
 }
 
+/// Whether `error` refuses a native Blake3 compression the builder does not
+/// allow.
+fn needs_native_blake3(error: &VerificationError) -> bool {
+    matches!(
+        error,
+        VerificationError::CircuitBuilder(CircuitBuilderError::OpNotAllowed { op })
+            if *op == NpoTypeId::native_blake3_compress()
+    )
+}
+
+/// The native host evaluates Blake3, so a Blake3 PCS child's inputs allocate,
+/// while its verifier needs the native Blake3 compression, which a builder
+/// with only native Keccak-f does not allow.
 #[test]
-fn blake3_pcs_child_is_rejected_before_constraints() {
+fn blake3_pcs_child_needs_the_native_blake3_compression() {
     let mut b = CircuitBuilder::<F>::new();
     let input = b.public_input();
     let out = b.mul(input, input);
@@ -91,39 +104,17 @@ fn blake3_pcs_child_is_rejected_before_constraints() {
     b.connect(out, expected);
     let circuit = b.build().unwrap();
     let prepared = NativeBusCircuit::new(&circuit, "native").unwrap();
-    let setup = |hash| {
-        BinaryNativeAuthority::<F, F, _>::setup(
-            prepared.airs().to_vec(),
-            prepared.log_heights().to_vec(),
-            spec(&prepared, hash),
-            &VerifierLimits::default(),
-        )
-        .unwrap()
-        .1
-    };
-    let unsupported = |error: &VerificationError| {
-        matches!(
-            error,
-            VerificationError::CircuitBuilder(
-                CircuitBuilderError::UnsupportedNonPrimitiveOp { .. }
-            )
-        )
-    };
-    let authority = setup(ByteHash::Blake3);
+    let (_, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec(&prepared, ByteHash::Blake3),
+        &VerifierLimits::default(),
+    )
+    .unwrap();
     let verifier = authority.recursive_verifier();
     let mut b = CircuitBuilder::<F>::new();
     b.enable_native_keccak_f1600().unwrap();
-    let error = verifier
-        .input_shape()
-        .allocate_native_targets(&mut b)
-        .unwrap_err();
-    assert!(unsupported(&error), "{error}");
-    // Inputs shaped by a Keccak twin still cannot reach any BLAKE3 constraint.
-    let twin = setup(ByteHash::Keccak256);
-    let mut b = CircuitBuilder::<F>::new();
-    b.enable_native_keccak_f1600().unwrap();
-    let targets = twin
-        .recursive_verifier()
+    let targets = verifier
         .input_shape()
         .allocate_native_targets(&mut b)
         .unwrap();
@@ -140,16 +131,16 @@ fn blake3_pcs_child_is_rejected_before_constraints() {
                 .collect()
         })
         .collect();
-    let before = b.construction_usage().unwrap();
     let error = verifier
         .verify_native(&mut b, ch, &public, &targets)
         .unwrap_err();
-    assert!(unsupported(&error), "{error}");
-    assert_eq!(b.construction_usage().unwrap(), before);
+    assert!(needs_native_blake3(&error), "{error}");
 }
 
+/// A Keccak main commitment with a Blake3 preprocessed one: the preprocessed
+/// opening alone needs the native Blake3 compression.
 #[test]
-fn blake3_preprocessed_pcs_is_rejected_before_constraints() {
+fn blake3_preprocessed_pcs_needs_the_native_blake3_compression() {
     let mut b = CircuitBuilder::<F>::new();
     let input = b.public_input();
     let expected = b.public_input();
@@ -162,23 +153,17 @@ fn blake3_preprocessed_pcs_is_rejected_before_constraints() {
     let circuit = b.build().unwrap();
     let prepared = NativeBusCircuit::new(&circuit, "native").unwrap();
     assert!(prepared.preprocessed_variables().is_some());
-    let setup = |preprocessed_hash| {
-        BinaryNativeAuthority::<F, F, _>::setup(
-            prepared.airs().to_vec(),
-            prepared.log_heights().to_vec(),
-            spec_with_hashes(&prepared, ByteHash::Keccak256, preprocessed_hash),
-            &VerifierLimits::default(),
-        )
-        .unwrap()
-        .1
-    };
-    let authority = setup(ByteHash::Blake3);
+    let (_, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec_with_hashes(&prepared, ByteHash::Keccak256, ByteHash::Blake3),
+        &VerifierLimits::default(),
+    )
+    .unwrap();
     let verifier = authority.recursive_verifier();
     let mut b = CircuitBuilder::<F>::new();
     b.enable_native_keccak_f1600().unwrap();
-    // Inputs shaped by a Keccak twin: only the preprocessed hash differs.
-    let targets = setup(ByteHash::Keccak256)
-        .recursive_verifier()
+    let targets = verifier
         .input_shape()
         .allocate_native_targets(&mut b)
         .unwrap();
@@ -195,20 +180,10 @@ fn blake3_preprocessed_pcs_is_rejected_before_constraints() {
                 .collect()
         })
         .collect();
-    let before = b.construction_usage().unwrap();
     let error = verifier
         .verify_native(&mut b, ch, &public, &targets)
         .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            VerificationError::CircuitBuilder(
-                CircuitBuilderError::UnsupportedNonPrimitiveOp { .. }
-            )
-        ),
-        "{error}"
-    );
-    assert_eq!(b.construction_usage().unwrap(), before);
+    assert!(needs_native_blake3(&error), "{error}");
 }
 
 fn close_bus_proof<B>()

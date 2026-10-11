@@ -3,13 +3,14 @@
 use p3_binary_field::{
     BinaryChallenger, BinaryField8, BinaryField128, Poly64, Poly192, TowerLevel,
 };
+use p3_blake3::Blake3;
 use p3_challenger::{
     CanObserve, CanSample, CanSampleBits, FieldChallenger, GrindingChallenger, HashChallenger,
 };
 use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId, NpoTypeId};
 use p3_keccak::Keccak256Hash;
 use p3_recursion::BinaryTower128Challenger;
 use p3_symmetric::Hash;
@@ -138,14 +139,31 @@ fn failed_refill_can_be_retried_and_zero_work_preserves_state() {
     let mut native = BinaryChallenger::<BinaryField128, _>::from_hasher(vec![], Keccak256Hash);
     let expected: BinaryField128 = native.sample();
     bind_bits(&mut b, actual.bits(), expected.to_repr());
+    // A Blake3 refill without the native Blake3 compression is not allowed and
+    // leaves the challenger to draw the transcript's first value once it is.
+    let mut blake3 = BinaryTower128Challenger::with_initial_bytes_with_host::<E, BinaryField128>(
+        &mut b,
+        ByteHash::Blake3,
+        &[],
+    )
+    .unwrap();
+    let error = blake3
+        .sample_with_host::<E, BinaryField128>(&mut b)
+        .unwrap_err();
     assert!(
-        BinaryTower128Challenger::with_initial_bytes_with_host::<E, BinaryField128>(
-            &mut b,
-            ByteHash::Blake3,
-            &[]
-        )
-        .is_err()
+        matches!(
+            &error,
+            CircuitBuilderError::OpNotAllowed { op } if *op == NpoTypeId::native_blake3_compress()
+        ),
+        "{error}"
     );
+    b.enable_native_blake3_compress().unwrap();
+    let actual = blake3
+        .sample_with_host::<E, BinaryField128>(&mut b)
+        .unwrap();
+    let mut native = BinaryChallenger::<BinaryField128, _>::from_hasher(vec![], Blake3);
+    let expected: BinaryField128 = native.sample();
+    bind_bits(&mut b, actual.bits(), expected.to_repr());
     b.build().unwrap().runner().run().unwrap();
 }
 

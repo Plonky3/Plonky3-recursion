@@ -5,7 +5,7 @@ use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
 use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits, NpoTypeId};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
 use p3_field::{ExtensionField, PrimeCharacteristicRing};
 use p3_recursion::artifact::{
@@ -132,14 +132,16 @@ where
     (prover, authority, public, trace)
 }
 
+/// The folding layer enables only native Keccak-f, so it is not allowed to
+/// hash a Blake3 child's transcript.
 #[test]
-fn blake3_transcript_child_is_rejected_before_graph_construction() {
+fn blake3_transcript_child_needs_the_native_blake3_compression() {
     let (_, authority, _, _) = child::<F>(ByteHash::Blake3, 0);
     assert!(matches!(
         PreparedNativeBinaryLayer::from_native_authority(&authority, options(), &limits()),
         Err(VerificationError::CircuitBuilder(
-            CircuitBuilderError::UnsupportedNonPrimitiveOp { .. }
-        ))
+            CircuitBuilderError::OpNotAllowed { op }
+        )) if op == NpoTypeId::native_blake3_compress()
     ));
 }
 
