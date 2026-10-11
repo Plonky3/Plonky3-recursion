@@ -4,7 +4,9 @@ mod boolean_whir;
 pub use boolean_whir::BinaryNativeBooleanWhirTraceConfig;
 pub(super) use boolean_whir::NativeBooleanWhirTracePcs;
 mod mixed_whir;
-pub(crate) use mixed_whir::{BinaryNativeMixedWhirConfig, MixedWhirError, MixedWhirPcs};
+pub(super) use mixed_whir::MixedWhirProof;
+pub use mixed_whir::{BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters};
+pub(crate) use mixed_whir::{MixedWhirError, MixedWhirPcs};
 mod poly_whir;
 pub(super) use poly_whir::NativePolyWhirPcs;
 pub use poly_whir::{

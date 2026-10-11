@@ -3,6 +3,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
+use p3_air::BaseAir;
 use p3_matrix::Matrix;
 use p3_multi_stark::config::ProverData;
 use p3_multi_stark::{
@@ -73,6 +74,7 @@ where
             });
         }
     }
+    check_boolean_assumptions::<F, E, A, K>(&airs, &spec.main)?;
     let refs = airs.iter().collect::<Vec<_>>();
     let roots = if let Some(pp) = &spec.preprocessed {
         let cap_height = K::cap_height(pp);
@@ -162,6 +164,35 @@ where
     Ok((state, proving))
 }
 
+/// Refuses an AIR that declares bit columns unless the family's main commitment stores its
+/// table as bits, as [`NativeFamily::bits_committed`] reports.
+///
+/// Under a commitment to field elements, an AIR that leaves its booleanity to the commitment
+/// accepts a trace holding non-bits. The multi-STARK prover and verifier refuse such an AIR
+/// outside the commitment's bit region. This check refuses it at setup, and also where a
+/// family's bit region covers the table but the family reports no bit-committed table.
+pub(super) fn check_boolean_assumptions<F, E, A, K>(
+    airs: &[A],
+    main: &K::Parameters,
+) -> Result<(), VerificationError>
+where
+    F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
+    E: ExtensionField<F> + PackedValue<Value = E>,
+    A: BaseAir<F>,
+    K: NativeFamily<F, E>,
+{
+    if airs
+        .iter()
+        .enumerate()
+        .any(|(table, air)| air.boolean_columns() != 0 && !K::bits_committed(main, table))
+    {
+        return Err(invalid(
+            "binary native AIR declares bit columns its commitment does not store as bits",
+        ));
+    }
+    Ok(())
+}
+
 impl<F, E, A, K> State<F, E, A, K>
 where
     F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
@@ -247,14 +278,43 @@ where
         {
             return Err(invalid("binary native main trace shape mismatch"));
         }
+        let tables = traces
+            .into_iter()
+            .map(|trace| Table::new(trace.transpose()))
+            .collect();
+        self.prove_tables(key, public, tables)
+    }
+    /// Main tables in AIR order, each of its AIR's width and height. A table may hold field
+    /// cells or packed bits; the commitment decides which it accepts.
+    pub(super) fn prove_tables(
+        &self,
+        key: &ProvingKey<K::Config>,
+        public: &[Vec<F>],
+        tables: Vec<Table<F>>,
+    ) -> Result<MultiStarkProof<K::Config>, VerificationError>
+    where
+        A: ProverAir<F, E>,
+        E::ExtensionPacking: From<E> + From<F::Packing>,
+        ProverData<K::Config>: Clone,
+    {
+        self.check_public(public)?;
+        if tables.len() != self.airs.len()
+            || tables
+                .iter()
+                .zip(self.airs.iter())
+                .zip(self.heights.iter())
+                .any(|((table, air), &height)| {
+                    table.num_polys() != air.width() || table.num_variables() != height
+                })
+        {
+            return Err(invalid("binary native main table shape mismatch"));
+        }
         let instances = ProverInstances::new(
-            traces
+            tables
                 .into_iter()
                 .zip(self.airs.iter())
                 .zip(public)
-                .map(|((trace, air), values)| {
-                    ProverInstance::new(air, Table::new(trace.transpose()), key, values)
-                })
+                .map(|((table, air), values)| ProverInstance::new(air, table, key, values))
                 .collect(),
         );
         p3_multi_stark::prove_with_security(

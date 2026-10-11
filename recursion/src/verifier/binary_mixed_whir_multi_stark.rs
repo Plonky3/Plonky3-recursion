@@ -121,15 +121,41 @@ pub struct BinaryMixedWhirMultiStarkProofTargets {
 }
 
 impl BinaryMixedWhirMultiStarkInputShape {
+    /// The proof geometry: one main cap per part, the dense and the packed opening of the main
+    /// commitment, and the dense preprocessing opening.
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::MultiDecode<
+        crate::artifact::binary_native::codec::MixedWhirDecode,
+    > {
+        use crate::artifact::binary_native::codec::{MixedWhirDecode, MultiDecode};
+        MultiDecode {
+            public_counts: self.public_value_counts().collect(),
+            cap_roots: 2usize << self.cap_height,
+            bus: self
+                .relation
+                .bus
+                .as_ref()
+                .map(|b| b.product.native_decode_shape()),
+            sumcheck: self.relation.sumcheck.native_decode_shape(),
+            indexed: self
+                .relation
+                .indexed
+                .as_ref()
+                .map(|i| i.native_decode_shape()),
+            opening: MixedWhirDecode {
+                dense: self.dense.native_decode_shape(),
+                packed: Some(self.packed.native_decode_shape()),
+            },
+            preprocessed: self.preprocessed.as_ref().map(|p| MixedWhirDecode {
+                dense: p.opening.native_decode_shape(),
+                packed: None,
+            }),
+        }
+    }
+
     /// The relation identity, the bit-committed table, both opening shapes and the trusted
     /// preprocessing shape and cap.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only the unit tests write the mixed verifier identity"
-        )
-    )]
     pub(crate) fn write_identity(
         &self,
         w: &mut crate::artifact::wire::Writer,
@@ -300,6 +326,26 @@ pub struct BinaryMixedWhirMultiStarkVerifier {
 }
 
 impl BinaryMixedWhirMultiStarkVerifier {
+    /// Installs the exact cap captured from the factory's matched native setup.
+    /// Geometry was validated before setup, with a placeholder cap of this size.
+    pub(crate) fn bind_native_preprocessing_cap(
+        &mut self,
+        cap: Vec<[u8; 32]>,
+    ) -> Result<(), VerificationError> {
+        let Some(pp) = &mut self.input.preprocessed else {
+            return Err(invalid(
+                "binary native mixed WHIR setup produced an unexpected preprocessing cap",
+            ));
+        };
+        if cap.len() != pp.commitment.len() {
+            return Err(invalid(
+                "binary native mixed WHIR setup preprocessing cap shape mismatch",
+            ));
+        }
+        pp.commitment = cap;
+        Ok(())
+    }
+
     /// `packed_table` names the one AIR whose main trace is committed as bits. That AIR, and
     /// only that AIR, must assume a Boolean trace, and its main trace must be opened as one
     /// batch: every column at the current row, and every column or none one row ahead.
@@ -517,6 +563,14 @@ impl BinaryMixedWhirMultiStarkVerifier {
         self.usage
     }
 
+    pub(crate) fn retain_native_parameter_metadata(
+        &mut self,
+        entries: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(), VerificationError> {
+        self.usage.add_metadata_entries(limits, entries)
+    }
+
     /// Splits per-batch items of the main protocol into the dense and the packed opening's,
     /// each in protocol order.
     fn split<T: Clone>(&self, items: &[T]) -> Result<(Vec<T>, Vec<T>), VerificationError> {
@@ -677,10 +731,6 @@ impl BinaryMixedWhirMultiStarkVerifier {
     #[expect(
         clippy::too_many_arguments,
         reason = "The verifier keeps protocol inputs explicit."
-    )]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "only the unit tests import mixed proofs")
     )]
     pub(crate) fn import_native<C, Ch>(
         &self,

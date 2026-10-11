@@ -24,6 +24,10 @@ pub use grouped_boolean::{
     VerifiedBinaryNativeGroupedBooleanTraceProof,
 };
 mod lifecycle;
+mod mixed_whir;
+pub use mixed_whir::{
+    BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirProver, VerifiedBinaryNativeMixedWhirProof,
+};
 mod poly_whir;
 pub use poly_whir::{
     BinaryNativePolyWhirAuthority, BinaryNativePolyWhirProver, VerifiedBinaryNativePolyWhirProof,
@@ -37,18 +41,18 @@ use config::NativeAlphabet;
 pub use config::{
     BinaryNativeBooleanTraceConfig, BinaryNativeBooleanWhirTraceConfig, BinaryNativeChallenger,
     BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedConfig,
-    BinaryNativeHash, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
-    BinaryNativePolyWhirPcsParameters, BinaryNativeWhirConfig, BinaryNativeWhirLayout,
-    BinaryNativeWhirPcsParameters,
+    BinaryNativeHash, BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters,
+    BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
+    BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
 };
 #[cfg_attr(
     not(test),
     expect(
         unused_imports,
-        reason = "only the unit tests construct the mixed commitment"
+        reason = "only the unit tests construct the mixed commitment directly"
     )
 )]
-pub(crate) use config::{BinaryNativeMixedWhirConfig, MixedWhirError, MixedWhirPcs};
+pub(crate) use config::{MixedWhirError, MixedWhirPcs};
 pub(crate) use config::{NativeMmcs, tree};
 use family::{NativeFamily, RawFamily};
 use lifecycle::State;

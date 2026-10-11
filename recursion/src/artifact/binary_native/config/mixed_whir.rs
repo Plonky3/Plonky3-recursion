@@ -88,8 +88,62 @@ enum Slot {
 /// The dense opening, then the packed opening when a table is bit-committed.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MixedWhirProof {
-    pub(crate) dense: PcsProof<E, E, NativeMmcs<E>>,
-    pub(crate) packed: Option<PackedProof>,
+    pub dense: PcsProof<E, E, NativeMmcs<E>>,
+    pub packed: Option<PackedProof>,
+}
+
+/// Trusted parameters of the mixed commitment: dense WHIR over every table but the packed one,
+/// and, when there is a packed table, a packed-bit WHIR commitment of it.
+///
+/// Both parts use one hash and one cap height, which [`Self::with_packed_table`] enforces.
+/// The preprocessing commitment holds no packed table.
+#[derive(Clone)]
+pub struct BinaryNativeMixedWhirPcsParameters {
+    pub(in crate::artifact::binary_native) dense: BinaryNativeWhirPcsParameters<E>,
+    pub(in crate::artifact::binary_native) packed: Option<PackedTableParameters>,
+}
+
+/// The packed-bit part: the table it commits, the variable count of that table's bit stack,
+/// and WHIR parameters over seven variables fewer, the ones each field element absorbs.
+#[derive(Clone)]
+pub(in crate::artifact::binary_native) struct PackedTableParameters {
+    pub(in crate::artifact::binary_native) whir: BinaryNativeWhirPcsParameters<E>,
+    pub(in crate::artifact::binary_native) table: usize,
+    pub(in crate::artifact::binary_native) bit_variables: usize,
+}
+
+impl BinaryNativeMixedWhirPcsParameters {
+    /// A dense commitment of every table.
+    pub const fn dense(dense: BinaryNativeWhirPcsParameters<E>) -> Self {
+        Self {
+            dense,
+            packed: None,
+        }
+    }
+
+    /// A dense commitment of every table but `table`, and `packed`, a commitment of the
+    /// `bit_variables`-variable bit stack of `table`. Packed parameters naming another hash or
+    /// cap height than the dense ones are refused.
+    pub fn with_packed_table(
+        dense: BinaryNativeWhirPcsParameters<E>,
+        packed: BinaryNativeWhirPcsParameters<E>,
+        table: usize,
+        bit_variables: usize,
+    ) -> Result<Self, VerificationError> {
+        if (packed.hash, packed.cap_height) != (dense.hash, dense.cap_height) {
+            return Err(super::super::invalid(
+                "binary native mixed WHIR parts differ in hash or cap height",
+            ));
+        }
+        Ok(Self {
+            dense,
+            packed: Some(PackedTableParameters {
+                whir: packed,
+                table,
+                bit_variables,
+            }),
+        })
+    }
 }
 
 impl MixedWhirPcs {
@@ -98,13 +152,6 @@ impl MixedWhirPcs {
     ///
     /// `packed` holds the bit commitment's parameters, the table it commits and the table's
     /// bit arity. Parameters naming another hash or cap height are refused.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only the unit tests construct the mixed commitment"
-        )
-    )]
     pub(crate) fn from_parameters(
         dense: &BinaryNativeWhirPcsParameters<E>,
         packed: Option<(&BinaryNativeWhirPcsParameters<E>, usize, usize)>,
@@ -136,13 +183,6 @@ impl MixedWhirPcs {
     /// Pair a dense commitment with an optional bit commitment of table `packed.1`.
     ///
     /// `cap_height` is the cap height of both parts' Merkle trees.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only the unit tests construct the mixed commitment"
-        )
-    )]
     fn new(
         dense: DensePcs,
         packed: Option<(NativeBooleanWhirTracePcs, usize)>,
@@ -544,13 +584,6 @@ pub struct BinaryNativeMixedWhirConfig {
 }
 
 impl BinaryNativeMixedWhirConfig {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only the unit tests construct the mixed configuration"
-        )
-    )]
     pub(crate) fn new(
         main: MixedWhirPcs,
         preprocessed: Option<MixedWhirPcs>,

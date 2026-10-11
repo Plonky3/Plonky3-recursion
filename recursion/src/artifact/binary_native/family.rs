@@ -2,6 +2,8 @@
 
 mod boolean_whir;
 pub(super) use boolean_whir::BooleanWhirTraceFamily;
+mod mixed_whir;
+pub(super) use mixed_whir::MixedWhirFamily;
 mod poly_whir;
 pub(super) use poly_whir::PolyWhirFamily;
 mod whir;
@@ -46,6 +48,10 @@ where
     fn hash(p: &Self::Parameters) -> ByteHash;
     fn cap_height(p: &Self::Parameters) -> usize;
     fn pow_bits(p: &Self::Parameters) -> usize;
+    /// Whether the main commitment stores `table` as bits, so no cell of it can be a non-bit.
+    fn bits_committed(_parameters: &Self::Parameters, _table: usize) -> bool {
+        false
+    }
     fn build_recursive<A: VerifierAir<F, E>>(
         airs: &[&A],
         heights: &[usize],

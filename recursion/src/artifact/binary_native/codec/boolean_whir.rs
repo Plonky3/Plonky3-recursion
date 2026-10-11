@@ -66,12 +66,12 @@ impl<A: VerifierAir<E, E>> BinaryNativeBooleanWhirTraceAuthority<A> {
     }
 }
 
-fn write_trace(w: &mut Writer, p: &TraceProof) -> Result<(), ArtifactError> {
+pub(super) fn write_trace(w: &mut Writer, p: &TraceProof) -> Result<(), ArtifactError> {
     write_fields(w, &p.values)?;
     grouped_boolean::write_ring(w, &p.opening.reduction)?;
     whir::write_whir(w, &p.opening.opening)
 }
-fn read_trace(
+pub(super) fn read_trace(
     r: &mut Reader<'_>,
     s: &BooleanTraceDecode<WhirDecode>,
     total: &mut usize,
