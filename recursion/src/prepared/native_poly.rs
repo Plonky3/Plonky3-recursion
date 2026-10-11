@@ -20,7 +20,6 @@ use crate::artifact::{
     BinaryNativePolyWhirPcsParameters, BinaryNativePolyWhirProver, BinaryNativeVerifierSpec,
     VerifiedBinaryNativePolyWhirProof,
 };
-use crate::pcs::binary::MerkleArity;
 use crate::verifier::{BinaryPolyWhirMultiStarkInputShape, VerificationError};
 
 type F = Poly64;
@@ -200,7 +199,7 @@ impl PreparedNativeBinaryPolyWhirLayer {
             bus.main_variables(),
             options.main,
             ByteHash::Keccak256,
-            MerkleArity::Two,
+            options.arity,
             options.cap_height,
             &limits.verifier,
         )?;
@@ -211,7 +210,7 @@ impl PreparedNativeBinaryPolyWhirLayer {
                     variables,
                     options.preprocessed,
                     ByteHash::Keccak256,
-                    MerkleArity::Two,
+                    options.arity,
                     options.cap_height,
                     &limits.verifier,
                 )

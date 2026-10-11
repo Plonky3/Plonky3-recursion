@@ -16,6 +16,7 @@ use p3_recursion::artifact::{
 use p3_recursion::builtin_config::{
     BabyBearD4Poseidon2BinaryConfig, FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary,
 };
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::prepared::{
     NativeBinaryMixedRecursionOptions, NativeBinaryRecursionOptions,
     PreparedBinaryMixedWhirMultiStarkLayer, PreparedNativeBinaryMixedWhirLayer,
@@ -42,6 +43,7 @@ fn options() -> NativeBinaryMixedRecursionOptions {
         base: NativeBinaryRecursionOptions {
             main: protocol(32, 4),
             preprocessed: protocol(32, 4),
+            arity: MerkleArity::Two,
             cap_height: 0,
             initial_bytes: b"native-mixed-recursion-layer-v1".to_vec(),
             sumcheck_pow_bits: 0,

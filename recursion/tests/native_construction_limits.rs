@@ -4,7 +4,7 @@ use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField128 as F, Poly64, TowerLevel};
 use p3_bus::ProductGkrRootShape;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits};
-use p3_recursion::pcs::binary::BinaryGenericSumcheckVerifier;
+use p3_recursion::pcs::binary::{BinaryGenericSumcheckVerifier, MerkleArity};
 use p3_recursion::verifier::{
     BinaryAirConstraintPlan, BinaryPolyProductGkrVerifier, BinaryProductGkrVerifier,
     VerificationError,
@@ -150,6 +150,7 @@ fn prepared_poly_budget_stops_input_allocation_before_lowering_and_keys() {
     let options = NativeBinaryRecursionOptions {
         main: protocol(),
         preprocessed: protocol(),
+        arity: MerkleArity::Two,
         cap_height: 0,
         initial_bytes: vec![2],
         sumcheck_pow_bits: 0,

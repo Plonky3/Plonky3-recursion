@@ -64,7 +64,7 @@ use p3_recursion::artifact::{
     BinaryNativeWhirAuthority, BinaryNativeWhirPcsParameters, VerifiedBinaryNativeMixedWhirProof,
     VerifiedBinaryNativeWhirProof,
 };
-use p3_recursion::pcs::binary::BinaryCodewordGrouping;
+use p3_recursion::pcs::binary::{BinaryCodewordGrouping, MerkleArity};
 use p3_recursion::prepared::{
     NativeBinaryFoldingRecursionOptions, NativeBinaryMixedRecursionOptions,
     NativeBinaryMixedRecursiveProof, NativeBinaryRecursionOptions,
@@ -262,6 +262,7 @@ fn options(depth: usize, args: &Args, security: Security) -> NativeBinaryRecursi
     NativeBinaryRecursionOptions {
         main: recursive_protocol(args, security.level),
         preprocessed: recursive_protocol(args, security.level),
+        arity: MerkleArity::Two,
         cap_height: args.cap_height(),
         initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,

@@ -23,6 +23,7 @@ use p3_recursion::artifact::{
     BinaryNativeWhirPcsParameters, VerifiedBinaryNativeMixedWhirProof,
     VerifiedBinaryNativeWhirProof,
 };
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::prepared::{
     NativeBinaryMixedRecursionOptions, NativeBinaryMixedRecursiveProof,
     NativeBinaryRecursionOptions, PreparedNativeBinaryMixedWhirLayer,
@@ -113,6 +114,7 @@ fn options(depth: usize) -> NativeBinaryMixedRecursionOptions {
         base: NativeBinaryRecursionOptions {
             main: recursive.clone(),
             preprocessed: recursive.clone(),
+            arity: MerkleArity::Two,
             cap_height: CAP_HEIGHT,
             initial_bytes: format!("native-binary-mixed-layer-{depth}").into_bytes(),
             sumcheck_pow_bits: 0,

@@ -41,6 +41,9 @@ pub type NativeBinaryRecursiveProof = MultiStarkProof<BinaryNativeWhirConfig<F>>
 pub struct NativeBinaryRecursionOptions {
     pub main: ProtocolParameters,
     pub preprocessed: ProtocolParameters,
+    /// The digests one node of the output commitments' Merkle trees compresses.
+    pub arity: MerkleArity,
+    /// The top tree levels each output commitment's cap replaces.
     pub cap_height: usize,
     pub initial_bytes: Vec<u8>,
     pub sumcheck_pow_bits: usize,
@@ -188,7 +191,7 @@ where
             bus.main_variables(),
             options.main,
             ByteHash::Keccak256,
-            MerkleArity::Two,
+            options.arity,
             options.cap_height,
             &limits.verifier,
         )?;
@@ -199,7 +202,7 @@ where
                     variables,
                     options.preprocessed,
                     ByteHash::Keccak256,
-                    MerkleArity::Two,
+                    options.arity,
                     options.cap_height,
                     &limits.verifier,
                 )

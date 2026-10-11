@@ -11,7 +11,7 @@ use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
     BinaryNativeWhirPcsParameters,
 };
-use p3_recursion::pcs::binary::RecursiveBinaryWhirTowerField;
+use p3_recursion::pcs::binary::{MerkleArity, RecursiveBinaryWhirTowerField};
 use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer};
 use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -38,6 +38,7 @@ fn options() -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
         main: recursive_protocol(),
         preprocessed: recursive_protocol(),
+        arity: MerkleArity::Two,
         cap_height: 0,
         initial_bytes: b"native-recursion-layer-v1".to_vec(),
         sumcheck_pow_bits: 0,
