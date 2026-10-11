@@ -74,6 +74,10 @@ use p3_recursion::prepared::{
 use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
+#[path = "common/limit_hint.rs"]
+mod limit_hint;
+use limit_hint::at_layer;
+
 /// Freed codewords and traces go back to the OS promptly, which keeps peak footprint near
 /// the live working set between the large proving buffers.
 #[global_allocator]
@@ -140,6 +144,12 @@ struct Args {
     /// Maximum retained wiring equalities during construction.
     #[arg(long, default_value_t = 1 << 22)]
     max_pending_connects: usize,
+    /// Maximum retained non-primitive calls during construction.
+    #[arg(long, default_value_t = 1 << 20)]
+    max_non_primitive_calls: usize,
+    /// Maximum retained non-primitive input and output slots during construction.
+    #[arg(long, default_value_t = 1 << 27)]
+    max_non_primitive_slots: usize,
     /// Maximum combined trace, preprocessing, and temporary field cells.
     #[arg(long, default_value_t = 1 << 28)]
     max_trace_cells: usize,
@@ -293,16 +303,17 @@ fn with_security<L>(
     report: impl Fn(&L) -> MultiStarkSecurityReport,
 ) -> Result<L, Box<dyn Error>> {
     let Some(target) = args.security_target else {
-        return Ok(build(Security {
+        return build(Security {
             level: args.pcs_security_level,
             bits: SECURITY_BITS,
-        })?);
+        })
+        .map_err(at_layer(depth));
     };
     // Each WHIR opening's term union-composes rounds that each target the level, so in
     // practice it does not exceed the level and no level below the target meets it.
     let mut level = target.max(args.pow_bits + 1);
     loop {
-        let report = report(&build(Security { level, bits: 1 })?);
+        let report = report(&build(Security { level, bits: 1 }).map_err(at_layer(depth))?);
         let composed = report.security_bits().ok_or_else(|| {
             format!(
                 "layer {depth} security is unassessed: {:?}",
@@ -323,10 +334,11 @@ fn with_security<L>(
         level += 1;
     }
     println!("Layer {depth} PCS security level: {level}");
-    Ok(build(Security {
+    build(Security {
         level,
         bits: target,
-    })?)
+    })
+    .map_err(at_layer(depth))
 }
 /// Composed security of every term of `report` but the WHIR openings', the only terms the PCS
 /// security level raises.
@@ -401,8 +413,8 @@ const fn circuit_limits(args: &Args) -> (DirectCircuitLimits, CircuitConstructio
         CircuitConstructionLimits {
             max_expression_nodes: args.max_expression_nodes,
             max_pending_connects: args.max_pending_connects,
-            max_non_primitive_calls: 1 << 20,
-            max_non_primitive_slots: 1 << 27,
+            max_non_primitive_calls: args.max_non_primitive_calls,
+            max_non_primitive_slots: args.max_non_primitive_slots,
         },
     )
 }
@@ -496,9 +508,13 @@ fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
             layer.circuit().witness_count,
             layer.initial_codeword_cells()
         );
-        let next_expected = layer.output_public_values(&expected)?;
-        let recursive = layer.prove_verified(&checked)?;
-        checked = layer.verify(&recursive, &expected)?;
+        let next_expected = layer
+            .output_public_values(&expected)
+            .map_err(at_layer(depth))?;
+        let recursive = layer.prove_verified(&checked).map_err(at_layer(depth))?;
+        checked = layer
+            .verify(&recursive, &expected)
+            .map_err(at_layer(depth))?;
         println!(
             "Native Tower128 layer {depth} proved and verified in {:.2?}",
             start.elapsed()
@@ -554,9 +570,13 @@ fn prove_mixed<S>(
         layer.circuit().witness_count,
         layer.initial_codeword_cells()
     );
-    let next_expected = layer.output_public_values(expected)?;
-    let recursive = prove(layer)?;
-    let checked = layer.verify(&recursive, expected)?;
+    let next_expected = layer
+        .output_public_values(expected)
+        .map_err(at_layer(depth))?;
+    let recursive = prove(layer).map_err(at_layer(depth))?;
+    let checked = layer
+        .verify(&recursive, expected)
+        .map_err(at_layer(depth))?;
     println!(
         "Native Tower128 layer {depth} proved and verified in {:.2?}",
         start.elapsed()
@@ -670,7 +690,8 @@ fn run_folding(args: &Args) -> Result<(), Box<dyn Error>> {
         folding_options(1, args),
         &limits,
         &construction_limits,
-    )?;
+    )
+    .map_err(at_layer(1))?;
     drop(prover);
     for depth in 1..=args.layers {
         let start = Instant::now();
@@ -679,9 +700,13 @@ fn run_folding(args: &Args) -> Result<(), Box<dyn Error>> {
             layer.circuit().witness_count,
             layer.initial_codeword_cells()
         );
-        let next_expected = layer.output_public_values(&expected)?;
-        let recursive = layer.prove_verified(&checked)?;
-        checked = layer.verify(&recursive, &expected)?;
+        let next_expected = layer
+            .output_public_values(&expected)
+            .map_err(at_layer(depth))?;
+        let recursive = layer.prove_verified(&checked).map_err(at_layer(depth))?;
+        checked = layer
+            .verify(&recursive, &expected)
+            .map_err(at_layer(depth))?;
         println!(
             "Native Tower128 layer {depth} proved and verified in {:.2?}",
             start.elapsed()
@@ -703,7 +728,8 @@ fn run_folding(args: &Args) -> Result<(), Box<dyn Error>> {
                 folding_options(depth + 1, args),
                 &limits,
                 &construction_limits,
-            )?;
+            )
+            .map_err(at_layer(depth + 1))?;
         }
     }
     Ok(())
@@ -746,7 +772,8 @@ fn run_grouped_folding(args: &Args) -> Result<(), Box<dyn Error>> {
             folding_options(1, args),
             &limits,
             &construction_limits,
-        )?;
+        )
+        .map_err(at_layer(1))?;
     drop(prover);
     for depth in 1..=args.layers {
         let start = Instant::now();
@@ -755,9 +782,13 @@ fn run_grouped_folding(args: &Args) -> Result<(), Box<dyn Error>> {
             layer.circuit().witness_count,
             layer.initial_codeword_cells()
         );
-        let next_expected = layer.output_public_values(&expected)?;
-        let recursive = layer.prove_verified(&checked)?;
-        checked = layer.verify(&recursive, &expected)?;
+        let next_expected = layer
+            .output_public_values(&expected)
+            .map_err(at_layer(depth))?;
+        let recursive = layer.prove_verified(&checked).map_err(at_layer(depth))?;
+        checked = layer
+            .verify(&recursive, &expected)
+            .map_err(at_layer(depth))?;
         println!(
             "Native Tower128 layer {depth} proved and verified in {:.2?}",
             start.elapsed()
@@ -780,7 +811,8 @@ fn run_grouped_folding(args: &Args) -> Result<(), Box<dyn Error>> {
                     folding_options(depth + 1, args),
                     &limits,
                     &construction_limits,
-                )?;
+                )
+                .map_err(at_layer(depth + 1))?;
         }
     }
     Ok(())

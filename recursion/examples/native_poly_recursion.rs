@@ -47,6 +47,10 @@ use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryP
 use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
+#[path = "common/limit_hint.rs"]
+mod limit_hint;
+use limit_hint::at_layer;
+
 /// Freed codewords and traces go back to the OS promptly, which keeps peak footprint near
 /// the live working set between the large proving buffers.
 #[global_allocator]
@@ -66,6 +70,12 @@ struct Args {
     /// Maximum retained wiring equalities during construction.
     #[arg(long, default_value_t = 1 << 22)]
     max_pending_connects: usize,
+    /// Maximum retained non-primitive calls during construction.
+    #[arg(long, default_value_t = 1 << 20)]
+    max_non_primitive_calls: usize,
+    /// Maximum retained non-primitive input and output slots during construction.
+    #[arg(long, default_value_t = 1 << 27)]
+    max_non_primitive_slots: usize,
     /// Maximum combined trace, preprocessing, and temporary field cells.
     #[arg(long, default_value_t = 1 << 29)]
     max_trace_cells: usize,
@@ -194,8 +204,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let construction_limits = CircuitConstructionLimits {
         max_expression_nodes: args.max_expression_nodes,
         max_pending_connects: args.max_pending_connects,
-        max_non_primitive_calls: 1 << 20,
-        max_non_primitive_slots: 1 << 27,
+        max_non_primitive_calls: args.max_non_primitive_calls,
+        max_non_primitive_slots: args.max_non_primitive_slots,
     };
     println!("Preparing native recursion layer 1...");
     let mut layer =
@@ -204,7 +214,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             options(1, &args),
             &limits,
             &construction_limits,
-        )?;
+        )
+        .map_err(at_layer(1))?;
     drop(prover);
     for depth in 1..=args.layers {
         let start = Instant::now();
@@ -213,9 +224,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             layer.circuit().witness_count,
             layer.initial_codeword_cells()
         );
-        let next_expected = layer.output_public_values(&expected)?;
-        let recursive = layer.prove_verified(&checked)?;
-        checked = layer.verify(&recursive, &expected)?;
+        let next_expected = layer
+            .output_public_values(&expected)
+            .map_err(at_layer(depth))?;
+        let recursive = layer.prove_verified(&checked).map_err(at_layer(depth))?;
+        checked = layer
+            .verify(&recursive, &expected)
+            .map_err(at_layer(depth))?;
         println!(
             "Native Poly64/Poly192 layer {depth} proved and verified in {:.2?}",
             start.elapsed()
@@ -230,7 +245,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     options(depth + 1, &args),
                     &limits,
                     &construction_limits,
-                )?;
+                )
+                .map_err(at_layer(depth + 1))?;
         }
     }
     Ok(())
