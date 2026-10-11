@@ -46,6 +46,8 @@ mod native_indexed_circuit;
 mod native_keccak_circuit;
 #[path = "../native_poly_air.rs"]
 mod native_poly_air;
+#[path = "../native_poly_boolean_whir_trace.rs"]
+mod native_poly_boolean_whir_trace;
 #[path = "../native_poly_fraction.rs"]
 mod native_poly_fraction;
 #[path = "../native_poly_product.rs"]

@@ -47,6 +47,7 @@ type WhirVerificationOutput<T> = (Vec<p3_sumcheck::OpeningBatch<T>>, BinaryTower
 
 mod boolean;
 mod boolean_whir;
+mod boolean_whir_poly;
 mod byte_mmcs;
 mod fields;
 mod gadgets;
@@ -100,6 +101,10 @@ pub use boolean::{
 pub use boolean_whir::{
     BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
     NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
+};
+pub use boolean_whir_poly::{
+    BinaryPolyBooleanWhirInputShape, BinaryPolyBooleanWhirVerifier,
+    NativeBinaryPolyBooleanWhirInput, NativePolyBooleanWhirProofTargets,
 };
 pub use byte_mmcs::ByteDigestMmcs;
 pub use fields::{
