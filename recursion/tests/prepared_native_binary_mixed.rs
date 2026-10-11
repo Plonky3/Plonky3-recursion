@@ -198,6 +198,7 @@ fn mixed_output_layer_proves_and_binds_the_original_statement() {
     let outer = layer.prove_verified(&checked).unwrap();
     assert!(outer.opening.packed.is_some());
     let token = layer.verify(&outer, &public).unwrap();
+    // The Bits-mode bus exports the Tower128 child statement unchanged and in order.
     assert_eq!(
         token
             .public_values()
@@ -205,13 +206,7 @@ fn mixed_output_layer_proves_and_binds_the_original_statement() {
             .flatten()
             .copied()
             .collect::<Vec<_>>(),
-        layer
-            .output_public_values(&public)
-            .unwrap()
-            .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<_>>()
+        public[0]
     );
     let mut wrong = public;
     wrong[0][1] += F::ONE;
