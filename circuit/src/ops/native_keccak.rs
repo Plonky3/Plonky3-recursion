@@ -186,7 +186,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
     }
 
     /// The raw coordinates of a circuit constant below `2^bits`.
-    fn constant_raw(&self, value: ExprId, bits: usize) -> Option<u16> {
+    pub(super) fn constant_raw(&self, value: ExprId, bits: usize) -> Option<u16> {
         let raw = self.constant_value(value)?.to_raw_coordinates();
         u16::try_from(raw).ok().filter(|_| raw >> bits == 0)
     }
