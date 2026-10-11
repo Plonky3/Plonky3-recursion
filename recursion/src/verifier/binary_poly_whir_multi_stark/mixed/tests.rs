@@ -735,6 +735,38 @@ fn bit_committed_table_must_be_exactly_the_boolean_assuming_air() {
     );
 }
 
+/// The native first fold bounds the dense tables' heights, which share the dense layout. The
+/// bit-committed table lies in its own bit stack, whose variables its height must match.
+#[test]
+fn first_fold_bounds_the_dense_tables_and_the_bit_stack_the_packed_table() {
+    let (circuit, _) = keccak_chain();
+    let bus = native_bus(&circuit, KeccakCommitment::Bits);
+    let parameters = Parameters::new(&bus, MerkleArity::Two);
+    let keccak = parameters.table;
+    let refusal = |table: usize| {
+        let mut heights = bus.log_heights().to_vec();
+        heights[table] = FOLDING - 1;
+        match parameters.verifier(
+            bus.airs(),
+            &heights,
+            keccak,
+            placeholder_cap(MerkleArity::Two),
+        ) {
+            Err(VerificationError::InvalidProofShape(message)) => message,
+            _ => panic!("table {table} below the first fold was not refused by its shape"),
+        }
+    };
+    let dense = usize::from(keccak == 0);
+    assert_eq!(
+        refusal(dense),
+        "polynomial WHIR trace height is below the native first fold"
+    );
+    assert_eq!(
+        refusal(keccak),
+        "binary trace tables do not match the committed bit arity"
+    );
+}
+
 fn identity(shape: &BinaryPolyMixedWhirMultiStarkInputShape) -> Vec<u8> {
     let mut w = crate::artifact::wire::Writer::new(1 << 24);
     shape.write_identity(&mut w).unwrap();
