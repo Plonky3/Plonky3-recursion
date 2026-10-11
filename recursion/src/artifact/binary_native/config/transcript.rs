@@ -258,11 +258,16 @@ impl KeccakPrefix {
             let mut state = self.state.map(|word| [word; VECTOR_LEN]);
             for block in 0..self.num_blocks {
                 let offset = block * KECCAK_RATE;
+                // Each state word is built across all lanes and stored whole: the
+                // permutation loads it as one vector, and a partly written word
+                // cannot be forwarded into that load.
                 for (word, lane_words) in state[..KECCAK_RATE / 8].iter_mut().enumerate() {
-                    for (lane_word, blocks) in lane_words.iter_mut().zip(&lanes) {
-                        let bytes = &blocks[offset + 8 * word..][..8];
-                        *lane_word ^= u64::from_le_bytes(bytes.try_into().expect("eight bytes"));
-                    }
+                    let at = offset + 8 * word;
+                    *lane_words = core::array::from_fn(|lane| {
+                        let bytes = &lanes[lane][at..][..8];
+                        lane_words[lane]
+                            ^ u64::from_le_bytes(bytes.try_into().expect("eight bytes"))
+                    });
                 }
                 KeccakF.permute_mut(&mut state);
             }
