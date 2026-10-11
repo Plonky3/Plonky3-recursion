@@ -9,7 +9,10 @@ pub use mixed_whir::{
     BinaryNativePolyMixedWhirConfig, BinaryNativePolyMixedWhirPcsParameters,
 };
 pub(crate) use mixed_whir::{MixedWhirError, MixedWhirPcs, NativeMixedWhirPcs};
-pub(super) use mixed_whir::{MixedWhirProof, NativeMixedWhirProof};
+pub(super) use mixed_whir::{
+    MixedWhirPartParameters, MixedWhirProof, NativeMixedWhirPcsParameters, NativeMixedWhirProof,
+    PackedTableParameters,
+};
 mod poly_whir;
 pub(super) use poly_whir::NativePolyWhirPcs;
 pub use poly_whir::{

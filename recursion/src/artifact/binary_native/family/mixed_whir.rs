@@ -1,11 +1,13 @@
 //! Private closed family of a dense WHIR commitment beside one packed-bit table commitment.
+use p3_air::BaseAir;
 use p3_binary_field::BinaryField128;
+use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_sumcheck::layout::SuffixProver;
 use p3_whir::FoldingFactor;
 
 use super::super::config::{
     BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters, BinaryNativeWhirPcsParameters,
-    MixedWhirPcs,
+    MixedWhirPartParameters, MixedWhirPcs, NativeMixedWhirPcsParameters, PackedTableParameters,
 };
 use super::*;
 use crate::pcs::binary::MerkleArity;
@@ -40,15 +42,10 @@ impl NativeFamily<E, E> for MixedWhirFamily {
         p.dense.arity
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
-        p.packed
-            .as_ref()
-            .map_or(0, |packed| packed.whir.config.max_pow_bits())
-            .max(p.dense.config.max_pow_bits())
+        pow_bits(p)
     }
     fn bits_committed(p: &Self::Parameters, table: usize) -> bool {
-        p.packed
-            .as_ref()
-            .is_some_and(|packed| packed.table == table)
+        bits_committed(p, table)
     }
     fn build_recursive<A: VerifierAir<E, E>>(
         airs: &[&A],
@@ -58,57 +55,7 @@ impl NativeFamily<E, E> for MixedWhirFamily {
         limits: &VerifierLimits,
     ) -> Result<Self::Recursive, VerificationError> {
         let main = &spec.main;
-        let packed = main.packed.as_ref().ok_or_else(|| {
-            invalid("binary native mixed WHIR main commitment has no packed table")
-        })?;
-        if spec
-            .preprocessed
-            .as_ref()
-            .is_some_and(|pp| pp.packed.is_some())
-        {
-            return Err(invalid(
-                "binary native mixed WHIR preprocessing commits no packed table",
-            ));
-        }
-        let first = main.dense.config.round_folding_factor(0);
-        if heights.iter().any(|&height| height < first) {
-            return Err(invalid(
-                "binary native mixed WHIR trace height is below its initial folding factor",
-            ));
-        }
-        if spec
-            .preprocessed
-            .as_ref()
-            .is_some_and(|pp| pp.dense.config.round_folding_factor(0) != first)
-        {
-            return Err(invalid(
-                "binary native mixed WHIR main and preprocessing initial folding factors differ",
-            ));
-        }
-        // The bit stack holds the table's columns, padded to a power of two, beneath its rows.
-        let (air, &height) = airs
-            .get(packed.table)
-            .zip(heights.get(packed.table))
-            .ok_or_else(|| {
-                invalid("binary native mixed WHIR packed table index exceeds the AIRs")
-            })?;
-        let column_variables = air.width().next_power_of_two().ilog2() as usize;
-        if column_variables.checked_add(height) != Some(packed.bit_variables) {
-            return Err(invalid(
-                "binary native mixed WHIR bit variables do not match the packed table",
-            ));
-        }
-        let mut parameters_usage = InputResourceUsage::default();
-        for p in [&main.dense, &packed.whir]
-            .into_iter()
-            .chain(spec.preprocessed.iter().map(|pp| &pp.dense))
-        {
-            parameters_usage
-                .add_metadata_entries(limits, p.config.params().round_log_inv_rates.len())?;
-            if let FoldingFactor::PerRound(factors) = &p.config.params().folding_factor {
-                parameters_usage.add_metadata_entries(limits, factors.len())?;
-            }
-        }
+        let (packed, metadata_entries) = check_spec(airs, heights, spec, limits)?;
         let mut verifier = if let Some(pp) = &spec.preprocessed {
             BinaryMixedWhirMultiStarkVerifier::with_preprocessing(
                 airs,
@@ -145,7 +92,7 @@ impl NativeFamily<E, E> for MixedWhirFamily {
                 limits,
             )?
         };
-        verifier.retain_native_parameter_metadata(parameters_usage.metadata_entries, limits)?;
+        verifier.retain_native_parameter_metadata(metadata_entries, limits)?;
         Ok(MixedWhirRecursive {
             verifier,
             dense: main.dense.clone(),
@@ -216,17 +163,7 @@ impl NativeFamily<E, E> for MixedWhirFamily {
     }
     fn write_parameters(w: &mut Writer, p: &Self::Parameters) -> Result<(), ArtifactError> {
         type Whir = WhirFamily<SuffixProver<E, E>>;
-        <Whir as NativeFamily<E, E>>::write_parameters(w, &p.dense)?;
-        w.write_bool(p.packed.is_some())?;
-        if let Some(packed) = &p.packed {
-            w.write_count("binary native mixed WHIR packed table", packed.table)?;
-            w.write_count(
-                "binary native mixed WHIR bit variables",
-                packed.bit_variables,
-            )?;
-            <Whir as NativeFamily<E, E>>::write_parameters(w, &packed.whir)?;
-        }
-        Ok(())
+        write_parameters(w, p, <Whir as NativeFamily<E, E>>::write_parameters)
     }
     fn write_shape(w: &mut Writer, recursive: &Self::Recursive) -> Result<(), ArtifactError> {
         recursive.verifier.input_shape().write_identity(w)
@@ -234,6 +171,114 @@ impl NativeFamily<E, E> for MixedWhirFamily {
     fn suite() -> u16 {
         field_suite::<E, E>() | 0x600
     }
+}
+
+/// The longest grinding of either part.
+pub(super) fn pow_bits<P>(p: &NativeMixedWhirPcsParameters<P>) -> usize
+where
+    P: MixedWhirPartParameters,
+    BinaryNativeChallenger<P::Val>: FieldChallenger<P::Val> + GrindingChallenger<Witness = P::Val>,
+{
+    p.packed
+        .as_ref()
+        .map_or(0, |packed| packed.whir.whir().max_pow_bits())
+        .max(p.dense.whir().max_pow_bits())
+}
+
+/// Whether the commitment stores `table` as bits.
+pub(super) fn bits_committed<P>(p: &NativeMixedWhirPcsParameters<P>, table: usize) -> bool {
+    p.packed
+        .as_ref()
+        .is_some_and(|packed| packed.table == table)
+}
+
+/// The trusted checks of a mixed specification, and the metadata entries its parts' parameters
+/// retain. Returns the packed part: the main commitment must bit-commit a table, the
+/// preprocessing commitment none, every trace must reach the initial folding factor, and the
+/// packed table's bit stack must be its columns padded to a power of two beneath its rows.
+pub(super) fn check_spec<'a, P, A>(
+    airs: &[&A],
+    heights: &[usize],
+    spec: &'a BinaryNativeVerifierSpec<NativeMixedWhirPcsParameters<P>>,
+    limits: &VerifierLimits,
+) -> Result<(&'a PackedTableParameters<P>, usize), VerificationError>
+where
+    P: MixedWhirPartParameters,
+    A: BaseAir<P::Val>,
+    BinaryNativeChallenger<P::Val>: FieldChallenger<P::Val> + GrindingChallenger<Witness = P::Val>,
+{
+    let main = &spec.main;
+    let packed = main
+        .packed
+        .as_ref()
+        .ok_or_else(|| invalid("binary native mixed WHIR main commitment has no packed table"))?;
+    if spec
+        .preprocessed
+        .as_ref()
+        .is_some_and(|pp| pp.packed.is_some())
+    {
+        return Err(invalid(
+            "binary native mixed WHIR preprocessing commits no packed table",
+        ));
+    }
+    let first = main.dense.whir().round_folding_factor(0);
+    if heights.iter().any(|&height| height < first) {
+        return Err(invalid(
+            "binary native mixed WHIR trace height is below its initial folding factor",
+        ));
+    }
+    if spec
+        .preprocessed
+        .as_ref()
+        .is_some_and(|pp| pp.dense.whir().round_folding_factor(0) != first)
+    {
+        return Err(invalid(
+            "binary native mixed WHIR main and preprocessing initial folding factors differ",
+        ));
+    }
+    // The bit stack holds the table's columns, padded to a power of two, beneath its rows.
+    let (air, &height) = airs
+        .get(packed.table)
+        .zip(heights.get(packed.table))
+        .ok_or_else(|| invalid("binary native mixed WHIR packed table index exceeds the AIRs"))?;
+    let column_variables = air.width().next_power_of_two().ilog2() as usize;
+    if column_variables.checked_add(height) != Some(packed.bit_variables) {
+        return Err(invalid(
+            "binary native mixed WHIR bit variables do not match the packed table",
+        ));
+    }
+    let mut parameters_usage = InputResourceUsage::default();
+    for p in [&main.dense, &packed.whir]
+        .into_iter()
+        .chain(spec.preprocessed.iter().map(|pp| &pp.dense))
+    {
+        let params = p.whir().params();
+        parameters_usage.add_metadata_entries(limits, params.round_log_inv_rates.len())?;
+        if let FoldingFactor::PerRound(factors) = &params.folding_factor {
+            parameters_usage.add_metadata_entries(limits, factors.len())?;
+        }
+    }
+    Ok((packed, parameters_usage.metadata_entries))
+}
+
+/// The dense part's parameters, then the packed part's table, bit variables and parameters,
+/// each part written by `write_part`.
+pub(super) fn write_parameters<P>(
+    w: &mut Writer,
+    p: &NativeMixedWhirPcsParameters<P>,
+    write_part: fn(&mut Writer, &P) -> Result<(), ArtifactError>,
+) -> Result<(), ArtifactError> {
+    write_part(w, &p.dense)?;
+    w.write_bool(p.packed.is_some())?;
+    if let Some(packed) = &p.packed {
+        w.write_count("binary native mixed WHIR packed table", packed.table)?;
+        w.write_count(
+            "binary native mixed WHIR bit variables",
+            packed.bit_variables,
+        )?;
+        write_part(w, &packed.whir)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
