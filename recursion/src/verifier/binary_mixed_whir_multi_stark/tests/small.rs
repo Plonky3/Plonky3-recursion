@@ -78,7 +78,7 @@ fn small_proof() -> Mixed {
 
 const SQUARE_VARIABLES: usize = FOLDING;
 /// The row variables one field element absorbs.
-const BOOLEAN_VARIABLES: usize = 7;
+const ABSORBED_VARIABLES: usize = 7;
 
 /// A first dense table, a Boolean table of `bit_variables` row variables read at one row only,
 /// so the ring switch sends one tensor, and a square table. Only a [`TestAir::Dense`] first
@@ -238,7 +238,7 @@ fn minimal_mixed_proof_satisfies_the_prime_circuit_and_refuses_tampers() {
 /// continuation pins: a circuit verifying them in the other order refuses the honest witness.
 #[test]
 fn preprocessing_after_the_packed_opening_satisfies_the_prime_circuit() {
-    let mixed = minimal_proof_with(TestAir::Dense, BOOLEAN_VARIABLES);
+    let mixed = minimal_proof_with(TestAir::Dense, ABSORBED_VARIABLES);
     assert!(mixed.proof.preprocessed_opening.is_some());
     let verifier = mixed.verifier();
     let (_, private) = mixed.honest_private_values(&verifier);
