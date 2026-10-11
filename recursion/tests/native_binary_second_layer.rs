@@ -41,43 +41,43 @@ struct Case {
 }
 
 /// Pairwise output trees under a cap of two levels: 4 roots. The second layer
-/// measures 429,034 expression nodes, 32,155 pending connections, 6,583
-/// non-primitive calls, 714,296 slots, 408,905 witnesses, 197,886 operations
+/// measures 411,547 expression nodes, 16,477 pending connections, 6,265
+/// non-primitive calls, 703,484 slots, 397,174 witnesses, 185,480 operations
 /// and 1,523 native Keccak-f calls.
 const PAIRWISE: Case = Case {
     arity: MerkleArity::Two,
     cap_height: 2,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 481_000,
-        max_pending_connects: 36_100,
-        max_non_primitive_calls: 7_380,
-        max_non_primitive_slots: 801_000,
+        max_expression_nodes: 461_000,
+        max_pending_connects: 18_500,
+        max_non_primitive_calls: 7_020,
+        max_non_primitive_slots: 788_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 459_000,
-        max_operations: 222_000,
+        max_witnesses: 445_000,
+        max_operations: 208_000,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_710,
 };
 /// Four-digest output trees under a cap of one level: the same 4 roots. The
-/// second layer measures 423,704 expression nodes, 32,155 pending
-/// connections, 6,374 non-primitive calls, 630,696 slots, 403,784 witnesses,
-/// 212,153 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
+/// second layer measures 406,218 expression nodes, 16,477 pending
+/// connections, 6,056 non-primitive calls, 619,884 slots, 392,054 witnesses,
+/// 199,748 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
 /// below the pairwise layer's count, so a layer whose trees fell back to
 /// pairwise nodes fails it.
 const FOUR_DIGEST: Case = Case {
     arity: MerkleArity::Four,
     cap_height: 1,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 475_000,
-        max_pending_connects: 36_100,
-        max_non_primitive_calls: 7_150,
-        max_non_primitive_slots: 707_000,
+        max_expression_nodes: 455_000,
+        max_pending_connects: 18_500,
+        max_non_primitive_calls: 6_790,
+        max_non_primitive_slots: 695_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 453_000,
-        max_operations: 238_000,
+        max_witnesses: 440_000,
+        max_operations: 224_000,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_480,
@@ -339,6 +339,25 @@ fn second_layer_is_bounded_and_refuses_forged_proof_fields(case: &Case) {
             Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
                 if op == NpoTypeId::native_keccak_f1600()
         ));
+    }
+    // A cap limb reaches the transcript as a word. In a WHIR round cap it is
+    // a native Keccak lane of the next refill, which refuses a seventeenth
+    // coordinate; the commitment cap, absorbed after the odd-length initial
+    // bytes, is split into checked bytes. A flipped limb changes the draws.
+    let round_cap = targets.opening.rounds[0].cap[0][5];
+    for (limb, lane) in [(targets.commitment[0][5], false), (round_cap, true)] {
+        assert!(private[position(limb)].to_raw_coordinates() < 1 << 16);
+        assert!(forge(limb, F::ONE).is_err());
+        let refused = forge(limb, wide);
+        assert!(refused.is_err());
+        assert!(
+            !lane
+                || matches!(
+                    refused,
+                    Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
+                        if op == NpoTypeId::native_keccak_f1600()
+                )
+        );
     }
     // An opened Keccak column value changes the transcript and the claims.
     let opened = targets.opening.evals[keccak].current()[0].as_expr();

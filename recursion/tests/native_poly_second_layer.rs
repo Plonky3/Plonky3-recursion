@@ -33,20 +33,20 @@ type F = Poly64;
 const ARITY: MerkleArity = MerkleArity::Four;
 const CAP_HEIGHT: usize = 1;
 
-/// About 12% above the measured second-layer verifier: 965,085 expression
-/// nodes, 35,944 pending connections, 15,283 non-primitive calls and 790,120
+/// About 12% above the measured second-layer verifier: 946,968 expression
+/// nodes, 20,258 pending connections, 14,957 non-primitive calls and 779,180
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 1_081_000,
-    max_pending_connects: 40_300,
-    max_non_primitive_calls: 17_200,
-    max_non_primitive_slots: 885_000,
+    max_expression_nodes: 1_061_000,
+    max_pending_connects: 22_700,
+    max_non_primitive_calls: 16_800,
+    max_non_primitive_slots: 873_000,
 };
-/// About 12% above the measured 928,170 witnesses and 705,410 operations.
+/// About 12% above the measured 915,825 witnesses and 692,443 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 1_039_000,
-    max_operations: 790_000,
+    max_witnesses: 1_026_000,
+    max_operations: 776_000,
     max_trace_cells: 1 << 28,
 };
 /// About 12% above the measured 1,591 native Keccak-f calls.
@@ -298,6 +298,25 @@ fn second_native_poly_layer_verifier_is_bounded_and_refuses_forged_proof_fields(
             Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
                 if op == NpoTypeId::native_keccak_f1600()
         ));
+    }
+    // A cap limb reaches the transcript as a word. In a WHIR round cap it is
+    // a native Keccak lane of the next refill, which refuses a seventeenth
+    // coordinate; the commitment cap, absorbed after the odd-length initial
+    // bytes, is split into checked bytes. A flipped limb changes the draws.
+    let round_cap = targets.opening.rounds[0].cap[0][5];
+    for (limb, lane) in [(targets.commitment[0][5], false), (round_cap, true)] {
+        assert!(private[position(limb)].to_raw_coordinates() < 1 << 16);
+        assert!(forge(limb, F::ONE).is_err());
+        let refused = forge(limb, wide);
+        assert!(refused.is_err());
+        assert!(
+            !lane
+                || matches!(
+                    refused,
+                    Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
+                        if op == NpoTypeId::native_keccak_f1600()
+                )
+        );
     }
     // An opened Keccak column coefficient changes the transcript and the
     // claims, and a leaf value changes its committed row's digest.
