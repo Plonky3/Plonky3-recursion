@@ -250,15 +250,16 @@ impl<AB: AirBuilder + BusInteractionBuilder> Air<AB> for BooleanAssumingAir {
 #[test]
 fn poly_boolean_assuming_air_requires_a_bit_committed_table() {
     let limits = VerifierLimits::default();
-    assert!(
+    assert!(matches!(
         BinaryPolyAirConstraintPlan::with_interaction_limits(
             &BooleanAssumingAir,
             2,
             &limits,
             false
-        )
-        .is_err()
-    );
+        ),
+        Err(VerificationError::InvalidProofShape(message))
+            if message == "binary AIR requires a Boolean trace commitment"
+    ));
     assert!(
         BinaryPolyAirConstraintPlan::with_interaction_limits(&BooleanAssumingAir, 2, &limits, true)
             .is_ok()
@@ -276,5 +277,6 @@ fn poly_bit_flag_leaves_non_boolean_identities_unchanged() {
         plan.write_identity(&mut w).unwrap();
         w.finish().unwrap()
     };
+    assert_eq!(unflagged, flagged);
     assert_eq!(identity(&unflagged), identity(&flagged));
 }
