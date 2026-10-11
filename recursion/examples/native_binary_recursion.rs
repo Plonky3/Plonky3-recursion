@@ -46,17 +46,21 @@ use p3_circuit::CircuitConstructionLimits;
 use p3_circuit::ops::ByteHash;
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_multi_stark::MultiStarkSecurityReport;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeAuthority, BinaryNativeGroupedAuthority,
     BinaryNativeGroupedPcsParameters, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
-    BinaryNativeWhirAuthority, BinaryNativeWhirPcsParameters,
+    BinaryNativeWhirAuthority, BinaryNativeWhirPcsParameters, VerifiedBinaryNativeMixedWhirProof,
+    VerifiedBinaryNativeWhirProof,
 };
 use p3_recursion::pcs::binary::BinaryCodewordGrouping;
 use p3_recursion::prepared::{
-    NativeBinaryFoldingRecursionOptions, NativeBinaryRecursionOptions,
-    PreparedNativeBinaryGroupedLayer, PreparedNativeBinaryLayer, PreparedNativeBinaryWhirLayer,
+    NativeBinaryFoldingRecursionOptions, NativeBinaryMixedRecursionOptions,
+    NativeBinaryMixedRecursiveProof, NativeBinaryRecursionOptions,
+    PreparedNativeBinaryGroupedLayer, PreparedNativeBinaryLayer,
+    PreparedNativeBinaryMixedWhirLayer, PreparedNativeBinaryWhirLayer,
 };
-use p3_recursion::verifier::VerifierLimits;
+use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 /// Freed codewords and traces go back to the OS promptly, which keeps peak footprint near
@@ -66,10 +70,19 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 type F = BinaryField128;
 const DEFAULT_CAP_HEIGHT: usize = 4;
+/// Composed security bits each recursive output statement requires without `--security-target`.
+const SECURITY_BITS: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum Pcs {
     Whir,
     Folding,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum KeccakCommitment {
+    /// The Keccak table as packed bits, beside a dense commitment of every other table.
+    Packed,
+    /// Every table as field elements.
+    Dense,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum Leaves {
@@ -88,6 +101,13 @@ struct Args {
     /// smallest coset-leaf tree has `2^log_inv_rate` leaves.
     #[arg(long, value_enum, default_value_t = Leaves::Coset)]
     leaves: Leaves,
+    /// Commitment of every recursion layer's Keccak table. Defaults to `dense`; `packed`
+    /// requires `--pcs whir`.
+    #[arg(long, value_enum)]
+    keccak_commitment: Option<KeccakCommitment>,
+    /// Log inverse rate of the packed Keccak commitment.
+    #[arg(long, default_value_t = 3)]
+    packed_log_inv_rate: usize,
     /// Log folding factor of the recursive output PCS (both WHIR and folding).
     #[arg(long, default_value_t = 4)]
     fold_arity: usize,
@@ -111,9 +131,11 @@ struct Args {
     /// Maximum combined trace, preprocessing, and temporary field cells.
     #[arg(long, default_value_t = 1 << 28)]
     max_trace_cells: usize,
-    /// Maximum combined initial main and preprocessing codeword cells. Defaults to
-    /// 2^29 for WHIR at `--log-inv-rate 1`, doubled for each further rate bit and for
-    /// `--pcs folding`, since each multiplies every committed codeword.
+    /// Maximum combined initial main, packed Keccak and preprocessing codeword cells. Defaults
+    /// to 2^29 for WHIR at `--log-inv-rate 1`, doubled for each further rate bit and for
+    /// `--pcs folding`, since each multiplies every dense codeword. The packed Keccak codeword
+    /// stores 128 bits per cell, so with `--packed-log-inv-rate` at most 6 above
+    /// `--log-inv-rate` it is smaller than the dense Keccak codeword it replaces.
     #[arg(long)]
     max_pcs_codeword_cells: Option<usize>,
     /// Maximum aggregate verifier rounds in each recursive output authority. It bounds the
@@ -123,6 +145,11 @@ struct Args {
     /// PCS security level per opening; composed security still requires four bits.
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
+    /// Composed security bits every recursive output statement requires (`--pcs whir` only).
+    /// Each layer then uses the smallest PCS security level, shared by all of its commitments,
+    /// whose composed security meets the target.
+    #[arg(long, conflicts_with = "pcs_security_level")]
+    security_target: Option<usize>,
     /// Merkle cap height for the recursive output proofs. Defaults to 4, or
     /// to at most `--log-inv-rate` with `--pcs folding --leaves coset`.
     #[arg(long)]
@@ -142,6 +169,10 @@ impl Args {
                 .checked_shl(29u32.saturating_add(rate).saturating_add(folding))
                 .unwrap_or(usize::MAX)
         })
+    }
+    /// `--keccak-commitment`, or the default for the selected commitment.
+    fn keccak_commitment(&self) -> KeccakCommitment {
+        self.keccak_commitment.unwrap_or(KeccakCommitment::Dense)
     }
     /// `--cap-height`, or the default for the selected commitment and leaves.
     fn cap_height(&self) -> usize {
@@ -186,24 +217,31 @@ const fn protocol() -> ProtocolParameters {
         starting_log_inv_rate: 1,
     }
 }
-fn recursive_protocol(args: &Args) -> ProtocolParameters {
+/// PCS security level of every commitment of one recursion layer, and the composed security
+/// bits its output statement requires.
+#[derive(Clone, Copy)]
+struct Security {
+    level: usize,
+    bits: usize,
+}
+fn recursive_protocol(args: &Args, level: usize) -> ProtocolParameters {
     ProtocolParameters {
-        security_level: args.pcs_security_level,
+        security_level: level,
         pow_bits: args.pow_bits,
         folding_factor: FoldingFactor::Constant(args.fold_arity),
         starting_log_inv_rate: args.log_inv_rate,
         ..protocol()
     }
 }
-fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
+fn options(depth: usize, args: &Args, security: Security) -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
-        main: recursive_protocol(args),
-        preprocessed: recursive_protocol(args),
+        main: recursive_protocol(args, security.level),
+        preprocessed: recursive_protocol(args, security.level),
         cap_height: args.cap_height(),
         initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
-        security_bits: 4,
+        security_bits: security.bits,
         max_pcs_codeword_cells: args.max_pcs_codeword_cells(),
         artifact_limits: ArtifactLimits {
             verifier: VerifierLimits {
@@ -215,16 +253,95 @@ fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
         },
     }
 }
+fn mixed_options(
+    depth: usize,
+    args: &Args,
+    security: Security,
+) -> NativeBinaryMixedRecursionOptions {
+    NativeBinaryMixedRecursionOptions {
+        base: options(depth, args, security),
+        packed: ProtocolParameters {
+            starting_log_inv_rate: args.packed_log_inv_rate,
+            ..recursive_protocol(args, security.level)
+        },
+    }
+}
+/// Builds recursion layer `depth` at `--pcs-security-level`, requiring four composed bits; or,
+/// with `--security-target`, at the smallest PCS security level whose composed security, in
+/// the `report` of the layer's output authority, meets the target, which the layer then
+/// requires. Probe layers require one composed bit, so their reports decide the search.
+fn with_security<L>(
+    depth: usize,
+    args: &Args,
+    build: impl Fn(Security) -> Result<L, VerificationError>,
+    report: impl Fn(&L) -> MultiStarkSecurityReport,
+) -> Result<L, Box<dyn Error>> {
+    let Some(target) = args.security_target else {
+        return Ok(build(Security {
+            level: args.pcs_security_level,
+            bits: SECURITY_BITS,
+        })?);
+    };
+    // Each WHIR opening's term lies below its level, since it pays for the candidate set, so
+    // lower levels are not tried.
+    let mut level = target.max(args.pow_bits + 1);
+    loop {
+        let report = report(&build(Security { level, bits: 1 })?);
+        let composed = report.security_bits().ok_or_else(|| {
+            format!(
+                "layer {depth} security is unassessed: {:?}",
+                report.unassessed_components()
+            )
+        })?;
+        if composed >= target as f64 {
+            break;
+        }
+        let ceiling = composed_without_whir(&report);
+        if ceiling < target as f64 {
+            return Err(format!(
+                "--security-target {target} is out of reach for layer {depth}: its terms \
+                 other than the WHIR openings compose to {ceiling:.1} bits"
+            )
+            .into());
+        }
+        level += 1;
+    }
+    println!("Layer {depth} PCS security level: {level}");
+    Ok(build(Security {
+        level,
+        bits: target,
+    })?)
+}
+/// Composed security of every term of `report` but the WHIR openings', the only terms the PCS
+/// security level raises.
+fn composed_without_whir(report: &MultiStarkSecurityReport) -> f64 {
+    -report
+        .terms()
+        .iter()
+        .filter(|term| term.label != "whir-opening")
+        .map(|term| (-term.bits.bits()).exp2())
+        .sum::<f64>()
+        .log2()
+}
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     if args.layers == 0 {
         return Err("--layers must be positive".into());
     }
-    if args.pow_bits >= args.pcs_security_level {
+    if args.security_target.is_none() && args.pow_bits >= args.pcs_security_level {
         return Err("--pow-bits must be below --pcs-security-level".into());
     }
+    if args.pcs == Pcs::Folding && args.keccak_commitment() == KeccakCommitment::Packed {
+        return Err("--keccak-commitment packed requires --pcs whir".into());
+    }
+    if args.pcs == Pcs::Folding && args.security_target.is_some() {
+        return Err("--security-target requires --pcs whir".into());
+    }
     match args.pcs {
-        Pcs::Whir => run_whir(&args),
+        Pcs::Whir => match args.keccak_commitment() {
+            KeccakCommitment::Packed => run_mixed(&args),
+            KeccakCommitment::Dense => run_whir(&args),
+        },
         Pcs::Folding => match args.leaves {
             Leaves::Coset => run_grouped_folding(&args),
             Leaves::Symbol => run_folding(&args),
@@ -283,9 +400,15 @@ fn source_trace() -> (F, F, Vec<F>) {
     let output = *values.last().unwrap();
     (input, output, values)
 }
-fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
+/// The WHIR source statement, its authority and its checked proof.
+type WhirSource = (
+    Vec<Vec<F>>,
+    BinaryNativeWhirAuthority<F, SquaringAir>,
+    VerifiedBinaryNativeWhirProof<F>,
+);
+fn whir_source() -> Result<WhirSource, Box<dyn Error>> {
     let (input, output, values) = source_trace();
-    let mut expected = vec![vec![input, output]];
+    let expected = vec![vec![input, output]];
     let spec = BinaryNativeVerifierSpec {
         main: BinaryNativeWhirPcsParameters::<F>::new(2, protocol(), ByteHash::Keccak256, 0)?,
         preprocessed: None,
@@ -302,22 +425,55 @@ fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
         &VerifierLimits::default(),
     )?;
     let proof = prover.prove(&expected, vec![RowMajorMatrix::new(values, 1)])?;
-    let mut checked = authority.verify_native(&proof, &expected)?;
+    let checked = authority.verify_native(&proof, &expected)?;
     println!(
         "Tower128 source verified: {:#034x} -> {:#034x}",
         input.to_repr(),
         output.to_repr()
     );
+    Ok((expected, authority, checked))
+}
+/// Prints the composed security of a layer's output statement and each of its terms.
+fn print_security(depth: usize, report: &MultiStarkSecurityReport) {
+    match report.security_bits() {
+        Some(bits) => println!("Layer {depth} composed security: {bits:.1} bits"),
+        None => println!(
+            "Layer {depth} composed security: unassessed ({:?})",
+            report.unassessed_components()
+        ),
+    }
+    for term in report.terms() {
+        let component = term
+            .component
+            .map_or_else(String::new, |component| format!(" [{component}]"));
+        println!(
+            "  {:>6.1} bits: {}{component}",
+            term.bits.bits(),
+            term.label
+        );
+    }
+}
+fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
+    let (mut expected, authority, mut checked) = whir_source()?;
     let (limits, construction_limits) = circuit_limits(args);
     println!("Preparing native recursion layer 1...");
-    let mut layer = PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
-        &authority,
-        options(1, args),
-        &limits,
-        &construction_limits,
+    let start = Instant::now();
+    let mut layer = with_security(
+        1,
+        args,
+        |security| {
+            PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
+                &authority,
+                options(1, args, security),
+                &limits,
+                &construction_limits,
+            )
+        },
+        |layer| layer.authority().security_report().clone(),
     )?;
-    drop(prover);
+    println!("Layer 1 prepared in {:.2?}", start.elapsed());
     for depth in 1..=args.layers {
+        print_security(depth, layer.authority().security_report());
         let start = Instant::now();
         println!(
             "Layer {depth}: {} witnesses, {} initial codeword cells",
@@ -342,14 +498,110 @@ fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
         expected = next_expected;
         if depth < args.layers {
             println!("Preparing native recursion layer {}...", depth + 1);
+            let start = Instant::now();
             let authority = layer.into_authority();
-            layer = PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
+            layer = with_security(
+                depth + 1,
+                args,
+                |security| {
+                    PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
+                        &authority,
+                        options(depth + 1, args, security),
+                        &limits,
+                        &construction_limits,
+                    )
+                },
+                |layer| layer.authority().security_report().clone(),
+            )?;
+            println!("Layer {} prepared in {:.2?}", depth + 1, start.elapsed());
+        }
+    }
+    Ok(())
+}
+
+/// The next expected statement and the checked output of one packed-Keccak layer.
+type MixedOutput = (Vec<Vec<F>>, VerifiedBinaryNativeMixedWhirProof);
+/// Proves layer `depth` from `prove`, verifies it against the expected child statement, and
+/// returns the next expected statement with the checked output.
+fn prove_mixed<S>(
+    depth: usize,
+    layer: &PreparedNativeBinaryMixedWhirLayer<F, S>,
+    expected: &[Vec<F>],
+    prove: impl FnOnce(
+        &PreparedNativeBinaryMixedWhirLayer<F, S>,
+    ) -> Result<NativeBinaryMixedRecursiveProof, VerificationError>,
+) -> Result<MixedOutput, Box<dyn Error>> {
+    print_security(depth, layer.authority().security_report());
+    let start = Instant::now();
+    println!(
+        "Layer {depth}: {} witnesses, {} initial codeword cells",
+        layer.circuit().witness_count,
+        layer.initial_codeword_cells()
+    );
+    let next_expected = layer.output_public_values(expected)?;
+    let recursive = prove(layer)?;
+    let checked = layer.verify(&recursive, expected)?;
+    println!(
+        "Native Tower128 layer {depth} proved and verified in {:.2?}",
+        start.elapsed()
+    );
+    let bytes = match layer
+        .authority()
+        .encode_native_proof(&recursive, &next_expected)
+    {
+        Ok(bytes) => bytes.len().to_string(),
+        Err(error) => format!("unavailable ({error:?})"),
+    };
+    println!("Layer {depth} proof bytes: {bytes}");
+    Ok((next_expected, checked))
+}
+
+/// Every layer commits its Keccak table as packed bits. The first layer verifies the dense
+/// source; every later layer verifies a packed-Keccak child.
+fn run_mixed(args: &Args) -> Result<(), Box<dyn Error>> {
+    let (expected, authority, source) = whir_source()?;
+    let (limits, construction_limits) = circuit_limits(args);
+    println!("Preparing native recursion layer 1...");
+    let start = Instant::now();
+    let first = with_security(
+        1,
+        args,
+        |security| {
+            PreparedNativeBinaryMixedWhirLayer::from_native_authority_with_construction_limits(
                 &authority,
-                options(depth + 1, args),
+                mixed_options(1, args, security),
                 &limits,
                 &construction_limits,
-            )?;
-        }
+            )
+        },
+        |layer| layer.authority().security_report().clone(),
+    )?;
+    println!("Layer 1 prepared in {:.2?}", start.elapsed());
+    let (mut expected, mut checked) =
+        prove_mixed(1, &first, &expected, |layer| layer.prove_verified(&source))?;
+    let mut authority = first.authority().clone();
+    drop(first);
+    for depth in 2..=args.layers {
+        println!("Preparing native recursion layer {depth}...");
+        let start = Instant::now();
+        let layer = with_security(
+            depth,
+            args,
+            |security| {
+                PreparedNativeBinaryMixedWhirLayer::from_mixed_authority_with_construction_limits(
+                    &authority,
+                    mixed_options(depth, args, security),
+                    &limits,
+                    &construction_limits,
+                )
+            },
+            |layer| layer.authority().security_report().clone(),
+        )?;
+        println!("Layer {depth} prepared in {:.2?}", start.elapsed());
+        (expected, checked) = prove_mixed(depth, &layer, &expected, |layer| {
+            layer.prove_verified(&checked)
+        })?;
+        authority = layer.authority().clone();
     }
     Ok(())
 }
