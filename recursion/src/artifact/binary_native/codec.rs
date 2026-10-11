@@ -153,6 +153,7 @@ mod grouped;
 mod grouped_boolean;
 mod grouped_shell;
 mod mixed_whir;
+mod poly_mixed_whir;
 mod poly_whir;
 mod whir;
 

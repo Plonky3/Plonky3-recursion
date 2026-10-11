@@ -28,6 +28,11 @@ mod mixed_whir;
 pub use mixed_whir::{
     BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirProver, VerifiedBinaryNativeMixedWhirProof,
 };
+mod poly_mixed_whir;
+pub use poly_mixed_whir::{
+    BinaryNativePolyMixedWhirAuthority, BinaryNativePolyMixedWhirProver,
+    VerifiedBinaryNativePolyMixedWhirProof,
+};
 mod poly_whir;
 pub use poly_whir::{
     BinaryNativePolyWhirAuthority, BinaryNativePolyWhirProver, VerifiedBinaryNativePolyWhirProof,

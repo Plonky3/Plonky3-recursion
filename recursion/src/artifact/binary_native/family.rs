@@ -4,6 +4,8 @@ mod boolean_whir;
 pub(super) use boolean_whir::BooleanWhirTraceFamily;
 mod mixed_whir;
 pub(super) use mixed_whir::MixedWhirFamily;
+mod poly_mixed_whir;
+pub(super) use poly_mixed_whir::PolyMixedWhirFamily;
 mod poly_whir;
 pub(super) use poly_whir::PolyWhirFamily;
 mod whir;

@@ -108,13 +108,6 @@ pub struct BinaryPolyMixedWhirMultiStarkProofTargets {
 impl BinaryPolyMixedWhirMultiStarkInputShape {
     /// The proof geometry: one main cap per part, the dense and the packed opening of the main
     /// commitment, and the dense preprocessing opening.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no native artifact family carries the Poly64 mixed relation"
-        )
-    )]
     pub(crate) fn native_decode_shape(
         &self,
     ) -> crate::artifact::binary_native::codec::MultiDecode<
@@ -144,13 +137,6 @@ impl BinaryPolyMixedWhirMultiStarkInputShape {
 
     /// The relation identity, the bit-committed table, its bit variables, the trees' arity,
     /// both opening shapes and the trusted preprocessing shape and cap.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no native artifact family carries the Poly64 mixed relation"
-        )
-    )]
     pub(crate) fn write_identity(
         &self,
         w: &mut crate::artifact::wire::Writer,
@@ -220,6 +206,34 @@ pub struct BinaryPolyMixedWhirMultiStarkVerifier {
 }
 
 impl BinaryPolyMixedWhirMultiStarkVerifier {
+    /// Installs the exact cap captured from the factory's matched native setup.
+    /// Geometry was validated before setup, with a placeholder cap of this size.
+    pub(crate) fn bind_native_preprocessing_cap(
+        &mut self,
+        cap: Vec<[u8; 32]>,
+    ) -> Result<(), VerificationError> {
+        let Some(pp) = &mut self.input.preprocessed else {
+            return Err(invalid(
+                "binary native mixed WHIR setup produced an unexpected preprocessing cap",
+            ));
+        };
+        if cap.len() != pp.commitment.len() {
+            return Err(invalid(
+                "binary native mixed WHIR setup preprocessing cap shape mismatch",
+            ));
+        }
+        pp.commitment = cap;
+        Ok(())
+    }
+
+    pub(crate) fn retain_native_parameter_metadata(
+        &mut self,
+        entries: usize,
+        limits: &VerifierLimits,
+    ) -> Result<(), VerificationError> {
+        self.usage.add_metadata_entries(limits, entries)
+    }
+
     /// `packed_table` names the one AIR whose main trace is committed as bits. That AIR, and
     /// only that AIR, must assume a Boolean trace, and its main trace must be opened as one
     /// batch: every column at the current row, and every column or none one row ahead.
@@ -480,13 +494,6 @@ impl BinaryPolyMixedWhirMultiStarkVerifier {
     /// `dense` and `packed` are the two parts' WHIR configurations on the shared tree `mmcs`.
     /// `preprocessed` is the dense preprocessing commitment's configuration and tree, present
     /// exactly when the verifier retains a preprocessing authority.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no native artifact family carries the Poly64 mixed relation"
-        )
-    )]
     #[expect(
         clippy::too_many_arguments,
         reason = "The verifier keeps protocol inputs explicit."
