@@ -34,9 +34,9 @@ use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig,
 type E = BinaryField128;
 type Tree = keccak::LevelMmcs<E>;
 type M = Tree;
-type Inner = BooleanWhirPcs<E, BinaryWhirDomain<E>, M, Ch>;
+type Inner = BooleanWhirPcs<E, E, BinaryWhirDomain<E>, M, Ch>;
 type Pcs = BooleanTraceCommitment<E, Inner>;
-type TraceProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, M>>;
+type TraceProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, E, M>>;
 type Ch = keccak::LevelChallenger<E>;
 
 struct Config {
@@ -65,7 +65,7 @@ impl MultiStarkConfig for Config {
     }
     fn committed_table<'a>(
         &self,
-        data: &'a BooleanTraceCommitmentData<E, BooleanWhirData<E, M>>,
+        data: &'a BooleanTraceCommitmentData<E, BooleanWhirData<E, E, M>>,
         i: usize,
     ) -> &'a Table<E> {
         data.table(i)

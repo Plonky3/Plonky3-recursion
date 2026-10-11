@@ -126,25 +126,7 @@ where
 impl<A, L> BinaryNativePolyWhirProver<A, L>
 where
     L: BinaryNativePolyWhirLayout,
-    A: VerifierAir<Poly64, Poly192>
-        + for<'a> p3_air::Air<p3_multi_stark::folder::MultilinearFolder<'a, Poly64, Poly64, Poly192>>
-        + for<'a> p3_air::Air<
-            p3_multi_stark::folder::MultilinearFolder<
-                'a,
-                Poly64,
-                p3_multi_stark::packed_ext::PackedExt<Poly64, Poly192>,
-                p3_multi_stark::packed_ext::PackedExt<Poly64, Poly192>,
-            >,
-        > + for<'a> p3_air::Air<
-            p3_multi_stark::folder::InteractionMultilinearFolder<'a, Poly64, Poly64, Poly192>,
-        > + for<'a> p3_air::Air<
-            p3_multi_stark::folder::InteractionMultilinearFolder<
-                'a,
-                Poly64,
-                p3_multi_stark::packed_ext::PackedExt<Poly64, Poly192>,
-                p3_multi_stark::packed_ext::PackedExt<Poly64, Poly192>,
-            >,
-        >,
+    A: p3_multi_stark::folder::ProverAir<Poly64, Poly192>,
 {
     /// Ordinary row-major AIR traces. Trusted shapes are checked before
     /// commitment or any native transcript mutation.

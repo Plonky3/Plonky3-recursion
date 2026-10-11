@@ -72,35 +72,35 @@ where
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn width(&self) -> usize {
-        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(self.air())
+        self.air().base_width()
     }
 
     fn num_public_values(&self) -> usize {
-        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(self.air())
+        self.air().base_num_public_values()
     }
 
     fn preprocessed_width(&self) -> usize {
-        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_width(self.air())
+        self.air().base_preprocessed_width()
     }
 
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
-        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(self.air())
+        self.air().base_preprocessed_trace()
     }
 
     fn main_next_row_columns(&self) -> Vec<usize> {
-        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::main_next_row_columns(self.air())
+        self.air().base_main_next_row_columns()
     }
 
     fn preprocessed_next_row_columns(&self) -> Vec<usize> {
-        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_next_row_columns(self.air())
+        self.air().base_preprocessed_next_row_columns()
     }
 
     fn num_periodic_columns(&self) -> usize {
-        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_periodic_columns(self.air())
+        self.air().base_num_periodic_columns()
     }
 
     fn periodic_columns(&self) -> Cow<'_, [Vec<Val<SC>>]> {
-        <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::periodic_columns(self.air())
+        self.air().base_periodic_columns()
     }
 }
 
@@ -228,12 +228,24 @@ macro_rules! impl_cloneable_batch_air_forwarding {
 ///
 /// This trait is automatically implemented for any `T: BatchAir<SC> + Clone + 'static`.
 /// It is the concrete trait object type stored inside [`DynamicAirEntry`].
-pub trait CloneableBatchAir<SC>: BaseAir<Val<SC>> + Send + Sync
+///
+/// [`BaseAir`] has generic methods, so it cannot be a supertrait of a trait object; the
+/// `base_*` methods forward the [`BaseAir`] methods of the same name.
+pub trait CloneableBatchAir<SC>: Send + Sync
 where
     SC: StarkGenericConfig,
     SymbolicExpressionExt<Val<SC>, SC::Challenge>: Algebra<SymbolicExpression<Val<SC>>>,
 {
     fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>>;
+
+    fn base_width(&self) -> usize;
+    fn base_num_public_values(&self) -> usize;
+    fn base_preprocessed_width(&self) -> usize;
+    fn base_preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>>;
+    fn base_main_next_row_columns(&self) -> Vec<usize>;
+    fn base_preprocessed_next_row_columns(&self) -> Vec<usize>;
+    fn base_num_periodic_columns(&self) -> usize;
+    fn base_periodic_columns(&self) -> Cow<'_, [Vec<Val<SC>>]>;
 
     #[cfg(debug_assertions)]
     fn eval_debug<'a>(&self, builder: &mut DebugConstraintBuilder<'a, Val<SC>, SC::Challenge>);
@@ -251,6 +263,38 @@ where
 {
     fn clone_box(&self) -> Box<dyn CloneableBatchAir<SC>> {
         Box::new(self.clone())
+    }
+
+    fn base_width(&self) -> usize {
+        BaseAir::<Val<SC>>::width(self)
+    }
+
+    fn base_num_public_values(&self) -> usize {
+        BaseAir::<Val<SC>>::num_public_values(self)
+    }
+
+    fn base_preprocessed_width(&self) -> usize {
+        BaseAir::<Val<SC>>::preprocessed_width(self)
+    }
+
+    fn base_preprocessed_trace(&self) -> Option<RowMajorMatrix<Val<SC>>> {
+        BaseAir::<Val<SC>>::preprocessed_trace(self)
+    }
+
+    fn base_main_next_row_columns(&self) -> Vec<usize> {
+        BaseAir::<Val<SC>>::main_next_row_columns(self)
+    }
+
+    fn base_preprocessed_next_row_columns(&self) -> Vec<usize> {
+        BaseAir::<Val<SC>>::preprocessed_next_row_columns(self)
+    }
+
+    fn base_num_periodic_columns(&self) -> usize {
+        BaseAir::<Val<SC>>::num_periodic_columns(self)
+    }
+
+    fn base_periodic_columns(&self) -> Cow<'_, [Vec<Val<SC>>]> {
+        BaseAir::<Val<SC>>::periodic_columns(self)
     }
 
     impl_cloneable_batch_air_forwarding!(

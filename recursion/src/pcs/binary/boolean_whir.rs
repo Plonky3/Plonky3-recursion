@@ -259,7 +259,11 @@ impl BinaryBooleanWhirVerifier {
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
         mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
-        proof: &BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
+        proof: &BooleanWhirProof<
+            BinaryField128,
+            BinaryField128,
+            MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        >,
     ) -> Result<(), VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
@@ -280,7 +284,11 @@ impl BinaryBooleanWhirVerifier {
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
         mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
-        proof: &BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
+        proof: &BooleanWhirProof<
+            BinaryField128,
+            BinaryField128,
+            MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        >,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
@@ -320,7 +328,11 @@ impl BinaryBooleanWhirVerifier {
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
         points: &[Point<BinaryField128>],
         readings: &[(Option<BinaryField128>, Option<BinaryField128>)],
-        proof: &BooleanWhirProof<BinaryField128, MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>>,
+        proof: &BooleanWhirProof<
+            BinaryField128,
+            BinaryField128,
+            MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        >,
         target_challenger: &mut Ch,
     ) -> Result<NativeBinaryBooleanWhirInput, VerificationError>
     where

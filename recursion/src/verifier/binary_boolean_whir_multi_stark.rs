@@ -598,7 +598,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
                 Commitment = MerkleCap<F, [u8; 32]>,
                 Proof = BooleanTraceCommitmentProof<
                     F,
-                    BooleanWhirProof<F, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+                    BooleanWhirProof<F, F, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
                 >,
             >,
         F: PackedValue<Value = F>,
@@ -644,7 +644,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
                 Commitment = MerkleCap<F, [u8; 32]>,
                 Proof = BooleanTraceCommitmentProof<
                     F,
-                    BooleanWhirProof<F, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+                    BooleanWhirProof<F, F, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
                 >,
             >,
         F: PackedValue<Value = F>,

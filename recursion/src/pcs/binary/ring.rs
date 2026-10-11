@@ -141,10 +141,10 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
             })
             .collect();
         let seed = if shapes.len() == 1 {
-            domain_separator_seed(&shapes[0].domain_separator::<E>())
+            domain_separator_seed(&shapes[0].domain_separator::<E, E>())
         } else {
             domain_separator_seed(
-                &BitRingSwitchClaimsShape { claims: shapes }.domain_separator::<E>(),
+                &BitRingSwitchClaimsShape { claims: shapes }.domain_separator::<E, E>(),
             )
         };
         let prefix_limit = specs

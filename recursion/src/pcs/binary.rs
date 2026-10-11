@@ -34,7 +34,7 @@ type GroupedByteMerkleBooleanTraceProof<E, H0, C0, H1, C1> =
     p3_binary_pcs::BooleanTraceCommitmentProof<E, GroupedByteMerkleBooleanProof<E, H0, C0, H1, C1>>;
 type ByteMerkleBooleanWhirTraceProof<E, H, C> = p3_binary_pcs::BooleanTraceCommitmentProof<
     E,
-    p3_binary_pcs::whir::BooleanWhirProof<E, ByteMerkleMmcs<E, H, C>>,
+    p3_binary_pcs::whir::BooleanWhirProof<E, E, ByteMerkleMmcs<E, H, C>>,
 >;
 pub(crate) type ByteMerkleMmcsPair<'base, 'round, F, E, H0, C0, H1, C1> = (
     &'base ByteMerkleMmcs<F, H0, C0>,

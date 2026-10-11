@@ -54,50 +54,50 @@ libmimalloc-sys = { version = "0.1", default-features = false, features = ["exte
 mimalloc = { version = "0.1", default-features = false }
 
 # Plonky3 dependencies - shared across all crates
-p3-air = "0.8.0"
-p3-baby-bear = "0.8.0"
-p3-batch-stark = "0.8.0"
-p3-binary-dft = "0.8.0"
-p3-binary-field = "0.8.0"
-p3-binary-pcs = "0.8.0"
-p3-blake3 = "0.8.0"
-p3-blake3-air = "0.8.0"
-p3-bus = "0.8.0"
-p3-challenger = "0.8.0"
-p3-circle = "0.8.0"
+p3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-batch-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-binary-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-binary-field = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-binary-pcs = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-blake3 = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-blake3-air = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-bus = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-circle = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
 
 # Local dependencies
 p3-circuit = { path = "circuit", version = "0.1.0" }
 p3-circuit-prover = { path = "circuit-prover", version = "0.1.0" }
-p3-commit = "0.8.0"
-p3-dft = "0.8.0"
-p3-field = "0.8.0"
-p3-fri = "0.8.0"
-p3-goldilocks = "0.8.0"
-p3-keccak = "0.8.0"
-p3-keccak-air = "0.8.0"
-p3-koala-bear = "0.8.0"
-p3-lookup = "0.8.0"
-p3-matrix = "0.8.0"
-p3-maybe-rayon = "0.8.0"
-p3-merkle-tree = "0.8.0"
-p3-monty-31 = "0.8.0"
-p3-multi-stark = "0.8.0"
-p3-multilinear-util = "0.8.0"
+p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-keccak = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-keccak-air = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-koala-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-lookup = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-matrix = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-maybe-rayon = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-monty-31 = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-multi-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-multilinear-util = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
 p3-poseidon-circuit-cols = { path = "poseidon-circuit-cols", version = "0.1.0" }
-p3-poseidon1 = "0.8.0"
-p3-poseidon1-air = "0.8.0"
+p3-poseidon1 = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-poseidon1-air = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
 p3-poseidon1-circuit-air = { path = "poseidon1-circuit-air", version = "0.1.0" }
-p3-poseidon2 = "0.8.0"
-p3-poseidon2-air = "0.8.0"
+p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-poseidon2-air = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
 p3-poseidon2-circuit-air = { path = "poseidon2-circuit-air", version = "0.1.0" }
 p3-recursion = { path = "recursion", version = "0.1.0" }
-p3-sumcheck = "0.8.0"
-p3-symmetric = "0.8.0"
+p3-sumcheck = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
 p3-test-utils = { path = "test-utils", version = "0.1.0" }
-p3-uni-stark = "0.8.0"
-p3-util = "0.8.0"
-p3-whir = "0.8.0"
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-util = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
+p3-whir = { git = "https://github.com/Plonky3/Plonky3", rev = "6dd583f33a03c60eed1e0c693ec0a3ef19a3d6c1", version = "0.8.0" }
 proptest = { version = "1.11", default-features = true }
 rand = { version = "0.10.3", default-features = false }
 rayon = "1.12"
@@ -111,10 +111,6 @@ tracing = { version = "0.1.44", default-features = false, features = ["attribute
 tracing-forest = "0.3.1"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["alloc"] }
 unroll = { version = "0.1.5", default-features = false }
-
-[patch.crates-io]
-p3-fri = { path = "vendor/p3-fri" }
-p3-sumcheck = { path = "vendor/p3-sumcheck" }
 
 [profile.profiling]
 inherits = "release"

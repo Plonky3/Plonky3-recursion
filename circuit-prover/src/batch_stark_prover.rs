@@ -1522,7 +1522,7 @@ where
             Self::Const(a) => a.width(),
             Self::Public(a) => a.width(),
             Self::Alu(a) => a.width(),
-            Self::Dynamic(a) => <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::width(a.air()),
+            Self::Dynamic(a) => BaseAir::<Val<SC>>::width(a),
         }
     }
 
@@ -1531,9 +1531,7 @@ where
             Self::Const(a) => BaseAir::<Val<SC>>::preprocessed_width(a),
             Self::Public(a) => BaseAir::<Val<SC>>::preprocessed_width(a),
             Self::Alu(a) => BaseAir::<Val<SC>>::preprocessed_width(a),
-            Self::Dynamic(a) => {
-                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_width(a.air())
-            }
+            Self::Dynamic(a) => BaseAir::<Val<SC>>::preprocessed_width(a),
         }
     }
 
@@ -1542,9 +1540,7 @@ where
             Self::Const(a) => a.preprocessed_trace(),
             Self::Public(a) => a.preprocessed_trace(),
             Self::Alu(a) => a.preprocessed_trace(),
-            Self::Dynamic(a) => {
-                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_trace(a.air())
-            }
+            Self::Dynamic(a) => BaseAir::<Val<SC>>::preprocessed_trace(a),
         }
     }
 
@@ -1553,9 +1549,7 @@ where
             Self::Const(a) => a.main_next_row_columns(),
             Self::Public(a) => a.main_next_row_columns(),
             Self::Alu(a) => a.main_next_row_columns(),
-            Self::Dynamic(a) => {
-                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::main_next_row_columns(a.air())
-            }
+            Self::Dynamic(a) => BaseAir::<Val<SC>>::main_next_row_columns(a),
         }
     }
 
@@ -1564,11 +1558,7 @@ where
             Self::Const(a) => BaseAir::<Val<SC>>::preprocessed_next_row_columns(a),
             Self::Public(a) => BaseAir::<Val<SC>>::preprocessed_next_row_columns(a),
             Self::Alu(a) => BaseAir::<Val<SC>>::preprocessed_next_row_columns(a),
-            Self::Dynamic(a) => {
-                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::preprocessed_next_row_columns(
-                    a.air(),
-                )
-            }
+            Self::Dynamic(a) => BaseAir::<Val<SC>>::preprocessed_next_row_columns(a),
         }
     }
 
@@ -1577,9 +1567,7 @@ where
             Self::Const(a) => BaseAir::<Val<SC>>::num_public_values(a),
             Self::Public(a) => BaseAir::<Val<SC>>::num_public_values(a),
             Self::Alu(a) => BaseAir::<Val<SC>>::num_public_values(a),
-            Self::Dynamic(a) => {
-                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_public_values(a.air())
-            }
+            Self::Dynamic(a) => BaseAir::<Val<SC>>::num_public_values(a),
         }
     }
 
@@ -1588,9 +1576,7 @@ where
             Self::Const(a) => BaseAir::<Val<SC>>::num_periodic_columns(a),
             Self::Public(a) => BaseAir::<Val<SC>>::num_periodic_columns(a),
             Self::Alu(a) => BaseAir::<Val<SC>>::num_periodic_columns(a),
-            Self::Dynamic(a) => {
-                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::num_periodic_columns(a.air())
-            }
+            Self::Dynamic(a) => BaseAir::<Val<SC>>::num_periodic_columns(a),
         }
     }
 
@@ -1599,9 +1585,7 @@ where
             Self::Const(a) => BaseAir::<Val<SC>>::periodic_columns(a),
             Self::Public(a) => BaseAir::<Val<SC>>::periodic_columns(a),
             Self::Alu(a) => BaseAir::<Val<SC>>::periodic_columns(a),
-            Self::Dynamic(a) => {
-                <dyn CloneableBatchAir<SC> as BaseAir<Val<SC>>>::periodic_columns(a.air())
-            }
+            Self::Dynamic(a) => BaseAir::<Val<SC>>::periodic_columns(a),
         }
     }
 }

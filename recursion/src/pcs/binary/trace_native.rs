@@ -11,6 +11,7 @@ use p3_binary_pcs::{
     BooleanTraceCommitmentProof, ChallengeField, Coordinates, FoldAlphabet,
 };
 use p3_challenger::{CanSampleUniformBits, FieldChallenger, GrindingChallenger};
+use p3_field::Field;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::{OpeningProtocol, PrescribedOpeningSecurity, PrescribedPointPcs};
 use serde::Serialize;
@@ -78,7 +79,8 @@ struct Recorder<E> {
     field: PhantomData<E>,
 }
 
-impl<E: Clone + Serialize + DeserializeOwned> BooleanBackend<E> for Recorder<E> {
+impl<E: Field + Serialize + DeserializeOwned> BooleanBackend<E> for Recorder<E> {
+    type Val = E;
     type Commitment = E;
     type ProverData = ();
     type Proof = ();
@@ -90,7 +92,7 @@ impl<E: Clone + Serialize + DeserializeOwned> BooleanBackend<E> for Recorder<E> 
 
 impl<E, Ch> BooleanMultilinearPcs<E, Ch> for Recorder<E>
 where
-    E: Clone + Serialize + DeserializeOwned,
+    E: Field + Serialize + DeserializeOwned,
 {
     fn observe_commitment(&self, _: &E, _: &mut Ch) {
         panic!("a routing recorder cannot bind commitments");

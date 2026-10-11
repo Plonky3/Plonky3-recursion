@@ -7,7 +7,7 @@ use super::*;
 type E = BinaryField128;
 pub(in crate::artifact::binary_native) type NativeBooleanWhirTracePcs = BooleanTraceCommitment<
     E,
-    BooleanWhirPcs<E, BinaryWhirDomain<E>, NativeMmcs<E>, BinaryNativeChallenger<E>>,
+    BooleanWhirPcs<E, E, BinaryWhirDomain<E>, NativeMmcs<E>, BinaryNativeChallenger<E>>,
 >;
 /// Complete native Boolean WHIR trace configuration constructed by its owner.
 pub struct BinaryNativeBooleanWhirTraceConfig {
@@ -39,7 +39,7 @@ impl MultiStarkConfig for BinaryNativeBooleanWhirTraceConfig {
     }
     fn committed_table<'a>(
         &self,
-        data: &'a BooleanTraceCommitmentData<E, BooleanWhirData<E, NativeMmcs<E>>>,
+        data: &'a BooleanTraceCommitmentData<E, BooleanWhirData<E, E, NativeMmcs<E>>>,
         index: usize,
     ) -> &'a Table<E> {
         data.table(index)
