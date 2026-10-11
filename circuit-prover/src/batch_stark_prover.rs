@@ -140,8 +140,10 @@ fn run_native_proof_in_pool<R: Send>(
     prove: impl FnOnce() -> R + Send,
 ) -> Result<R, BatchStarkProverError> {
     if is_zk {
-        // p3-fri 0.8.0 holds the hiding PCS RNG lock across nested Rayon FFTs.
-        // Isolate the entire native batch proof until upstream drops that guard before the FFTs.
+        // Hiding batch proofs run on one Rayon worker and give up native batch parallelism.
+        // TODO: drop this pool once hiding batch proving is re-validated under Rayon;
+        // the pinned Plonky3 revision draws hiding randomness outside its parallel
+        // work (Plonky3#2368).
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
