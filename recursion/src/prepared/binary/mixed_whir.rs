@@ -179,3 +179,6 @@ where
         self.prove(&proof.input, &proof.public)
     }
 }
+
+#[cfg(test)]
+mod tests;
