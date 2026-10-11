@@ -138,15 +138,20 @@ fn random_transcript<F: BinaryCoordinateField>(
             }
             6 => draw(&mut b, &mut ch, &mut native),
             _ => {
-                // A draw retains its digest, and a nonempty observation resumes from it.
+                // A draw retains its digest, and a nonempty observation of
+                // bytes or words resumes from it.
                 draw(&mut b, &mut ch, &mut native);
                 let (hash, digest) = ch.retained_query_digest().unwrap();
                 let token = BinaryQueryContinuation::from_digest(hash, digest);
                 let count = rng.random_range(1..6);
-                let bytes = observed(&mut b, &mut native, &mut public, &mut rng, (count, 1));
-                ch = token
-                    .resume_with_observation_with_host::<H, F>(&mut b, &bytes)
-                    .unwrap();
+                let width = rng.random_range(1..3);
+                let units = observed(&mut b, &mut native, &mut public, &mut rng, (count, width));
+                ch = if width == 1 {
+                    token.resume_with_observation_with_host::<H, F>(&mut b, &units)
+                } else {
+                    token.resume_with_words_with_host::<H, F>(&mut b, &units)
+                }
+                .unwrap();
             }
         }
     }

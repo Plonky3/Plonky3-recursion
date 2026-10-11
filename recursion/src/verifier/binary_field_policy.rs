@@ -354,10 +354,7 @@ where
         values: &[NativeTower128Target],
     ) -> Result<(), VerificationError> {
         // The refill that hashes these words range-checks each one.
-        let mut words = alloc::vec::Vec::with_capacity(8 * values.len());
-        for value in values {
-            words.extend(b.native_tower128_unchecked_words(value, 8)?);
-        }
+        let words = native_tower_words(b, values)?;
         Ok(ch.observe_words_with_host::<H, BinaryField128>(b, &words)?)
     }
     fn observe_after_queries<H: BinaryCircuitHost<BinaryField128>>(
@@ -365,8 +362,9 @@ where
         token: crate::BinaryQueryContinuation,
         values: &[NativeTower128Target],
     ) -> Result<BinaryTower128Challenger, VerificationError> {
-        let bytes = native_tower_bytes::<H>(b, values)?;
-        Ok(token.resume_with_observation_with_host::<H, BinaryField128>(b, &bytes)?)
+        // The refill of the draw that follows range-checks each word.
+        let words = native_tower_words(b, values)?;
+        Ok(token.resume_with_words_with_host::<H, BinaryField128>(b, &words)?)
     }
     fn sample<H: BinaryCircuitHost<BinaryField128>>(
         b: &mut CircuitBuilder<BinaryField128>,
@@ -405,18 +403,17 @@ where
         Ok(weight)
     }
 }
-fn native_tower_bytes<H: BinaryCircuitHost<BinaryField128>>(
+/// The eight low-first sixteen-bit words of each value's sixteen
+/// little-endian bytes, which only a refill that hashes them range-checks.
+fn native_tower_words(
     b: &mut CircuitBuilder<BinaryField128>,
     values: &[NativeTower128Target],
 ) -> Result<alloc::vec::Vec<ExprId>, CircuitBuilderError> {
-    let mut bytes = alloc::vec::Vec::new();
+    let mut words = alloc::vec::Vec::with_capacity(8 * values.len());
     for value in values {
-        let bits = b.native_tower128_to_bits(value)?;
-        for byte in bits.as_chunks::<8>().0 {
-            bytes.push(H::recompose_word(b, byte)?);
-        }
+        words.extend(b.native_tower128_unchecked_words(value, 8)?);
     }
-    Ok(bytes)
+    Ok(words)
 }
 
 /// Raw tower-word boundaries shared by grinding and additive WHIR.
@@ -669,6 +666,40 @@ mod tests {
             wrong[changed] += F::from_repr(1 << 77);
             assert!(!runs(&wrong), "changed observed value {changed}");
         }
+    }
+
+    /// A value observed after a query draw is split into the unchecked words
+    /// of a live observation, which the next refill range-checks as Keccak
+    /// lanes, rather than decomposed into checked bits.
+    #[test]
+    fn native_tower_after_query_observations_cost_a_live_observation() {
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let values = b.alloc_public_input_array::<3>("observed values");
+        let values = values.map(|value| b.native_tower128_from_expr(value));
+        let mut ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        P::observe::<H>(&mut b, &mut ch, &values[..1]).unwrap();
+        P::sample::<H>(&mut b, &mut ch).unwrap();
+        let (hash, digest) = ch.retained_query_digest().unwrap();
+        let start = b.construction_usage().unwrap();
+        P::observe::<H>(&mut b, &mut ch, &values[1..2]).unwrap();
+        let live = b.construction_usage().unwrap();
+        P::observe_after_queries::<H>(
+            &mut b,
+            crate::BinaryQueryContinuation::from_digest(hash, digest),
+            &values[2..],
+        )
+        .unwrap();
+        let resumed = b.construction_usage().unwrap();
+        let added = |from: p3_circuit::CircuitConstructionUsage,
+                     to: p3_circuit::CircuitConstructionUsage| {
+            (
+                to.expression_nodes - from.expression_nodes,
+                to.pending_connects - from.pending_connects,
+                to.non_primitive_calls - from.non_primitive_calls,
+            )
+        };
+        assert_eq!(added(live, resumed), added(start, live));
     }
 
     /// A native field draw packs eight whole swapped digest limbs with seven

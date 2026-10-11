@@ -204,22 +204,52 @@ impl BinaryQueryContinuation {
         H: BinaryCircuitHost<EF>,
         EF: Field + Eq + Hash,
     {
+        let mut challenger = self.resume::<H, EF>(bytes.len())?;
+        challenger.observe_bytes_with_host::<H, EF>(circuit, bytes)?;
+        Ok(challenger)
+    }
+
+    /// Resumes by absorbing the next protocol observation exactly once, given
+    /// as low-first sixteen-bit words observed as by
+    /// [`BinaryTower128Challenger::observe_words_with_host`]: only a later
+    /// refill range-checks each word. Empty observations are rejected as in
+    /// [`Self::resume_with_observation_with_host`]. All targets must belong to
+    /// this builder.
+    pub fn resume_with_words_with_host<H, EF>(
+        self,
+        circuit: &mut CircuitBuilder<EF>,
+        words: &[ExprId],
+    ) -> Result<BinaryTower128Challenger, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
+        let mut challenger = self.resume::<H, EF>(words.len())?;
+        challenger.observe_words_with_host::<H, EF>(circuit, words)?;
+        Ok(challenger)
+    }
+
+    /// The challenger whose next input is the retained digest, for a next
+    /// observation of `len` entries, which must be nonempty.
+    fn resume<H, EF>(self, len: usize) -> Result<BinaryTower128Challenger, CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<EF>,
+        EF: Field + Eq + Hash,
+    {
         H::check_hash(self.hash)?;
-        if bytes.is_empty() {
+        if len == 0 {
             return Err(CircuitBuilderError::NonPrimitiveOpArity {
                 op: "BinaryQueryContinuation",
                 expected: "a nonempty next observation".into(),
                 got: 0,
             });
         }
-        let mut challenger = BinaryTower128Challenger {
+        Ok(BinaryTower128Challenger {
             hash: self.hash,
             input_buffer: self.digest.absorbed(),
             output_buffer: Vec::new(),
             retains_digest: false,
-        };
-        challenger.observe_bytes_with_host::<H, EF>(circuit, bytes)?;
-        Ok(challenger)
+        })
     }
 }
 

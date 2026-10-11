@@ -230,15 +230,8 @@ impl BinaryProtocolPolicy<Poly64> for NativePoly64Relation {
         ch: &mut BinaryTower128Challenger,
         values: &[NativePoly192Target],
     ) -> Result<(), VerificationError> {
-        // The codec emits coefficient 0, then 1, then 2, each as eight
-        // little-endian bytes. The refill that hashes these words
-        // range-checks each one.
-        let mut words = Vec::with_capacity(12 * values.len());
-        for value in values {
-            for &coefficient in value.coefficients() {
-                words.extend(b.native_poly64_unchecked_words(coefficient, 4)?);
-            }
-        }
+        // The refill that hashes these words range-checks each one.
+        let words = native_words(b, values)?;
         Ok(ch.observe_words_with_host::<H, Poly64>(b, &words)?)
     }
     fn observe_after_queries<H: BinaryCircuitHost<Poly64>>(
@@ -246,8 +239,9 @@ impl BinaryProtocolPolicy<Poly64> for NativePoly64Relation {
         token: crate::BinaryQueryContinuation,
         values: &[NativePoly192Target],
     ) -> Result<BinaryTower128Challenger, VerificationError> {
-        let bytes = native_bytes::<H>(b, values)?;
-        Ok(token.resume_with_observation_with_host::<H, Poly64>(b, &bytes)?)
+        // The refill of the draw that follows range-checks each word.
+        let words = native_words(b, values)?;
+        Ok(token.resume_with_words_with_host::<H, Poly64>(b, &words)?)
     }
     fn sample<H: BinaryCircuitHost<Poly64>>(
         b: &mut CircuitBuilder<Poly64>,
@@ -289,19 +283,20 @@ impl BinaryProtocolPolicy<Poly64> for NativePoly64Relation {
     }
 }
 
-fn native_bytes<H: BinaryCircuitHost<Poly64>>(
+/// The twelve low-first sixteen-bit words of each value's 24 codec bytes,
+/// which only a refill that hashes them range-checks. The codec emits
+/// coefficient 0, then 1, then 2, each as eight little-endian bytes.
+fn native_words(
     b: &mut CircuitBuilder<Poly64>,
     values: &[NativePoly192Target],
 ) -> Result<Vec<ExprId>, CircuitBuilderError> {
-    let mut bytes = Vec::new();
+    let mut words = Vec::with_capacity(12 * values.len());
     for value in values {
-        // The codec emits coefficient 0, then 1, then 2: exactly 24 bytes.
-        let bits = b.native_poly192_to_bits(value)?;
-        for byte in bits.as_chunks::<8>().0 {
-            bytes.push(H::recompose_word(b, byte)?);
+        for &coefficient in value.coefficients() {
+            words.extend(b.native_poly64_unchecked_words(coefficient, 4)?);
         }
     }
-    Ok(bytes)
+    Ok(words)
 }
 
 #[cfg(test)]
@@ -408,6 +403,45 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    /// A value observed after a query draw is split into the unchecked words
+    /// of a live observation, which the next refill range-checks as Keccak
+    /// lanes, rather than decomposed into checked bits.
+    #[test]
+    fn native_poly_after_query_observations_cost_a_live_observation() {
+        let mut b = CircuitBuilder::<Poly64>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let coefficients = b.alloc_public_input_array::<9>("observed coefficients");
+        let values: Vec<_> = coefficients
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|&coefficients| b.native_poly192_from_coefficients(coefficients))
+            .collect();
+        let mut ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        P::observe::<H>(&mut b, &mut ch, &values[..1]).unwrap();
+        P::sample::<H>(&mut b, &mut ch).unwrap();
+        let (hash, digest) = ch.retained_query_digest().unwrap();
+        let start = b.construction_usage().unwrap();
+        P::observe::<H>(&mut b, &mut ch, &values[1..2]).unwrap();
+        let live = b.construction_usage().unwrap();
+        P::observe_after_queries::<H>(
+            &mut b,
+            crate::BinaryQueryContinuation::from_digest(hash, digest),
+            &values[2..],
+        )
+        .unwrap();
+        let resumed = b.construction_usage().unwrap();
+        let added = |from: p3_circuit::CircuitConstructionUsage,
+                     to: p3_circuit::CircuitConstructionUsage| {
+            (
+                to.expression_nodes - from.expression_nodes,
+                to.pending_connects - from.pending_connects,
+                to.non_primitive_calls - from.non_primitive_calls,
+            )
+        };
+        assert_eq!(added(live, resumed), added(start, live));
     }
 
     /// Poly64 and Poly192 values observed as words sample like the native
