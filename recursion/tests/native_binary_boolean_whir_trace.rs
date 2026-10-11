@@ -18,8 +18,8 @@ use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
 use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::pcs::binary::{
-    BinaryBitRingVerifier, BinaryBooleanWhirTraceVerifier, BinaryRingClaimSpec, BinaryWhirVerifier,
-    NativeBitRingReading,
+    BinaryBitRingVerifier, BinaryBooleanWhirTraceVerifier, BinaryBooleanWhirVerifier,
+    BinaryRingClaimSpec, BinaryWhirVerifier, NativeBitRingReading,
 };
 use p3_sumcheck::layout::{Layout, SuffixProver, Table, plan_stacked_layout};
 use p3_sumcheck::ring_switch::bits::{BitPacking, BitRingSwitch, BitRingSwitchClaims};
@@ -766,6 +766,149 @@ fn ring_switch_readings_and_survivor_are_checked() {
             !accepts(&circuit, &wrong_public, &wrong_private),
             "{rows:?} survivor"
         );
+    }
+}
+
+/// The surviving value of the ring switch is constrained equal to the packed opening's
+/// evaluation, the one link from the readings to the commitment. A ring switch run on another
+/// packing, closed at its own surviving value, followed by the committed packing's opening at
+/// that surviving point, passes every other check: each part imports on its own, the whole
+/// proof does not, and the circuit refuses it.
+#[test]
+fn the_surviving_value_is_the_packed_evaluation() {
+    let variables = 10;
+    let high = variables - ABSORBED;
+    let config = packed_config(high, 8, 1);
+    let mmcs = mmcs(0);
+    let inner = WhirProver::<F, F, _, _, Ch, SuffixProver<F, F>>::new(
+        config.clone(),
+        BinaryWhirDomain::<F>::default(),
+        mmcs.clone(),
+    );
+    let specs = vec![BinaryRingClaimSpec {
+        current: true,
+        next_rows: None,
+    }];
+    let verifier =
+        BinaryBooleanWhirVerifier::new(&config, specs.clone(), ByteHash::Keccak256, 0).unwrap();
+    let ring = BinaryBitRingVerifier::<F>::new(variables, specs).unwrap();
+    let protocol = OpeningProtocol::new(vec![TableSpec::new(
+        TableShape::new(high, 1),
+        vec![OpeningBatch::new(vec![0], vec![])],
+    )]);
+    let whir = BinaryWhirVerifier::<F>::new(
+        &config,
+        protocol.clone(),
+        SuffixProver::<F, F>::variable_order(),
+        ByteHash::Keccak256,
+        0,
+    )
+    .unwrap();
+
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let cap = vec![
+        b.alloc_public_input_array::<16>("packed commitment root")
+            .to_vec(),
+    ];
+    let reading = NativeBitRingReading {
+        point: (0..variables).map(|_| public_scalar(&mut b)).collect(),
+        current: Some(public_scalar(&mut b)),
+        next: None,
+    };
+    let targets = verifier
+        .input_shape()
+        .allocate_native_targets(&mut b)
+        .unwrap();
+    let mut ch = native_challenger(&mut b);
+    verifier
+        .observe_commitment_native(&mut b, &mut ch, &cap)
+        .unwrap();
+    verifier
+        .verify_readings_native(&mut b, ch, &cap, core::slice::from_ref(&reading), &targets)
+        .unwrap();
+    let circuit = b.build().unwrap();
+
+    let mut sampler = Sampler(0x5e1f);
+    let point = Point::new(sampler.fields(variables));
+    let committed = sampler.fields(1 << high);
+    let mut other = committed.clone();
+    other[0] += F::ONE;
+    for (switched, honest) in [(&committed, true), (&other, false)] {
+        let mut prover = challenger();
+        let table = Table::new(RowMajorMatrix::new(committed.clone(), committed.len()));
+        let witness =
+            SuffixProver::<F, F>::new_witness(vec![table], config.round_folding_factor(0));
+        let (commitment, data) = inner.commit(witness, &mut prover).unwrap();
+        let mut entry = prover.clone();
+        let claims = BitRingSwitchClaims::new(vec![BitRingSwitch::new(&point).unwrap()]).unwrap();
+        let packing = BitPacking::from_packed(Poly::new(switched.clone())).unwrap();
+        let (reduction, survivor, value) = claims.prove::<F, _, _>(&packing, &mut prover);
+        let current = claims.reductions()[0].incoming_claim(&reduction.claims[0].tensor);
+        let opening = inner
+            .open_at(
+                data,
+                &protocol,
+                core::slice::from_ref(&survivor),
+                &mut prover,
+            )
+            .unwrap();
+        assert_eq!(opening.evals[0].current()[0] == value, honest);
+
+        let readings = [(Some(current), None)];
+        let (ring_input, imported, mut rest) = ring
+            .import_native(
+                core::slice::from_ref(&point),
+                &readings,
+                &reduction,
+                entry.clone(),
+            )
+            .unwrap();
+        assert_eq!(imported, survivor);
+        let whir_input = whir
+            .import_native(
+                &config,
+                &mmcs,
+                &commitment,
+                &[survivor],
+                &opening,
+                &mut rest,
+            )
+            .unwrap();
+        let mut private = ring_input
+            .private_native_values(&ring.input_shape())
+            .unwrap();
+        private.extend(
+            whir_input
+                .private_native_values(&whir.input_shape())
+                .unwrap(),
+        );
+        let whole = verifier.import_native(
+            &config,
+            &mmcs,
+            &commitment,
+            core::slice::from_ref(&point),
+            &readings,
+            &BooleanWhirProof { reduction, opening },
+            &mut entry,
+        );
+        if honest {
+            let whole = whole
+                .unwrap()
+                .private_native_values(&verifier.input_shape())
+                .unwrap();
+            assert_eq!(whole, private);
+        } else {
+            assert!(whole.is_err());
+        }
+
+        let mut public: Vec<F> = bytes_to_limbs(&commitment.roots()[0])
+            .into_iter()
+            .map(|word| H::encode_u16(word).unwrap())
+            .collect();
+        public.extend(point.iter().copied());
+        public.push(current);
+        assert_eq!(accepts(&circuit, &public, &private), honest);
     }
 }
 
