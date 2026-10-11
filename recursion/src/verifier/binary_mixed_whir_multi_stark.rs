@@ -1,5 +1,5 @@
 //! Complete Tower128 MultiStark relations over a dense WHIR commitment and one packed-bit
-//! table commitment, in prime-field circuits.
+//! table commitment, in prime-field and native Tower128 circuits.
 //!
 //! ```text
 //!     tables        one configured table is committed as bits, every other table densely
@@ -51,6 +51,8 @@ use crate::pcs::binary::{
     BinaryWhirProofTargets, BinaryWhirVerifier, NativeBinaryBooleanWhirTraceInput,
     NativeBinaryGenericSumcheckInput, NativeBinaryWhirInput,
 };
+
+mod native;
 
 type F = BinaryField128;
 /// A WHIR configuration and the byte Merkle tree it commits with.
@@ -108,16 +110,20 @@ impl MixedPreprocessedInputShape {
     }
 }
 
+/// Proof targets over field targets `T`, with the packed opening's targets `K`.
 #[derive(Clone, Debug)]
-pub struct BinaryMixedWhirMultiStarkProofTargets {
+pub struct BinaryMixedWhirMultiStarkProofTargets<
+    T = BinaryTower128Target,
+    K = BinaryBooleanWhirTraceProofTargets,
+> {
     /// The dense roots, then the packed roots.
     pub commitment: Vec<Vec<ExprId>>,
-    pub bus: Option<BinaryProductGkrProofTargets>,
-    pub sumcheck: BinaryGenericSumcheckProofTargets,
+    pub bus: Option<BinaryProductGkrProofTargets<T>>,
+    pub sumcheck: BinaryGenericSumcheckProofTargets<T>,
     pub indexed: Option<BinaryIndexedLookupProofTargets>,
-    pub dense: BinaryWhirProofTargets,
-    pub packed: BinaryBooleanWhirTraceProofTargets,
-    pub preprocessed_opening: Option<BinaryWhirProofTargets>,
+    pub dense: BinaryWhirProofTargets<T>,
+    pub packed: K,
+    pub preprocessed_opening: Option<BinaryWhirProofTargets<T>>,
 }
 
 impl BinaryMixedWhirMultiStarkInputShape {

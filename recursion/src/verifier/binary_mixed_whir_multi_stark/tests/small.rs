@@ -141,15 +141,38 @@ fn opening_offsets(
     (dense, packed)
 }
 
+/// Offsets of the dense and the packed opening's witnesses within the native circuit's private
+/// inputs, one scalar per field.
+fn native_opening_offsets(
+    input: &NativeBinaryMixedWhirMultiStarkInput,
+    shape: &BinaryMixedWhirMultiStarkInputShape,
+) -> (usize, usize) {
+    assert!(input.bus.is_none() && input.indexed.is_none());
+    let commitment = (2 << CAP_HEIGHT) * 16;
+    let sumcheck = input
+        .sumcheck
+        .private_native_values(&shape.relation.sumcheck)
+        .unwrap()
+        .len();
+    let dense = commitment + sumcheck;
+    let packed = dense
+        + input
+            .dense
+            .private_native_values(&shape.dense)
+            .unwrap()
+            .len();
+    (dense, packed)
+}
+
 /// The positions of `needle` within `haystack[range]`.
-fn occurrences(haystack: &[BabyBear], needle: &[BabyBear], range: Range<usize>) -> Vec<usize> {
+fn occurrences<T: PartialEq>(haystack: &[T], needle: &[T], range: Range<usize>) -> Vec<usize> {
     range
         .filter(|&i| haystack[i..].starts_with(needle))
         .collect()
 }
 
-/// A named change to the prime circuit's private inputs.
-type WitnessTamper<'a> = (&'static str, &'a dyn Fn(&mut Vec<BabyBear>));
+/// A named change to a circuit's private inputs.
+type WitnessTamper<'a, T> = (&'static str, &'a dyn Fn(&mut Vec<T>));
 
 fn flip(value: &mut BabyBear) {
     *value = BabyBear::from_u64(value.as_canonical_u64() ^ 1);
@@ -193,7 +216,7 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
     assert_eq!(dense_sibling[packed..], private[packed..]);
     assert_eq!(packed_sibling[..packed], private[..packed]);
     let roots = 16 << CAP_HEIGHT;
-    let tampers: [WitnessTamper<'_>; 6] = [
+    let tampers: [WitnessTamper<'_, BabyBear>; 6] = [
         // Each opening's witnesses start with its opened values.
         ("packed opened value", &|private| flip(&mut private[packed])),
         ("dense opened value", &|private| flip(&mut private[dense])),
@@ -221,6 +244,71 @@ fn assert_prime_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
     }
 }
 
+/// The native counterpart of [`assert_prime_circuit_accepts_and_refuses_tampers`]: the same
+/// honest witness and tamper classes, one scalar per field.
+fn assert_native_circuit_accepts_and_refuses_tampers(mixed: &Mixed) {
+    let verifier = mixed.verifier();
+    let shape = verifier.input_shape();
+    let (input, private) = mixed.honest_native_private_values(&verifier);
+    let siblings = mixed.assert_tampers_refused_by_import(&verifier);
+
+    let (circuit, _) = native_circuit(&verifier);
+    let public = mixed.public_values();
+    assert!(accepts(&circuit, &private, &public));
+
+    let (dense, packed) = native_opening_offsets(&input, &shape);
+    let mut proof = mixed.proof_copy();
+    // Tensor rows can repeat; a row whose value occurs once names its witness alone.
+    let tensor_row = packed_opening(&mut proof).opening.reduction.claims[0]
+        .tensor
+        .rows()
+        .iter()
+        .find_map(
+            |row| match occurrences(&private, &[*row], packed..private.len()).as_slice() {
+                &[position] => Some(position),
+                _ => None,
+            },
+        )
+        .unwrap();
+    // A Merkle sibling enters the transcript nowhere, so the continuation is unchanged.
+    let [dense_sibling, packed_sibling] = [0, 1].map(|i| {
+        let mut values = siblings[i].private_native_values(&shape).unwrap();
+        values.push(*private.last().unwrap());
+        values
+    });
+    // Each sibling tamper changes only the witnesses of the opening it names.
+    assert_eq!(dense_sibling[..dense], private[..dense]);
+    assert_eq!(dense_sibling[packed..], private[packed..]);
+    assert_eq!(packed_sibling[..packed], private[..packed]);
+    let roots = 16 << CAP_HEIGHT;
+    let tampers: [WitnessTamper<'_, F>; 6] = [
+        // Each opening's witnesses start with its opened values.
+        ("packed opened value", &|private| private[packed] += F::ONE),
+        ("dense opened value", &|private| private[dense] += F::ONE),
+        ("ring-switch tensor row", &|private| {
+            private[tensor_row] += F::ONE;
+        }),
+        ("cap with swapped halves", &|private| {
+            private[..2 * roots].rotate_left(roots);
+        }),
+        ("dense WHIR Merkle sibling", &|private| {
+            private.clone_from(&dense_sibling);
+        }),
+        ("packed WHIR Merkle sibling", &|private| {
+            private.clone_from(&packed_sibling);
+        }),
+    ];
+    for (name, tamper) in tampers {
+        let mut tampered = private.clone();
+        tamper(&mut tampered);
+        assert_ne!(tampered, private);
+        assert!(
+            !accepts(&circuit, &tampered, &public),
+            "the native circuit accepted a tampered {name}"
+        );
+    }
+}
+
 #[test]
 fn small_mixed_proof_imports_and_refuses_tampers() {
     let mixed = small_proof();
@@ -229,9 +317,13 @@ fn small_mixed_proof_imports_and_refuses_tampers() {
     mixed.assert_tampers_refused_by_import(&verifier);
 }
 
+/// The prime and the native verifier agree on one proof: each circuit accepts the honest
+/// import with the multi-stark verifier's continuation and refuses every tamper class.
 #[test]
-fn minimal_mixed_proof_satisfies_the_prime_circuit_and_refuses_tampers() {
-    assert_prime_circuit_accepts_and_refuses_tampers(&minimal_proof());
+fn minimal_mixed_proof_satisfies_both_circuits_and_refuses_tampers() {
+    let mixed = minimal_proof();
+    assert_prime_circuit_accepts_and_refuses_tampers(&mixed);
+    assert_native_circuit_accepts_and_refuses_tampers(&mixed);
 }
 
 /// The preprocessing opening follows the packed one in the transcript, which the circuit's
@@ -255,6 +347,13 @@ fn preprocessing_after_the_packed_opening_satisfies_the_prime_circuit() {
 #[ignore = "builds a prime-field mixed verifier with successor tensors: about 12 GB in debug, 21.5 GB with circuit diagnostics; run explicitly"]
 fn small_mixed_proof_satisfies_the_prime_circuit_and_refuses_tampers() {
     assert_prime_circuit_accepts_and_refuses_tampers(&small_proof());
+}
+
+/// The successor route with its carry and last tensors, preprocessing, and the Boolean table
+/// between two dense ones, in the native circuit.
+#[test]
+fn small_mixed_proof_satisfies_the_native_circuit_and_refuses_tampers() {
+    assert_native_circuit_accepts_and_refuses_tampers(&small_proof());
 }
 
 #[test]

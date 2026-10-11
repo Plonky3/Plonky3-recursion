@@ -113,6 +113,92 @@ fn keccak_chain_satisfies_the_prime_circuit() {
     assert!(accepts(&circuit, &private, &mixed.public_limbs()));
 }
 
+/// The native circuit accepts the honest chain and refuses it once an opened value of the
+/// bit-committed Keccak table changes.
+#[test]
+fn keccak_chain_satisfies_the_native_circuit() {
+    let mixed = keccak_chain_proof();
+    let verifier = mixed.verifier();
+    let (_, private) = mixed.honest_native_private_values(&verifier);
+    let (circuit, _) = native_circuit(&verifier);
+    let public = mixed.public_values();
+    assert!(accepts(&circuit, &private, &public));
+    // The packed opening's witnesses start with the opened Keccak values.
+    let values = &mixed.proof.opening.packed.as_ref().unwrap().values;
+    let start = (0..private.len())
+        .find(|&i| private[i..].starts_with(values))
+        .unwrap();
+    let mut tampered = private;
+    tampered[start] += F::ONE;
+    assert!(!accepts(&circuit, &tampered, &public));
+}
+
+/// Expression nodes of the native verifier of the chain with its Keccak table bit-committed,
+/// as measured. The bound is 1.2 times this count, updatable when the native transcript, the
+/// WHIR kernel or the Keccak AIR change.
+const MEASURED_MIXED_NODES: usize = 811_760;
+
+/// Prints the native verifier's expression nodes for the chain with its Keccak table
+/// bit-committed next to the native dense verifier's for the same chain with every table
+/// committed densely, under the same parameters.
+#[test]
+fn native_verifier_nodes_of_the_keccak_chain() {
+    let (circuit, _) = keccak_chain();
+    let bits = native_bus(&circuit, KeccakCommitment::Bits);
+    let keccak = bits.keccak_table_index().unwrap();
+    let parameters = Parameters::new(bits.airs(), bits.log_heights(), Some(keccak));
+    let verifier = parameters
+        .verifier(
+            bits.airs(),
+            bits.log_heights(),
+            keccak,
+            parameters.preprocessed_cap(bits.airs()),
+        )
+        .unwrap();
+    let (_, mixed_nodes) = native_circuit(&verifier);
+
+    let dense = native_bus(&circuit, KeccakCommitment::Dense);
+    let parameters = Parameters::new(dense.airs(), dense.log_heights(), None);
+    let preprocessed = parameters.preprocessed.as_ref().unwrap();
+    let verifier = BinaryWhirMultiStarkVerifier::<F>::with_preprocessing(
+        &dense.airs().iter().collect::<Vec<_>>(),
+        dense.log_heights(),
+        parameters.dense.configuration(),
+        VariableOrder::Suffix,
+        HASH,
+        CAP_HEIGHT,
+        0,
+        MAX_TAU_DRAWS,
+        BinaryWhirMultiStarkPreprocessing {
+            config: preprocessed.configuration().clone(),
+            order: VariableOrder::Suffix,
+            hash: HASH,
+            cap_height: CAP_HEIGHT,
+            commitment: parameters.preprocessed_cap(dense.airs()).unwrap(),
+        },
+        &limits(),
+    )
+    .unwrap();
+    let shape = verifier.input_shape();
+    let (mut b, public) = native_builder(shape.public_value_counts());
+    let targets = shape.allocate_native_targets(&mut b).unwrap();
+    let ch = native_challenger(&mut b);
+    let before = b.construction_usage().unwrap().expression_nodes;
+    verifier
+        .verify_native(&mut b, ch, &public, &targets)
+        .unwrap();
+    let dense_nodes = b.construction_usage().unwrap().expression_nodes - before;
+
+    std::println!(
+        "native verifier of {CALLS} chained Keccak-f calls: {mixed_nodes} nodes with the Keccak \
+         table bit-committed, {dense_nodes} with every table committed densely"
+    );
+    assert!(
+        mixed_nodes * 5 <= MEASURED_MIXED_NODES * 6,
+        "{mixed_nodes} mixed native verifier nodes"
+    );
+}
+
 #[test]
 fn dense_verifier_refuses_the_bits_mode_airs() {
     let (circuit, _) = keccak_chain();

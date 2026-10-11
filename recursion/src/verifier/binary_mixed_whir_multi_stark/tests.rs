@@ -15,6 +15,8 @@ use p3_air::{AirBuilder, BaseAir, WindowAccess};
 use p3_baby_bear::BabyBear;
 use p3_binary_field::TowerLevel;
 use p3_bus::BusInteractionBuilder;
+use p3_circuit::ops::NativeTower128Target;
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::{Circuit, CircuitBuilder};
 use p3_circuit_prover::native_bus::NativeBusCircuitAir;
@@ -144,6 +146,17 @@ impl Parameters {
         .unwrap()
     }
 
+    /// The commitment of the AIRs' preprocessed traces, when they have any.
+    fn preprocessed_cap<A: BaseAir<F>>(&self, airs: &[A]) -> Option<MerkleCap<F, [u8; 32]>> {
+        let pcs = MixedWhirPcs::from_parameters(self.preprocessed.as_ref()?, None).unwrap();
+        let tables = airs
+            .iter()
+            .filter(|air| air.preprocessed_width() != 0)
+            .map(|air| Table::new(air.preprocessed_trace().unwrap().transpose()))
+            .collect();
+        Some(pcs.commit(tables, &mut challenger()).unwrap().0)
+    }
+
     /// The mixed verifier over these parameters, retaining `preprocessed_cap` when the AIRs
     /// have preprocessed columns.
     fn verifier<A>(
@@ -219,14 +232,7 @@ impl Mixed {
         let refs = airs.iter().collect::<Vec<_>>();
         let (proving, _) = setup(&config, &refs, &mut challenger()).unwrap();
         // Setup commits these tables too, but its key keeps the cap private.
-        let preprocessed_cap = config.preprocessed.as_ref().map(|pcs| {
-            let tables = airs
-                .iter()
-                .filter(|air| air.preprocessed_width() != 0)
-                .map(|air| Table::new(air.preprocessed_trace().unwrap().transpose()))
-                .collect();
-            pcs.commit(tables, &mut challenger()).unwrap().0
-        });
+        let preprocessed_cap = parameters.preprocessed_cap(&airs);
         let proof = prove(
             &config,
             ProverInstances::new(
@@ -311,21 +317,43 @@ impl Mixed {
         )
     }
 
-    /// Imports the honest proof, checks the native continuation against the multi-stark
-    /// verifier's, and returns the prime circuit's private inputs.
-    fn honest_private_values(
+    /// Imports the honest proof and checks the native continuation against the multi-stark
+    /// verifier's. Returns the input and the continued challenge both circuits pin.
+    fn honest_import(
         &self,
         verifier: &BinaryMixedWhirMultiStarkVerifier,
-    ) -> (NativeBinaryMixedWhirMultiStarkInput, Vec<BabyBear>) {
+    ) -> (NativeBinaryMixedWhirMultiStarkInput, F) {
         let mut ch = challenger();
         let input = self.import(verifier, &self.proof, &mut ch).unwrap();
         ch.observe(F::from_repr(29));
         let continued = ch.sample_algebra_element::<F>();
         assert_eq!(continued, self.continued_challenge());
+        (input, continued)
+    }
+
+    /// The honest import and the prime circuit's private inputs.
+    fn honest_private_values(
+        &self,
+        verifier: &BinaryMixedWhirMultiStarkVerifier,
+    ) -> (NativeBinaryMixedWhirMultiStarkInput, Vec<BabyBear>) {
+        let (input, continued) = self.honest_import(verifier);
         let mut private = input
             .private_values::<BabyBear>(&verifier.input_shape())
             .unwrap();
         private.extend(limbs(continued));
+        (input, private)
+    }
+
+    /// The honest import and the native circuit's private inputs.
+    fn honest_native_private_values(
+        &self,
+        verifier: &BinaryMixedWhirMultiStarkVerifier,
+    ) -> (NativeBinaryMixedWhirMultiStarkInput, Vec<F>) {
+        let (input, continued) = self.honest_import(verifier);
+        let mut private = input
+            .private_native_values(&verifier.input_shape())
+            .unwrap();
+        private.push(continued);
         (input, private)
     }
 
@@ -385,6 +413,10 @@ impl Mixed {
             .flatten()
             .flat_map(|&v| limbs(v))
             .collect()
+    }
+
+    fn public_values(&self) -> Vec<F> {
+        self.public.iter().flatten().copied().collect()
     }
 }
 
@@ -485,7 +517,63 @@ fn prime_circuit(verifier: &BinaryMixedWhirMultiStarkVerifier) -> Circuit<BabyBe
     b.build().unwrap()
 }
 
-fn accepts(circuit: &Circuit<BabyBear>, private: &[BabyBear], public: &[BabyBear]) -> bool {
+/// A native circuit with Keccak enabled and one public scalar per statement value, for
+/// statements of `counts` values per AIR.
+fn native_builder(
+    counts: impl Iterator<Item = usize>,
+) -> (CircuitBuilder<F>, Vec<Vec<NativeTower128Target>>) {
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let public = counts
+        .map(|count| {
+            (0..count)
+                .map(|_| {
+                    let value = b.public_input();
+                    b.native_tower128_from_expr(value)
+                })
+                .collect()
+        })
+        .collect();
+    (b, public)
+}
+
+fn native_challenger(b: &mut CircuitBuilder<F>) -> BinaryTower128Challenger {
+    let initial =
+        INITIAL.map(|v| b.define_const(NativeBinaryEncoding::encode_u16(v.into()).unwrap()));
+    BinaryTower128Challenger::with_initial_bytes_with_host::<NativeBinaryEncoding, F>(
+        b, HASH, &initial,
+    )
+    .unwrap()
+}
+
+/// The native Tower128 verifier circuit, with the continuation pin of [`prime_circuit`], and
+/// the expression nodes the verifier itself adds.
+fn native_circuit(verifier: &BinaryMixedWhirMultiStarkVerifier) -> (Circuit<F>, usize) {
+    let shape = verifier.input_shape();
+    let (mut b, public) = native_builder(shape.public_value_counts());
+    let targets = shape.allocate_native_targets(&mut b).unwrap();
+    let ch = native_challenger(&mut b);
+    let before = b.construction_usage().unwrap().expression_nodes;
+    let mut ch = verifier
+        .verify_native(&mut b, ch, &public, &targets)
+        .unwrap();
+    let nodes = b.construction_usage().unwrap().expression_nodes - before;
+    let observation = 29u128
+        .to_le_bytes()
+        .map(|v| b.define_const(NativeBinaryEncoding::encode_u16(v.into()).unwrap()));
+    ch.observe_bytes_with_host::<NativeBinaryEncoding, F>(&mut b, &observation)
+        .unwrap();
+    let actual = ch
+        .sample_with_host::<NativeBinaryEncoding, F>(&mut b)
+        .unwrap();
+    let actual = b.native_tower128_from_bits(*actual.bits()).unwrap();
+    let expected = b.alloc_private_input("continued challenge");
+    let difference = b.sub(actual.as_expr(), expected);
+    b.assert_zero(difference);
+    (b.build().unwrap(), nodes)
+}
+
+fn accepts<CF: Field>(circuit: &Circuit<CF>, private: &[CF], public: &[CF]) -> bool {
     let mut runner = circuit.runner();
     runner.set_private_inputs(private).unwrap();
     runner.set_public_inputs(public).unwrap();
