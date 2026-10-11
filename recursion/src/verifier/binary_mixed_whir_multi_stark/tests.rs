@@ -4,6 +4,7 @@
 //! one [`TestAir`] list: native bus tables, or small dense and Boolean tables.
 
 mod forged_limb;
+mod forged_swapped;
 mod keccak_chain;
 mod small;
 

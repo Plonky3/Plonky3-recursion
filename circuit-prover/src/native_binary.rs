@@ -12,7 +12,9 @@ use alloc::vec::Vec;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::Circuit;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::keccak_perm::{KECCAK_STATE_LIMBS, keccak_limbs_to_state};
+use p3_circuit::ops::keccak_perm::{
+    KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, keccak_limbs_to_state,
+};
 use p3_circuit::ops::{NpoTypeId, Op};
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::types::WitnessId;
@@ -44,7 +46,9 @@ pub enum NativeBinaryCircuitError {
     Indexed(#[from] IndexedCircuitError),
     #[error("native Keccak requires 16 coordinates, got {bits}")]
     CoordinateWidth { bits: usize },
-    #[error("native Keccak operation {operation} requires one input and output group of 100 limbs")]
+    #[error(
+        "native Keccak operation {operation} requires one input group of 100 limbs and a supported output group"
+    )]
     KeccakLayout { operation: usize },
     #[error("native Keccak witness {witness} is outside the 16-coordinate limb span")]
     InvalidLimb { witness: usize },
@@ -72,6 +76,8 @@ pub struct NativeBinaryCircuitAir<F> {
 pub(crate) struct KeccakCall {
     pub(crate) input: [usize; KECCAK_STATE_LIMBS],
     pub(crate) output: [usize; KECCAK_STATE_LIMBS],
+    /// Outputs holding the first digest limbs with their two bytes swapped.
+    pub(crate) swapped: Option<[usize; KECCAK256_DIGEST_LIMBS]>,
 }
 
 /// Compact native primitives and supported binary hash tables.
@@ -101,7 +107,7 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
             limits,
             &[NpoTypeId::native_keccak_f1600()],
         )?;
-        let calls = keccak_calls(circuit)?;
+        let calls = keccak_calls(circuit, false)?;
         let mut airs: Vec<_> = primitive
             .airs()
             .iter()
@@ -346,9 +352,11 @@ where
     }
 }
 
-/// Called only after the primitive plan has validated operation identities and IDs.
+/// Called only after the primitive plan has validated operation identities and IDs. Calls
+/// that also output swapped digest limbs are accepted only when `swapped_digest` is set.
 pub(crate) fn keccak_calls<F: Field>(
     circuit: &Circuit<F>,
+    swapped_digest: bool,
 ) -> Result<Vec<KeccakCall>, NativeBinaryCircuitError> {
     let mut calls = Vec::new();
     for (operation, op) in circuit.ops.iter().enumerate() {
@@ -358,16 +366,24 @@ pub(crate) fn keccak_calls<F: Field>(
         {
             // The primitive plan has already rejected unrecognized identities
             // and validated all witness IDs. Validate the supported shape too.
+            let swapped_outputs = if swapped_digest {
+                KECCAK_STATE_LIMBS + KECCAK256_DIGEST_LIMBS
+            } else {
+                KECCAK_STATE_LIMBS
+            };
             if inputs.len() != 1
                 || outputs.len() != 1
                 || inputs[0].len() != KECCAK_STATE_LIMBS
-                || outputs[0].len() != KECCAK_STATE_LIMBS
+                || ![KECCAK_STATE_LIMBS, swapped_outputs].contains(&outputs[0].len())
             {
                 return Err(NativeBinaryCircuitError::KeccakLayout { operation });
             }
+            let id = |i: usize| outputs[0][i].0 as usize;
             calls.push(KeccakCall {
                 input: core::array::from_fn(|i| inputs[0][i].0 as usize),
-                output: core::array::from_fn(|i| outputs[0][i].0 as usize),
+                output: core::array::from_fn(id),
+                swapped: (outputs[0].len() > KECCAK_STATE_LIMBS)
+                    .then(|| core::array::from_fn(|m| id(KECCAK_STATE_LIMBS + m))),
             });
         }
     }

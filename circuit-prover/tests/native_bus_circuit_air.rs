@@ -218,7 +218,7 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
     let hash = traces.len() - 2;
     let bridge = traces.len() - 1;
     assert_eq!(traces[hash].width, 1625);
-    assert_eq!(traces[bridge].width, 100);
+    assert_eq!(traces[bridge].width, 116);
     let indexed_hash = &indexed_traces[indexed_traces.len() - 2];
     for (row, indexed) in traces[hash]
         .values
@@ -242,7 +242,7 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
             assert_eq!(hash_pp.values[3 * row + 2], F::ONE);
             assert_eq!(
                 hash_pp.values[3 * row + 1],
-                bridge_pp.values[102 * (2 * call + boundary) + 100]
+                bridge_pp.values[119 * (2 * call + boundary) + 116]
             );
             assert_eq!(
                 hash_pp.values[3 * row + 1].to_raw_coordinates(),
@@ -250,8 +250,11 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
             );
         }
     }
-    for row in bridge_pp.values.as_chunks::<102>().0.iter().skip(6) {
-        assert_eq!(row[101], F::ZERO);
+    for (row, labels) in bridge_pp.values.as_chunks::<119>().0.iter().enumerate() {
+        assert_eq!(labels[117], F::from_bool(row < 6));
+        // Plain calls push no swapped digest limb onto the witness bus.
+        assert_eq!(labels[118], F::ZERO);
+        assert!(labels[100..116].iter().all(|&label| label == F::ZERO));
     }
     for row in traces[hash].values.as_chunks::<1625>().0.iter().skip(128) {
         assert_eq!(row[24], F::ONE);
@@ -267,4 +270,71 @@ fn three_native_hash_calls_have_fixed_schedules_and_unique_boundary_tags() {
         std::panic::catch_unwind(|| check_constraints(&prepared.airs()[hash], &missing, &[]))
             .is_err()
     );
+}
+
+/// A call that also outputs its swapped digest limbs pushes them onto the witness bus from its
+/// output boundary row only, under their own activation. Every boundary row carries its first
+/// sixteen limbs byte-swapped, as the Keccak table pushes them on the hash bus. The indexed
+/// backend has no such columns and refuses the call.
+#[test]
+fn swapped_digest_outputs_are_bridged_from_the_output_boundary() {
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let input = b.alloc_public_input_array::<100>("input");
+    let expected = b.alloc_public_input_array::<16>("swapped digest");
+    let (_, swapped) = b
+        .add_native_keccak_f1600_with_swapped_digest(&input)
+        .unwrap();
+    for (actual, expected) in swapped.into_iter().zip(expected) {
+        b.connect(actual, expected);
+    }
+    let circuit = b.build().unwrap();
+    let input: [u64; 25] =
+        core::array::from_fn(|i| 0x0f1e2d3c4b5a6978u64.rotate_left(7 * i as u32));
+    let output = keccak_state_to_limbs(&KeccakF.permute(input));
+    let raw = |word: u16| F::from_raw_coordinates(word.into()).unwrap();
+    let public: Vec<_> = keccak_state_to_limbs(&input)
+        .into_iter()
+        .chain(output[..16].iter().map(|limb| limb.swap_bytes()))
+        .map(raw)
+        .collect();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let prepared = NativeBusCircuit::new(&circuit, "swapped").unwrap();
+    let traces = prepared.traces(&witness).unwrap();
+    let values = prepared.public_values(&public).unwrap();
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&values) {
+        check_constraints(air, trace, public);
+    }
+    let bridge = traces.len() - 1;
+    let pp = prepared.airs()[bridge].preprocessed_trace().unwrap();
+    let rows = traces[bridge].values.as_chunks::<116>().0;
+    let labels = pp.values.as_chunks::<119>().0;
+    let swapped_ids: Vec<_> = circuit
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            p3_circuit::Op::NonPrimitiveOpWithExecutor { outputs, .. } => {
+                Some(outputs[0][100..].to_vec())
+            }
+            _ => None,
+        })
+        .unwrap();
+    for boundary in 0..2 {
+        for m in 0..16 {
+            let limb = rows[boundary][m].to_raw_coordinates() as u16;
+            assert_eq!(rows[boundary][100 + m], raw(limb.swap_bytes()));
+        }
+        assert_eq!(labels[boundary][118], F::from_bool(boundary == 1));
+    }
+    for (m, id) in swapped_ids.iter().enumerate() {
+        assert_eq!(rows[1][100 + m], public[100 + m]);
+        assert_eq!(
+            labels[1][100 + m].to_raw_coordinates(),
+            u128::from(id.0) + 1
+        );
+        assert_eq!(labels[0][100 + m], F::ZERO);
+    }
+    assert!(NativeBinaryCircuit::new(&circuit).is_err());
 }

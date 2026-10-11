@@ -2,7 +2,7 @@
 //!
 //! The constants fix the canonical verifier bytes and the encoded proof bytes of
 //! the dense format. They are intentionally updatable only for deliberate
-//! format or compiled-fixture changes.
+//! format changes.
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::BinaryField128;
@@ -23,9 +23,9 @@ type F = BinaryField128;
 const TINY_AIR_IDENTITY_DIGEST: &str =
     "b1260b9a33fcffe81446dbda6a8a9b5a0b7614739843f1f8afa4f7a8c649fb3a";
 const NATIVE_BUS_IDENTITY_DIGEST: &str =
-    "309b82686d44036af2b0e80d548cc5b0382372dd946d146ae9476d7b61857429";
+    "47541409752fc16e3b766041f3a740e4b9feb047333630dc7011c7b97a71fee7";
 const NATIVE_BUS_PROOF_DIGEST: &str =
-    "095bd46f8865679742372e01de8c016b45ac43a74484f9e5e0e6f39248ce7380";
+    "8c1e46f686992f059080fd7e6cf29c93e9179506ba46edd26adc3f60a32ca04c";
 
 fn digest(bytes: &[u8]) -> String {
     Keccak256Hash

@@ -18,8 +18,8 @@ use p3_bus::{
     BusActivation, BusBoundary, BusDirection, BusInteractionBuilder, BusName, BusNameError,
 };
 use p3_circuit::Circuit;
-use p3_circuit::ops::NpoTypeId;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::{KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, NpoTypeId};
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::types::WitnessId;
 use p3_field::PrimeCharacteristicRing;
@@ -38,6 +38,14 @@ use crate::primitive_plan::PrimitivePlan;
 const MAX_NAMESPACE_BYTES: usize = BusName::MAX_LEN - ".witness".len();
 const GATE_PP: usize = 12;
 const HASH_WIDTH: usize = NUM_KECCAK_BINARY_COLS;
+/// Bridge main columns: a boundary's 100 state limbs, then its first 16 limbs byte-swapped.
+const BRIDGE_WIDTH: usize = KECCAK_STATE_LIMBS + KECCAK256_DIGEST_LIMBS;
+/// Bridge preprocessed columns: a witness label per main column, the boundary tag, the
+/// boundary activation and the swapped-digest activation.
+const BRIDGE_PP: usize = BRIDGE_WIDTH + 3;
+const BRIDGE_TAG: usize = BRIDGE_WIDTH;
+const BRIDGE_ACTIVE: usize = BRIDGE_WIDTH + 1;
+const BRIDGE_SWAPPED_ACTIVE: usize = BRIDGE_WIDTH + 2;
 /// Columns of the Keccak table are indexed by `COLUMN_VARIABLES` coordinates once packed.
 const COLUMN_VARIABLES: usize = HASH_WIDTH.next_power_of_two().ilog2() as usize;
 
@@ -211,7 +219,8 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             limits,
             &[NpoTypeId::native_keccak_f1600()],
         )?;
-        let calls = keccak_calls(circuit)?;
+        let calls = keccak_calls(circuit, true)?;
+        let swapped_calls = calls.iter().filter(|call| call.swapped.is_some()).count();
         let gate_occurrences = plan.constraints.iter().try_fold(0, |total, constraint| {
             let (_, selector, _) = gate(constraint);
             add(
@@ -223,7 +232,10 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         })?;
         let n = add(
             add(gate_occurrences, plan.public.len())?,
-            cells(calls.len(), 200)?,
+            add(
+                cells(calls.len(), 2 * KECCAK_STATE_LIMBS)?,
+                cells(swapped_calls, KECCAK256_DIGEST_LIMBS)?,
+            )?,
         )?;
         let witness_height = padded_height(n.max(minimum_height))?;
         let gate_height = if plan.constraints.is_empty() {
@@ -256,13 +268,13 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 cells(plan.public.len(), minimum_height)?,
                 add(
                     if bits { 0 } else { hash_cells },
-                    cells(bridge_height, 100)?,
+                    cells(bridge_height, BRIDGE_WIDTH)?,
                 )?,
             )?,
         )?;
         let pp_cells = add(
             add(cells(witness_height, 4)?, cells(gate_height, GATE_PP)?)?,
-            add(cells(hash_height, 3)?, cells(bridge_height, 102)?)?,
+            add(cells(hash_height, 3)?, cells(bridge_height, BRIDGE_PP)?)?,
         )?;
         // The bus uses the bit matrix, dense or packed, directly. Only an
         // enlarged minimum height needs an old allocation alongside the final one.
@@ -325,7 +337,14 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         }
         occurrences.extend(plan.public.iter().map(|&w| w + 1));
         for call in &calls {
-            occurrences.extend(call.input.iter().chain(&call.output).map(|&w| w + 1));
+            let swapped = call.swapped.iter().flatten();
+            occurrences.extend(
+                call.input
+                    .iter()
+                    .chain(&call.output)
+                    .chain(swapped)
+                    .map(|&w| w + 1),
+            );
         }
         occurrences.sort_unstable();
         let fanout = Arc::new(Fanout {
@@ -371,18 +390,27 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 bits,
             }));
             log_heights.push(hash_height.ilog2() as usize);
-            let mut pp = vec![F::ZERO; cells(bridge_height, 102)?];
+            let mut pp = vec![F::ZERO; cells(bridge_height, BRIDGE_PP)?];
             for (c, call) in calls.iter().enumerate() {
                 for (boundary, ids) in [&call.input, &call.output].into_iter().enumerate() {
-                    let row = &mut pp[(2 * c + boundary) * 102..(2 * c + boundary + 1) * 102];
-                    for i in 0..100 {
+                    let row =
+                        &mut pp[(2 * c + boundary) * BRIDGE_PP..(2 * c + boundary + 1) * BRIDGE_PP];
+                    for i in 0..KECCAK_STATE_LIMBS {
                         row[i] = label::<F>(ids[i] + 1)?;
                     }
-                    row[100] = label::<F>(2 * c + boundary + 1)?;
-                    row[101] = F::ONE;
+                    row[BRIDGE_TAG] = label::<F>(2 * c + boundary + 1)?;
+                    row[BRIDGE_ACTIVE] = F::ONE;
+                    if let (1, Some(swapped)) = (boundary, &call.swapped) {
+                        for (m, &id) in swapped.iter().enumerate() {
+                            row[KECCAK_STATE_LIMBS + m] = label::<F>(id + 1)?;
+                        }
+                        row[BRIDGE_SWAPPED_ACTIVE] = F::ONE;
+                    }
                 }
             }
-            airs.push(air(Table::Bridge(Arc::new(RowMajorMatrix::new(pp, 102)))));
+            airs.push(air(Table::Bridge(Arc::new(RowMajorMatrix::new(
+                pp, BRIDGE_PP,
+            )))));
             log_heights.push(bridge_height.ilog2() as usize);
         }
         Ok(Self {
@@ -536,20 +564,26 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 }
                 Table::Keccak { .. } => keccak_bit_trace(&self.calls, witness, height)?,
                 Table::Bridge(_) => {
-                    let mut values = vec![F::ZERO; cells(height, 100)?];
-                    for (row, output) in values.as_chunks_mut::<100>().0.iter_mut().enumerate() {
+                    let mut values = vec![F::ZERO; cells(height, BRIDGE_WIDTH)?];
+                    let rows = values.as_chunks_mut::<BRIDGE_WIDTH>().0;
+                    for (row, output) in rows.iter_mut().enumerate() {
                         if let Some(call) = self.calls.get(row / 2) {
                             let ids = if row % 2 == 0 {
                                 &call.input
                             } else {
                                 &call.output
                             };
-                            for i in 0..100 {
+                            for i in 0..KECCAK_STATE_LIMBS {
                                 output[i] = read(ids[i] + 1);
+                            }
+                            // Generating the Keccak table, before this one, checked every
+                            // boundary limb's width.
+                            for m in 0..KECCAK256_DIGEST_LIMBS {
+                                output[KECCAK_STATE_LIMBS + m] = swap_bytes(output[m]);
                             }
                         }
                     }
-                    RowMajorMatrix::new(values, 100)
+                    RowMajorMatrix::new(values, BRIDGE_WIDTH)
                 }
             };
             traces.push(NativeBusTrace::Dense(trace));
@@ -609,6 +643,11 @@ fn packed_cells<F: BinaryCoordinateField>(height: usize) -> Result<usize, Indexe
     let words = cells(height.div_ceil(BITS), HASH_WIDTH)?;
     Ok(cells(words, BITS)?.div_ceil(F::COORDINATE_BITS))
 }
+/// A sixteen-coordinate limb with coordinates `0..8` and `8..16` exchanged.
+fn swap_bytes<F: BinaryCoordinateField>(limb: F) -> F {
+    let raw = u16::try_from(limb.to_raw_coordinates()).expect("checked limb width");
+    F::from_raw_coordinates(raw.swap_bytes().into()).expect("validated limb width")
+}
 fn label<F: BinaryCoordinateField>(label: usize) -> Result<F, NativeBusCircuitError> {
     F::from_raw_coordinates(label as u128).ok_or(NativeBusCircuitError::LabelCapacity {
         label,
@@ -637,7 +676,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Gates(_) => 5,
             Table::Public(ids) => ids.len(),
             Table::Keccak { .. } => HASH_WIDTH,
-            Table::Bridge(_) => 100,
+            Table::Bridge(_) => BRIDGE_WIDTH,
         }
     }
     fn assumes_boolean_trace(&self) -> bool {
@@ -655,7 +694,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Gates(_) => GATE_PP,
             Table::Public(_) => 0,
             Table::Keccak { .. } => 3,
-            Table::Bridge(_) => 102,
+            Table::Bridge(_) => BRIDGE_PP,
         }
     }
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
@@ -740,8 +779,17 @@ where
             }
             Table::Public(_) => unreachable!("public tables have no preprocessing window"),
             Table::Keccak { weights, .. } => {
+                // Exchanging the weights of a limb's two bytes swaps them.
+                let swapped: [AB::F; 16] = core::array::from_fn(|bit| weights[bit ^ 8]);
                 let fields = core::iter::once(pp[1].into())
-                    .chain((0..100).map(|limb| keccak_limb_expression::<AB>(row, weights, limb)));
+                    .chain(
+                        (0..KECCAK_STATE_LIMBS)
+                            .map(|limb| keccak_limb_expression::<AB>(row, weights, limb)),
+                    )
+                    .chain(
+                        (0..KECCAK256_DIGEST_LIMBS)
+                            .map(|limb| keccak_limb_expression::<AB>(row, &swapped, limb)),
+                    );
                 b.push_bus_interaction(
                     BusName::new(self.hash_bus.as_ref()),
                     BusDirection::Push,
@@ -750,20 +798,26 @@ where
                 );
             }
             Table::Bridge(_) => {
-                for i in 0..100 {
+                for i in 0..BRIDGE_WIDTH {
+                    let active = if i < KECCAK_STATE_LIMBS {
+                        pp[BRIDGE_ACTIVE]
+                    } else {
+                        pp[BRIDGE_SWAPPED_ACTIVE]
+                    };
                     b.push_bus_interaction(
                         BusName::new(self.witness_bus.as_ref()),
                         BusDirection::Push,
                         [pp[i].into(), row[i].into()],
-                        BusActivation::Boolean(pp[101].into()),
+                        BusActivation::Boolean(active.into()),
                     );
                 }
-                let fields = core::iter::once(pp[100].into()).chain(row.iter().map(|&x| x.into()));
+                let fields =
+                    core::iter::once(pp[BRIDGE_TAG].into()).chain(row.iter().map(|&x| x.into()));
                 b.push_bus_interaction(
                     BusName::new(self.hash_bus.as_ref()),
                     BusDirection::Pull,
                     fields,
-                    BusActivation::Boolean(pp[101].into()),
+                    BusActivation::Boolean(pp[BRIDGE_ACTIVE].into()),
                 );
             }
         }

@@ -256,8 +256,9 @@ fn native_product_buses_authenticate_keccak_call_boundaries() {
     // cannot substitute an unordered pair of genuine permutation boundaries.
     let mut forged = traces;
     let bridge = forged.last_mut().unwrap();
-    for i in 0..100 {
-        bridge.values.swap(i, 100 + i);
+    let width = bridge.width;
+    for i in 0..width {
+        bridge.values.swap(i, width + i);
     }
     check_constraints(prepared.airs().last().unwrap(), bridge, &[]);
     let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -536,7 +537,7 @@ fn patch_witness_cells<F: BinaryCoordinateField>(
         let table = match (air.width(), air.preprocessed_width()) {
             (1, 4) => 0,
             (5, 12) => 1,
-            (100, 102) => 2,
+            (116, 119) => 2,
             _ => continue,
         };
         let labels = air.preprocessed_trace().unwrap();

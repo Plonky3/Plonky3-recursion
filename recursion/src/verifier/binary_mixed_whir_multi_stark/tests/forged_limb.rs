@@ -1,6 +1,7 @@
 //! A forged sixteen-bit limb with its seventeenth coordinate lifted into the Keccak state.
 
 use p3_binary_pcs::BooleanTraceCommitmentError;
+use p3_circuit::ops::KECCAK_STATE_LIMBS;
 use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::{AluOpKind, Op, WitnessId};
 use p3_circuit_prover::native_bus::KeccakCommitment;
@@ -102,7 +103,7 @@ fn patch_witness_cells(
         let table = match (air.width(), air.preprocessed_width()) {
             (1, 4) => 0,
             (5, 12) => 1,
-            (100, 102) => 2,
+            (116, 119) => 2,
             _ => continue,
         };
         let labels = air.preprocessed_trace().unwrap();
@@ -180,6 +181,11 @@ fn forged_sixteen_bit_limb_is_refused_in_both_modes() {
     let cell = LIFTED_ROW * NUM_KECCAK_BINARY_COLS + LIFTED_COLUMN;
     assert!(traces[keccak].values[cell] == F::ZERO || traces[keccak].values[cell] == F::ONE);
     traces[keccak].values[cell] += wide;
+    // The hash bus also carries the boundary's first limbs byte-swapped, where the lifted bit
+    // has the weight of coordinate 8. The second call's input is bridge row 2.
+    let swapped_cell = 2 * traces.last().unwrap().width + KECCAK_STATE_LIMBS;
+    traces.last_mut().unwrap().values[swapped_cell] +=
+        wide * F::from_raw_coordinates(1 << 8).unwrap();
     let forged_tables = || {
         traces
             .iter()
