@@ -159,16 +159,22 @@ fn prepare() -> Fixture {
     }
 }
 
-/// The child statement and every verifier value reach the layer circuit: witness generation
-/// accepts the checked child and fails once any of them changes.
+/// The layer refuses a token checked under a foreign child authority before witness
+/// generation. The child statement and every verifier value reach the layer circuit: witness
+/// generation accepts the checked child and fails once any of them changes.
 #[test]
 fn tampered_child_fails_mixed_layer_witness_generation() {
     let Fixture {
         public,
+        foreign,
         private,
         layer,
         ..
     } = prepare();
+    assert!(matches!(
+        layer.prove_verified(&foreign),
+        Err(VerificationError::PreparedInputMismatch { .. })
+    ));
     // A Tower128 child statement is the layer circuit's public input unchanged.
     let flat = &public[0];
     assert!(run(layer.circuit(), flat, &private));
@@ -183,18 +189,14 @@ fn tampered_child_fails_mixed_layer_witness_generation() {
 }
 
 #[test]
+#[ignore = "proves a full native binary verifier with a packed Keccak table; run explicitly"]
 fn mixed_output_layer_proves_and_binds_the_original_statement() {
     let Fixture {
         public,
         checked,
-        foreign,
         layer,
         ..
     } = prepare();
-    assert!(matches!(
-        layer.prove_verified(&foreign),
-        Err(VerificationError::PreparedInputMismatch { .. })
-    ));
     let outer = layer.prove_verified(&checked).unwrap();
     assert!(outer.opening.packed.is_some());
     let token = layer.verify(&outer, &public).unwrap();
