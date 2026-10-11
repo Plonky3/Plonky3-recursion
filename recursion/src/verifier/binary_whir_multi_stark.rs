@@ -15,13 +15,12 @@ use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::MultilinearPcs;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::InteractionSymbolicBuilder;
-use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleCap;
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::config::MultiStarkConfig;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout;
 use p3_sumcheck::strategy::VariableOrder;
-use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 use p3_whir::pcs::proof::PcsProof as WhirPcsProof;
 
@@ -37,7 +36,7 @@ use super::{
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{
     BinaryGenericSumcheckProofTargets, BinaryWhirInputShape, BinaryWhirProofTargets,
-    BinaryWhirVerifier, NativeBinaryGenericSumcheckInput, NativeBinaryWhirInput,
+    BinaryWhirVerifier, ByteDigestMmcs, NativeBinaryGenericSumcheckInput, NativeBinaryWhirInput,
     RecursiveBinaryWhirTowerField,
 };
 /// Proof-independent input shape including the trusted AIR program.
@@ -606,10 +605,10 @@ where
 
     /// Checks the complete visible proof before bounded replay. Failure leaves
     /// the caller's native transcript unchanged.
-    pub fn import_native<C, H, Co, Ch>(
+    pub fn import_native<C, M, Ch>(
         &self,
         config: &WhirConfig<BinaryField128, F, C::Challenger>,
-        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        mmcs: &M,
         public: &[Vec<F>],
         proof: &MultiStarkProof<C>,
         ch: &mut Ch,
@@ -621,11 +620,10 @@ where
                 BinaryField128,
                 C::Challenger,
                 Commitment = MerkleCap<F, [u8; 32]>,
-                Proof = WhirPcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+                Proof = WhirPcsProof<F, BinaryField128, M>,
             >,
         F: PackedValue<Value = F>,
-        H: CryptographicHasher<F, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<F>,
         Ch: FieldChallenger<F>
             + CanSampleUniformBits<F>
             + GrindingChallenger<Witness = F>
@@ -638,10 +636,10 @@ where
 
     /// Main and preprocessing may use independent WHIR schedules and byte trees.
     /// Both share one frontier budget before any transcript replay starts.
-    pub fn import_native_with_preprocessing<C, H, Co, Ch>(
+    pub fn import_native_with_preprocessing<C, M, Ch>(
         &self,
         config: &WhirConfig<BinaryField128, F, C::Challenger>,
-        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        mmcs: &M,
         preprocessed: Option<
             crate::pcs::binary::ByteMerkleWhirParameters<
                 '_,
@@ -649,8 +647,7 @@ where
                 F,
                 BinaryField128,
                 C::Challenger,
-                H,
-                Co,
+                M,
             >,
         >,
         public: &[Vec<F>],
@@ -664,11 +661,10 @@ where
                 BinaryField128,
                 C::Challenger,
                 Commitment = MerkleCap<F, [u8; 32]>,
-                Proof = WhirPcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+                Proof = WhirPcsProof<F, BinaryField128, M>,
             >,
         F: PackedValue<Value = F>,
-        H: CryptographicHasher<F, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<F>,
         Ch: FieldChallenger<F>
             + CanSampleUniformBits<F>
             + GrindingChallenger<Witness = F>

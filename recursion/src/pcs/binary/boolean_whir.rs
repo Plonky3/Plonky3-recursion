@@ -11,11 +11,10 @@ use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::ops::{ByteHash, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
-use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleCap;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::strategy::VariableOrder;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, TableShape, TableSpec};
-use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 
 use super::verifier::assert_equal;
@@ -23,7 +22,8 @@ use super::whir_plan::invalid;
 use super::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingInputShape, BinaryRingOutput,
     BinaryRingProofTargets, BinaryWhirInputShape, BinaryWhirProofTargets, BinaryWhirVerifier,
-    NativeBinaryRingInput, NativeBinaryWhirInput, NativeBitRingProofTargets, NativeBitRingReading,
+    ByteDigestMmcs, NativeBinaryRingInput, NativeBinaryWhirInput, NativeBitRingProofTargets,
+    NativeBitRingReading,
 };
 use crate::verifier::binary_field_policy::{BinaryProtocolPolicy, NativeTower128Relation};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
@@ -342,21 +342,16 @@ impl BinaryBooleanWhirVerifier {
             .map(|(_, ch)| ch)
     }
 
-    pub(super) fn check_native_structure<C, H, Co>(
+    pub(super) fn check_native_structure<C, M>(
         &self,
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
-        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
-        proof: &BooleanWhirProof<
-            BinaryField128,
-            BinaryField128,
-            MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
-        >,
+        proof: &BooleanWhirProof<BinaryField128, BinaryField128, M>,
     ) -> Result<(), VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
-        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<BinaryField128>,
     {
         self.check_native_structure_with_usage(
             config,
@@ -367,22 +362,17 @@ impl BinaryBooleanWhirVerifier {
         )
     }
 
-    pub(super) fn check_native_structure_with_usage<C, H, Co>(
+    pub(super) fn check_native_structure_with_usage<C, M>(
         &self,
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
-        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
-        proof: &BooleanWhirProof<
-            BinaryField128,
-            BinaryField128,
-            MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
-        >,
+        proof: &BooleanWhirProof<BinaryField128, BinaryField128, M>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
-        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<BinaryField128>,
     {
         self.reduction.check_native_structure(&proof.reduction)?;
         let placeholder = Point::new(vec![BinaryField128::ZERO; self.opening.plan.variables]);
@@ -409,24 +399,19 @@ impl BinaryBooleanWhirVerifier {
         clippy::too_many_arguments,
         reason = "The verifier keeps protocol inputs explicit."
     )]
-    pub fn import_native<C, Ch, H, Co>(
+    pub fn import_native<C, Ch, M>(
         &self,
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
-        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
         points: &[Point<BinaryField128>],
         readings: &[(Option<BinaryField128>, Option<BinaryField128>)],
-        proof: &BooleanWhirProof<
-            BinaryField128,
-            BinaryField128,
-            MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
-        >,
+        proof: &BooleanWhirProof<BinaryField128, BinaryField128, M>,
         target_challenger: &mut Ch,
     ) -> Result<NativeBinaryBooleanWhirInput, VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
-        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<BinaryField128>,
         Ch: Clone
             + FieldChallenger<BinaryField128>
             + CanSampleUniformBits<BinaryField128>

@@ -12,18 +12,17 @@ use p3_field::{
     BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64,
 };
 use p3_matrix::Dimensions;
-use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleCap;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::{LayoutStrategy, Verifier};
 use p3_sumcheck::strategy::{Basis, VariableOrder};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, SumcheckData};
-use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 use p3_whir::pcs::proof::{PcsProof, QueryOpenings};
 use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
 
 use super::whir_plan::{FoldShape, OracleSite, invalid};
-use super::{BinaryWhirVerifier, RecursiveBinaryWhirTowerField};
+use super::{BinaryWhirVerifier, ByteDigestMmcs, RecursiveBinaryWhirTowerField};
 use crate::transcript::domain_separator_seed;
 use crate::verifier::{InputResourceUsage, VerificationError};
 
@@ -259,18 +258,17 @@ where
         }
     }
 
-    pub(crate) fn check_native<C, H, Co>(
+    pub(crate) fn check_native<C, M>(
         &self,
         config: &WhirConfig<BinaryField128, F, C>,
-        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &PcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+        proof: &PcsProof<F, BinaryField128, M>,
     ) -> Result<(), VerificationError>
     where
         F: PackedValue<Value = F>,
-        H: CryptographicHasher<F, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<F>,
         C: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
         self.check_native_with_usage(
@@ -283,24 +281,24 @@ where
         )
     }
 
-    pub(crate) fn check_native_with_usage<C, H, Co>(
+    pub(crate) fn check_native_with_usage<C, M>(
         &self,
         config: &WhirConfig<BinaryField128, F, C>,
-        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &PcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+        proof: &PcsProof<F, BinaryField128, M>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
         F: PackedValue<Value = F>,
-        H: CryptographicHasher<F, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<F>,
         C: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
         let p = &self.plan;
         let shape = WhirShape::new(config, p.protocol.num_openings());
         if domain_separator_seed(&shape.domain_separator::<F, BinaryField128>()) != p.engine_seed
+            || mmcs.compression_arity() != 2
             || mmcs.cap_height() != p.cap_height
             || commitment.roots().len() != 1usize << p.cap_height
             || proof.evals.len() != p.protocol.num_openings()
@@ -405,19 +403,18 @@ where
     /// shapes and frontier budgets are checked before transcript replay. Errors
     /// leave the caller's challenger unchanged, including restoration failures. A
     /// zero-round closing sumcheck must omit the native optional proof slot.
-    pub fn import_native<C, Ch, H, Co>(
+    pub fn import_native<C, Ch, M>(
         &self,
         config: &WhirConfig<BinaryField128, F, C>,
-        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<F, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &PcsProof<F, BinaryField128, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
+        proof: &PcsProof<F, BinaryField128, M>,
         target_challenger: &mut Ch,
     ) -> Result<NativeBinaryWhirInput<F>, VerificationError>
     where
         F: PackedValue<Value = F>,
-        H: CryptographicHasher<F, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<F>,
         C: FieldChallenger<F> + GrindingChallenger<Witness = F>,
         Ch: Clone
             + FieldChallenger<F>
@@ -601,7 +598,7 @@ where
                 .map(|row| vec![row.as_slice()])
                 .collect::<Vec<_>>();
             let paths = mmcs
-                .restore_and_recompute_paths(&dimensions, &indices[i], &values, frontier)
+                .restore_paths(&dimensions, &indices[i], &values, frontier)
                 .map_err(|_| invalid("binary WHIR native path restoration failed"))?;
             if paths.len() != indices[i].len() {
                 return Err(invalid("binary WHIR restored path count mismatch"));

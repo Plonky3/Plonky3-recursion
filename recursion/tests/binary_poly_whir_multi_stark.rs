@@ -550,7 +550,7 @@ fn independent_preprocessing_caps_rates_and_sparse_successors_close_the_relation
             }
         }
         let mut unchanged = make();
-        let result = recursive.import_native_with_preprocessing::<PpConfig, _, _, _>(
+        let result = recursive.import_native_with_preprocessing::<PpConfig, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),
@@ -587,7 +587,7 @@ fn independent_preprocessing_caps_rates_and_sparse_successors_close_the_relation
     .unwrap();
     let mut imported_ch = make();
     let input = recursive
-        .import_native_with_preprocessing::<PpConfig, _, _, _>(
+        .import_native_with_preprocessing::<PpConfig, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),

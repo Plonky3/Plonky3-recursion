@@ -18,13 +18,12 @@ use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::MultilinearPcs;
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::InteractionSymbolicBuilder;
-use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleCap;
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::config::MultiStarkConfig;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout;
 use p3_sumcheck::strategy::VariableOrder;
-use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 use p3_whir::pcs::proof::PcsProof as WhirPcsProof;
 use relation::{PolyMultiStarkRelation, PolyMultiStarkRelationShape};
@@ -35,7 +34,8 @@ use super::{BinaryPolyAirConstraintPlan, InputResourceUsage, VerificationError, 
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{
     BinaryPolyGenericSumcheckProofTargets, BinaryPolyWhirInputShape, BinaryPolyWhirProofTargets,
-    BinaryPolyWhirVerifier, NativeBinaryPolyGenericSumcheckInput, NativeBinaryPolyWhirInput,
+    BinaryPolyWhirVerifier, ByteDigestMmcs, NativeBinaryPolyGenericSumcheckInput,
+    NativeBinaryPolyWhirInput,
 };
 /// Proof-independent input shape including the trusted AIR program.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -591,10 +591,10 @@ impl BinaryPolyWhirMultiStarkVerifier {
 
     /// Checks the complete visible proof before bounded replay. Failure leaves
     /// the caller's native transcript unchanged.
-    pub fn import_native<C, H, Co, Ch>(
+    pub fn import_native<C, M, Ch>(
         &self,
         config: &WhirConfig<Poly192, Poly64, C::Challenger>,
-        mmcs: &MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>,
+        mmcs: &M,
         public: &[Vec<Poly64>],
         proof: &MultiStarkProof<C>,
         ch: &mut Ch,
@@ -606,10 +606,9 @@ impl BinaryPolyWhirMultiStarkVerifier {
                 Poly192,
                 C::Challenger,
                 Commitment = MerkleCap<Poly64, [u8; 32]>,
-                Proof = WhirPcsProof<Poly64, Poly192, MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>>,
+                Proof = WhirPcsProof<Poly64, Poly192, M>,
             >,
-        H: CryptographicHasher<Poly64, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<Poly64>,
         Ch: FieldChallenger<Poly64>
             + CanSampleUniformBits<Poly64>
             + GrindingChallenger<Witness = Poly64>
@@ -622,20 +621,12 @@ impl BinaryPolyWhirMultiStarkVerifier {
 
     /// Main and preprocessing may use independent WHIR schedules and byte trees.
     /// Both share one frontier budget before any transcript replay starts.
-    pub fn import_native_with_preprocessing<C, H, Co, Ch>(
+    pub fn import_native_with_preprocessing<C, M, Ch>(
         &self,
         config: &WhirConfig<Poly192, Poly64, C::Challenger>,
-        mmcs: &MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>,
+        mmcs: &M,
         preprocessed: Option<
-            crate::pcs::binary::ByteMerkleWhirParameters<
-                '_,
-                '_,
-                Poly64,
-                Poly192,
-                C::Challenger,
-                H,
-                Co,
-            >,
+            crate::pcs::binary::ByteMerkleWhirParameters<'_, '_, Poly64, Poly192, C::Challenger, M>,
         >,
         public: &[Vec<Poly64>],
         proof: &MultiStarkProof<C>,
@@ -648,10 +639,9 @@ impl BinaryPolyWhirMultiStarkVerifier {
                 Poly192,
                 C::Challenger,
                 Commitment = MerkleCap<Poly64, [u8; 32]>,
-                Proof = WhirPcsProof<Poly64, Poly192, MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>>,
+                Proof = WhirPcsProof<Poly64, Poly192, M>,
             >,
-        H: CryptographicHasher<Poly64, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<Poly64>,
         Ch: FieldChallenger<Poly64>
             + CanSampleUniformBits<Poly64>
             + GrindingChallenger<Witness = Poly64>

@@ -12,18 +12,17 @@ use p3_circuit::ops::{
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_matrix::Dimensions;
-use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleCap;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::{LayoutStrategy, Verifier};
 use p3_sumcheck::strategy::{Basis, VariableOrder};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, SumcheckData};
-use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 use p3_whir::pcs::proof::{PcsProof, QueryOpenings};
 use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
 
-use super::BinaryPolyWhirVerifier;
 use super::whir_plan::{FoldShape, OracleSite, invalid, limit};
+use super::{BinaryPolyWhirVerifier, ByteDigestMmcs};
 use crate::transcript::domain_separator_seed;
 use crate::verifier::binary_field_policy::{
     BinaryRelationPolicy, NativePoly64Relation, Poly64Relation,
@@ -245,23 +244,23 @@ impl BinaryPolyWhirVerifier {
         }
     }
 
-    pub(crate) fn check_native_with_usage<C, H, Co>(
+    pub(crate) fn check_native_with_usage<C, M>(
         &self,
         config: &WhirConfig<Poly192, Poly64, C>,
-        mmcs: &MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<Poly64, [u8; 32]>,
         points: &[Point<Poly192>],
-        proof: &PcsProof<Poly64, Poly192, MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>>,
+        proof: &PcsProof<Poly64, Poly192, M>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
-        H: CryptographicHasher<Poly64, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<Poly64>,
         C: FieldChallenger<Poly64> + GrindingChallenger<Witness = Poly64>,
     {
         let p = &self.plan;
         let shape = WhirShape::new(config, p.protocol.num_openings());
         if domain_separator_seed(&shape.domain_separator::<Poly64, Poly192>()) != p.engine_seed
+            || mmcs.compression_arity() != 2
             || mmcs.cap_height() != p.cap_height
             || commitment.roots().len() != 1usize << p.cap_height
             || proof.evals.len() != p.protocol.num_openings()
@@ -365,18 +364,17 @@ impl BinaryPolyWhirVerifier {
     /// caller's challenger is unchanged on every error, including restoration
     /// failures after replay. A
     /// zero-round closing sumcheck must omit the native optional proof slot.
-    pub fn import_native<C, Ch, H, Co>(
+    pub fn import_native<C, Ch, M>(
         &self,
         config: &WhirConfig<Poly192, Poly64, C>,
-        mmcs: &MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<Poly64, [u8; 32]>,
         points: &[Point<Poly192>],
-        proof: &PcsProof<Poly64, Poly192, MerkleTreeMmcs<Poly64, u8, H, Co, 2, 32>>,
+        proof: &PcsProof<Poly64, Poly192, M>,
         target_challenger: &mut Ch,
     ) -> Result<NativeBinaryPolyWhirInput, VerificationError>
     where
-        H: CryptographicHasher<Poly64, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<Poly64>,
         C: FieldChallenger<Poly64> + GrindingChallenger<Witness = Poly64>,
         Ch: Clone
             + FieldChallenger<Poly64>
@@ -563,7 +561,7 @@ impl BinaryPolyWhirVerifier {
                 .map(|row| vec![row.as_slice()])
                 .collect::<Vec<_>>();
             let paths = mmcs
-                .restore_and_recompute_paths(&dimensions, &indices[i], &values, frontier)
+                .restore_paths(&dimensions, &indices[i], &values, frontier)
                 .map_err(|_| invalid("binary WHIR native path restoration failed"))?;
             if paths.len() != indices[i].len() {
                 return Err(invalid("binary WHIR restored path count mismatch"));

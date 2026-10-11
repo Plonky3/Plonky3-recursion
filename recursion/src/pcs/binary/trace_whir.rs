@@ -8,10 +8,9 @@ use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingC
 use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
-use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleCap;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol};
-use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 
 use super::trace_native::route;
@@ -20,7 +19,7 @@ use super::trace_routing::{TraceEntry, TraceRouting};
 use super::whir_plan::invalid;
 use super::{
     BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
-    NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
+    ByteDigestMmcs, NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
 };
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -415,19 +414,18 @@ impl BinaryBooleanWhirTraceVerifier {
         Ok((self.routing.evals(&proof.values), ch))
     }
 
-    pub(crate) fn check_native_structure_with_usage<C, H, Co>(
+    pub(crate) fn check_native_structure_with_usage<C, M>(
         &self,
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
-        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, H, Co>,
+        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, M>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
-        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<BinaryField128>,
     {
         self.routing
             .check_points(points.iter().map(Point::num_variables), proof.values.len())?;
@@ -442,19 +440,18 @@ impl BinaryBooleanWhirTraceVerifier {
 
     /// Checks both child proof shapes before replaying the native column route.
     /// Restored paths and captured readings supply witnesses, not authority.
-    pub fn import_native<C, Ch, H, Co>(
+    pub fn import_native<C, Ch, M>(
         &self,
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
-        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, H, Co>,
+        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, M>,
         target_challenger: &mut Ch,
     ) -> Result<NativeBinaryBooleanWhirTraceInput, VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
-        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<BinaryField128>,
         Ch: Clone
             + FieldChallenger<BinaryField128>
             + CanSampleUniformBits<BinaryField128>

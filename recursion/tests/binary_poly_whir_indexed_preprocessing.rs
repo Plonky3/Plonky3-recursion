@@ -261,7 +261,7 @@ fn indexed_columns_and_bus_claims_close_through_independent_preprocessing() {
             }
         }
         let mut unchanged = make();
-        let result = recursive.import_native_with_preprocessing::<PpConfig, _, _, _>(
+        let result = recursive.import_native_with_preprocessing::<PpConfig, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),
@@ -294,7 +294,7 @@ fn indexed_columns_and_bus_claims_close_through_independent_preprocessing() {
     let mut failed = make();
     assert!(
         recursive
-            .import_native_with_preprocessing::<PpConfig, _, _, _>(
+            .import_native_with_preprocessing::<PpConfig, _, _>(
                 &main_cfg,
                 &main_tree,
                 Some((&pp_cfg, &pp_tree)),
@@ -320,7 +320,7 @@ fn indexed_columns_and_bus_claims_close_through_independent_preprocessing() {
     .unwrap();
     let mut imported_ch = make();
     let input = recursive
-        .import_native_with_preprocessing::<PpConfig, _, _, _>(
+        .import_native_with_preprocessing::<PpConfig, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),

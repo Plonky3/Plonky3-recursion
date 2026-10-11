@@ -34,23 +34,20 @@ type ByteMerkleBooleanTraceProof<E, H0, C0, H1, C1> =
     p3_binary_pcs::BooleanTraceCommitmentProof<E, ByteMerkleBooleanProof<E, H0, C0, H1, C1>>;
 type GroupedByteMerkleBooleanTraceProof<E, H0, C0, H1, C1> =
     p3_binary_pcs::BooleanTraceCommitmentProof<E, GroupedByteMerkleBooleanProof<E, H0, C0, H1, C1>>;
-type ByteMerkleBooleanWhirTraceProof<E, H, C> = p3_binary_pcs::BooleanTraceCommitmentProof<
-    E,
-    p3_binary_pcs::whir::BooleanWhirProof<E, E, ByteMerkleMmcs<E, H, C>>,
->;
+type ByteMerkleBooleanWhirTraceProof<E, M> =
+    p3_binary_pcs::BooleanTraceCommitmentProof<E, p3_binary_pcs::whir::BooleanWhirProof<E, E, M>>;
 pub(crate) type ByteMerkleMmcsPair<'base, 'round, F, E, H0, C0, H1, C1> = (
     &'base ByteMerkleMmcs<F, H0, C0>,
     &'round ByteMerkleMmcs<E, H1, C1>,
 );
-pub(crate) type ByteMerkleWhirParameters<'config, 'mmcs, F, E, Ch, H, C> = (
-    &'config p3_whir::WhirConfig<E, F, Ch>,
-    &'mmcs ByteMerkleMmcs<F, H, C>,
-);
+pub(crate) type ByteMerkleWhirParameters<'config, 'mmcs, F, E, Ch, M> =
+    (&'config p3_whir::WhirConfig<E, F, Ch>, &'mmcs M);
 type OracleOpeningTargets<Row> = (Vec<Row>, Vec<Vec<Vec<ExprId>>>);
 type WhirVerificationOutput<T> = (Vec<p3_sumcheck::OpeningBatch<T>>, BinaryTower128Challenger);
 
 mod boolean;
 mod boolean_whir;
+mod byte_mmcs;
 mod fields;
 mod gadgets;
 mod generic_sumcheck;
@@ -104,6 +101,7 @@ pub use boolean_whir::{
     BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
     NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
 };
+pub use byte_mmcs::ByteDigestMmcs;
 pub use fields::{
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField, RecursiveBinaryWhirTowerField,
 };

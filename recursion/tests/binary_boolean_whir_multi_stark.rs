@@ -315,7 +315,7 @@ fn check(
     ));
     let mut imported_ch = make();
     let input = recursive
-        .import_native_with_preprocessing::<Config, _, _, _>(
+        .import_native_with_preprocessing::<Config, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),
@@ -392,7 +392,7 @@ fn check(
     let mut before = unchanged.clone();
     assert!(
         recursive
-            .import_native_with_preprocessing::<Config, _, _, _>(
+            .import_native_with_preprocessing::<Config, _, _>(
                 &main_cfg,
                 &main_tree,
                 Some((&pp_cfg, &pp_tree)),
@@ -421,7 +421,7 @@ fn check(
     let mut unchanged = make();
     let mut before = unchanged.clone();
     assert!(
-        matches!(recursive.import_native_with_preprocessing::<Config, _, _, _>(
+        matches!(recursive.import_native_with_preprocessing::<Config, _, _>(
         &main_cfg, &main_tree, Some((&pp_cfg, &pp_tree)), &public, &proof, &mut unchanged,
     ), Err(VerificationError::InvalidProofShape(message))
         if message == "binary ring-switch native round count mismatch")
@@ -458,7 +458,7 @@ fn check(
     let mut unchanged = make();
     let mut before = unchanged.clone();
     assert!(
-        matches!(recursive.import_native_with_preprocessing::<Config,_,_,_>(
+        matches!(recursive.import_native_with_preprocessing::<Config, _, _>(
         &main_cfg, &main_tree, Some((&pp_cfg, &pp_tree)), &public, &proof, &mut unchanged),
         Err(VerificationError::InvalidProofShape(message)) if message == "binary WHIR native path restoration failed")
     );
