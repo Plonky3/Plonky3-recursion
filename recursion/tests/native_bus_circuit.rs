@@ -538,26 +538,38 @@ fn native_keccak_lanes_range_check_subtree_leaf_words_in_both_blocks() {
     });
 }
 
+/// Whether a proof of the given traces verifies under a fixed statement.
+type Accepts<F> = Box<dyn Fn(Vec<RowMajorMatrix<F>>) -> bool>;
+
 /// A native WHIR leaf splits each opened value into `count` hinted words
 /// bound by `value = sum_j word_j * x_(16j)`, where `x_c` has the single raw
-/// coordinate `c`, and absorbs them as Keccak lanes. Each forgery
-/// `(value, word, moved, call, lane)` flips coordinate `moved` of a value and
-/// adds `x_moved / x_(16 * word)` to that word, which keeps the sum. The
-/// quotient has no coordinate below sixteen, so every lane keeps the sixteen
-/// low coordinates it absorbs and only the lane range check separates the
-/// forged opening from the committed one: lane `lane` of Keccak call `call`
-/// turns wide, the fanout, gate and bridge rows accept it, the hash bus does
-/// not, and lifting the Keccak lane instead leaves a state cell outside
+/// coordinate `c`, and absorbs them as Keccak lanes. `split` emits that split
+/// and `setup` returns whether a proof of the given traces verifies. Each
+/// forgery `(value, word, moved, call, lane)` flips coordinate `moved` of a
+/// value and adds `x_moved / x_(16 * word)` to that word, which keeps the sum.
+/// The quotient has no coordinate below sixteen, so every lane keeps the
+/// sixteen low coordinates it absorbs and only the lane range check separates
+/// the forged opening from the committed one: lane `lane` of Keccak call
+/// `call` turns wide, the fanout, gate and bridge rows accept it, the hash bus
+/// does not, and lifting the Keccak lane instead leaves a state cell outside
 /// {0, 1}.
-fn reject_wide_leaf_words(
-    values: &[u128],
+fn reject_wide_leaf_words<F: BinaryCoordinateField>(
+    values: &[F],
     count: usize,
     blocks: usize,
     forgeries: &[(usize, usize, usize, usize, usize)],
+    split: impl Fn(&mut CircuitBuilder<F>, ExprId, usize) -> Vec<ExprId>,
+    setup: impl FnOnce(&NativeBusCircuit<F>, Vec<Vec<F>>) -> Accepts<F>,
 ) {
     let bytes: Vec<u8> = values
         .iter()
-        .flat_map(|value| value.to_le_bytes().into_iter().take(2 * count))
+        .flat_map(|value| {
+            value
+                .to_raw_coordinates()
+                .to_le_bytes()
+                .into_iter()
+                .take(2 * count)
+        })
         .collect();
     let root = Keccak256Hash.hash_iter(bytes.iter().copied());
 
@@ -568,8 +580,7 @@ fn reject_wide_leaf_words(
     let row = b.alloc_private_inputs(values.len(), "row values");
     let mut words = Vec::new();
     for &value in &row {
-        let value = b.native_tower128_from_expr(value);
-        words.extend(b.native_tower128_unchecked_words(&value, count).unwrap());
+        words.extend(split(&mut b, value, count));
     }
     b.verify_byte_hash_mmcs_opening_words_with_host::<NativeBinaryEncoding>(
         ByteHash::Keccak256,
@@ -585,21 +596,11 @@ fn reject_wide_leaf_words(
         .into_iter()
         .map(|word| F::from_raw_coordinates(word.into()).unwrap())
         .collect();
-    let private: Vec<F> = values.iter().map(|&value| F::from_repr(value)).collect();
+    let private = values.to_vec();
 
     let prepared = NativeBusCircuit::new(&circuit, "leaf").unwrap();
-    let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
-        prepared.airs().to_vec(),
-        prepared.log_heights().to_vec(),
-        spec(&prepared),
-        &VerifierLimits {
-            max_rounds: 256,
-            max_metadata_entries: 1 << 20,
-            ..Default::default()
-        },
-    )
-    .unwrap();
     let public = prepared.public_values(&statement).unwrap();
+    let accepts = setup(&prepared, public.clone());
     let mut runner = circuit.runner();
     runner.set_public_inputs(&statement).unwrap();
     runner.set_private_inputs(&private).unwrap();
@@ -610,14 +611,7 @@ fn reject_wide_leaf_words(
         .map(|&id| *witness.get_value(id).unwrap())
         .collect();
     let honest_traces = prepared.traces(&witness).unwrap();
-    let proof = prover.prove(&public, honest_traces.clone()).unwrap();
-    authority.verify_native(&proof, &public).unwrap();
-    let rejects = |traces: Vec<RowMajorMatrix<F>>| {
-        let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
-        if let Ok(Ok(proof)) = attempt {
-            assert!(authority.verify_native(&proof, &public).is_err());
-        }
-    };
+    assert!(accepts(honest_traces.clone()), "the honest traces prove");
 
     let calls: Vec<_> = circuit
         .ops
@@ -656,7 +650,7 @@ fn reject_wide_leaf_words(
         let mut hinted = honest.clone();
         hinted[split[word].0 as usize] += wide;
         let mut forged_private = private.clone();
-        forged_private[value] = F::from_repr(values[value] ^ (1 << moved));
+        forged_private[value] += monomial(moved);
         let mut runner = circuit.runner();
         runner.set_public_inputs(&statement).unwrap();
         runner.set_private_inputs(&forged_private).unwrap();
@@ -684,7 +678,7 @@ fn reject_wide_leaf_words(
         for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
             check_constraints(air, trace, public);
         }
-        rejects(traces.clone());
+        assert!(!accepts(traces.clone()));
 
         let cell = keccak_input_cell(
             &traces[keccak],
@@ -697,18 +691,50 @@ fn reject_wide_leaf_words(
             check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
         }));
         assert!(local.is_err(), "the lifted lane leaves a non-Boolean cell");
-        rejects(traces);
+        assert!(!accepts(traces));
     }
+}
+
+/// Splits a private Tower128 value into its unchecked raw words.
+fn tower_words(b: &mut CircuitBuilder<F>, value: ExprId, count: usize) -> Vec<ExprId> {
+    let value = b.native_tower128_from_expr(value);
+    b.native_tower128_unchecked_words(&value, count).unwrap()
+}
+
+/// Proves Tower128 traces under a native binary PCS authority for `prepared`.
+fn tower_accepts(prepared: &NativeBusCircuit<F>, public: Vec<Vec<F>>) -> Accepts<F> {
+    let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec(prepared),
+        &VerifierLimits {
+            max_rounds: 256,
+            max_metadata_entries: 1 << 20,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    Box::new(move |traces| {
+        let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
+        matches!(attempt, Ok(Ok(proof)) if authority.verify_native(&proof, &public).is_ok())
+    })
 }
 
 /// Sixteen Tower128 values form a 256-byte leaf absorbed in two Keccak
 /// blocks, whose first lanes are words 0 and 68.
 #[test]
 fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
-    let values: Vec<u128> = (0..16)
-        .map(|i| 0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i + 13))
+    let values: Vec<F> = (0..16)
+        .map(|i| F::from_repr(0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i + 13)))
         .collect();
-    reject_wide_leaf_words(&values, 8, 2, &[(0, 0, 16, 0, 0), (8, 4, 80, 1, 0)]);
+    reject_wide_leaf_words(
+        &values,
+        8,
+        2,
+        &[(0, 0, 16, 0, 0), (8, 4, 80, 1, 0)],
+        tower_words,
+        tower_accepts,
+    );
 }
 
 /// Sixteen Tower32 base values form a 64-byte leaf of two words per value.
@@ -717,10 +743,88 @@ fn native_keccak_lanes_range_check_word_leaves_in_both_blocks() {
 /// keeps base rows in Tower32.
 #[test]
 fn native_keccak_lanes_range_check_tower32_leaf_words() {
-    let values: Vec<u128> = (0..16)
-        .map(|i| u128::from(0x9bfa3e51u32.wrapping_mul(i + 13)))
+    let values: Vec<F> = (0..16)
+        .map(|i| F::from_repr(u128::from(0x9bfa3e51u32.wrapping_mul(i + 13))))
         .collect();
-    reject_wide_leaf_words(&values, 2, 1, &[(0, 0, 16, 0, 0), (15, 1, 32, 0, 31)]);
+    reject_wide_leaf_words(
+        &values,
+        2,
+        1,
+        &[(0, 0, 16, 0, 0), (15, 1, 32, 0, 31)],
+        tower_words,
+        tower_accepts,
+    );
+}
+
+/// Twenty-four Poly64 values form a 192-byte leaf of four words per value,
+/// absorbed in two Keccak blocks whose first lanes are words 0 and 68. A word
+/// of degree below sixteen times `x^(16j)` needs no reduction, so moving a
+/// coefficient at or above `16 * (j + 1)` of a value into its word `j` keeps
+/// the value and the leaf bytes; only the lane range check rejects it.
+#[test]
+fn native_keccak_lanes_range_check_poly64_leaf_words_in_both_blocks() {
+    use p3_binary_field::Poly64;
+    use p3_recursion::artifact::{
+        BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
+    };
+    use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+    let values: Vec<Poly64> = (0..24)
+        .map(|i| Poly64::new(0x9bfa_3e51_4379_dc5bu64.wrapping_mul(i + 13)))
+        .collect();
+    reject_wide_leaf_words(
+        &values,
+        4,
+        2,
+        &[
+            (0, 0, 16, 0, 0),
+            (16, 2, 48, 0, 66),
+            (17, 0, 16, 1, 0),
+            (18, 1, 40, 1, 5),
+        ],
+        |b, value, count| b.native_poly64_unchecked_words(value, count).unwrap(),
+        |prepared, public| {
+            let parameters = |variables| {
+                BinaryNativePolyWhirPcsParameters::new(
+                    variables,
+                    ProtocolParameters {
+                        starting_log_inv_rate: 2,
+                        round_log_inv_rates: vec![],
+                        folding_factor: FoldingFactor::Constant(1),
+                        soundness_type: SecurityAssumption::JohnsonBound,
+                        security_level: 24,
+                        pow_bits: 0,
+                    },
+                    ByteHash::Keccak256,
+                    0,
+                )
+                .unwrap()
+            };
+            let spec = BinaryNativeVerifierSpec {
+                main: parameters(prepared.main_variables()),
+                preprocessed: prepared.preprocessed_variables().map(parameters),
+                transcript_hash: ByteHash::Keccak256,
+                initial_bytes: b"native-bus-circuit-v1".to_vec(),
+                sumcheck_pow_bits: 0,
+                max_tau_draws: 32,
+                security_bits: 16,
+            };
+            let (prover, authority) = BinaryNativePolyWhirAuthority::<_>::setup(
+                prepared.airs().to_vec(),
+                prepared.log_heights().to_vec(),
+                spec,
+                &VerifierLimits {
+                    max_rounds: 256,
+                    max_metadata_entries: 1 << 20,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            Box::new(move |traces| {
+                let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
+                matches!(attempt, Ok(Ok(proof)) if authority.verify_native(&proof, &public).is_ok())
+            })
+        },
+    );
 }
 
 /// A proof-supplied Merkle sibling reaches the hash only through a level's
