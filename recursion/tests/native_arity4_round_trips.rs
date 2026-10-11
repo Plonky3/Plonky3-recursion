@@ -2,15 +2,17 @@
 //! the recursive verifiers native recursion runs: dense Tower128, packed-bit Tower128
 //! and Poly64, each with a cap of four roots.
 
+use p3_air::BaseAir;
 use p3_binary_field::{BinaryField128, Poly64, TowerLevel};
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, keccak_state_to_limbs};
 use p3_circuit::{Circuit, CircuitBuilder, ExprId};
-use p3_circuit_prover::direct::DirectCircuitLimits;
+use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
 use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusTrace};
 use p3_field::Field;
 use p3_keccak::KeccakF;
+use p3_keccak_air::{KeccakBinaryAir, NUM_KECCAK_BINARY_COLS};
 use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::artifact::{
     BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirPcsParameters,
@@ -19,7 +21,8 @@ use p3_recursion::artifact::{
 };
 use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::verifier::VerifierLimits;
-use p3_sumcheck::layout::Table;
+use p3_sumcheck::TableShape;
+use p3_sumcheck::layout::{Table, plan_stacked_layout};
 use p3_symmetric::Permutation;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
@@ -28,6 +31,10 @@ type H = NativeBinaryEncoding;
 const HASH: ByteHash = ByteHash::Keccak256;
 /// One four-digest level: four cap roots, each selected by two index bits.
 const CAP_HEIGHT: usize = 1;
+/// The row variables one field element of a packed commitment absorbs.
+const ABSORBED_VARIABLES: usize = 7;
+/// One Keccak permutation fills 25 rows, padded to 32.
+const KECCAK_VARIABLES: usize = 5;
 
 const fn protocol(folding: usize, rate: usize) -> ProtocolParameters {
     ProtocolParameters {
@@ -109,6 +116,92 @@ fn bus_circuit<F: Field + Eq + core::hash::Hash>(constant: F) -> Circuit<F> {
     let out = b.add(reused, c);
     b.connect(out, expected);
     b.build().unwrap()
+}
+
+/// `a * factor + constant` as one direct table, which has no preprocessing, and the
+/// variables of its two-row commitment.
+fn direct_air<F: Field + Eq + core::hash::Hash>(constant: F) -> (DirectCircuitAir<F>, usize) {
+    let mut b = CircuitBuilder::<F>::new();
+    let a = b.public_input();
+    let expected = b.public_input();
+    let factor = b.alloc_private_input("factor");
+    let c = b.define_const(constant);
+    let out = b.mul_add(a, factor, c);
+    b.connect(out, expected);
+    let air = DirectCircuitAir::new(&b.build().unwrap()).unwrap();
+    let variables = 1 + air.width().next_power_of_two().ilog2() as usize;
+    (air, variables)
+}
+
+/// With no preprocessing commitment, whose cap would tell the arities apart on its own, only
+/// the arity bound beside the main commitment's parameters separates a pairwise Poly64 or
+/// mixed relation from a four-digest one.
+#[test]
+fn relations_without_preprocessing_bind_the_tree_arity() {
+    let (air, variables) = direct_air(Poly64::new(0x8912));
+    let poly = |arity| {
+        let main = BinaryNativePolyWhirPcsParameters::with_limits(
+            variables,
+            protocol(1, 2),
+            HASH,
+            arity,
+            CAP_HEIGHT,
+            &limits(),
+        )
+        .unwrap();
+        let (_, authority) = BinaryNativePolyWhirAuthority::<_>::setup(
+            vec![air.clone()],
+            vec![1],
+            spec(main, None),
+            &limits(),
+        )
+        .unwrap();
+        authority.canonical_verifier_bytes().to_vec()
+    };
+    assert_ne!(poly(MerkleArity::Two), poly(MerkleArity::Four));
+
+    // The dense and the bit-committed table share one shape, so one layout sizes both.
+    let variables =
+        plan_stacked_layout(&[TableShape::new(KECCAK_VARIABLES, NUM_KECCAK_BINARY_COLS)]).0;
+    let mixed = |arity| {
+        let whir = |n| {
+            BinaryNativeWhirPcsParameters::<BinaryField128>::with_limits(
+                n,
+                ProtocolParameters {
+                    security_level: 32,
+                    ..protocol(2, 1)
+                },
+                HASH,
+                arity,
+                CAP_HEIGHT,
+                &limits(),
+            )
+            .unwrap()
+        };
+        let main = BinaryNativeMixedWhirPcsParameters::with_packed_table(
+            whir(variables),
+            whir(variables - ABSORBED_VARIABLES),
+            1,
+            variables,
+        )
+        .unwrap();
+        // One Keccak permutation committed as field cells, and one committed as bits.
+        let (_, authority) = BinaryNativeMixedWhirAuthority::setup(
+            vec![
+                KeccakBinaryAir::default(),
+                KeccakBinaryAir::assuming_boolean_trace(),
+            ],
+            vec![KECCAK_VARIABLES; 2],
+            BinaryNativeVerifierSpec {
+                security_bits: 16,
+                ..spec(main, None)
+            },
+            &limits(),
+        )
+        .unwrap();
+        authority.canonical_verifier_bytes().to_vec()
+    };
+    assert_ne!(mixed(MerkleArity::Two), mixed(MerkleArity::Four));
 }
 
 #[test]
@@ -258,8 +351,6 @@ fn packed_tower128_child_of_four_digest_trees_closes_natively() {
     type F = BinaryField128;
     const CALLS: usize = 3;
     const FOLDING: usize = 2;
-    /// The row variables one field element of the packed commitment absorbs.
-    const ABSORBED_VARIABLES: usize = 7;
     let mut builder = CircuitBuilder::<F>::new();
     builder.enable_native_keccak_f1600().unwrap();
     let mut state = builder.alloc_public_input_array::<100>("input").to_vec();
