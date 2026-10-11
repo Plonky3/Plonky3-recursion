@@ -533,7 +533,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        self.relation.check_targets(public, proof)?;
+        self.relation.check_targets(public, &proof.relation())?;
         let zero = b.binary_poly192_constant([0; 3])?;
         let points = self.relation.zero_points(false, zero.clone());
         self.opening
@@ -871,7 +871,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
                 "native polynomial WHIR verifier does not support indexed relations",
             ));
         }
-        self.relation.check_targets(public, proof)?;
+        self.relation.check_targets(public, &proof.relation())?;
         let zero = b.native_poly192_constant([0; 3]);
         let points = self.relation.zero_points(false, zero.clone());
         self.opening
@@ -909,26 +909,12 @@ impl BinaryPolyWhirMultiStarkVerifier {
         let mut reduction = self
             .relation
             .reduce_common::<NativePoly64Relation, NativeBinaryEncoding, Poly64>(
-                b, ch, public, proof,
+                b,
+                ch,
+                public,
+                &proof.relation(),
             )?;
-        let heights: Vec<_> = self
-            .relation
-            .input
-            .airs
-            .iter()
-            .map(|air| air.log_height())
-            .collect();
-        reduction.main_points =
-            self.relation
-                .input
-                .main_schedule
-                .points(&heights, &reduction.point, None);
-        reduction.preprocessed_points = self
-            .relation
-            .input
-            .preprocessed_schedule
-            .as_ref()
-            .map(|schedule| schedule.points(&heights, &reduction.point, None));
+        self.relation.set_unindexed_points(&mut reduction);
         let (main_evals, mut continuation) = self.opening.verify_at_native(
             b,
             reduction.challenger.clone(),

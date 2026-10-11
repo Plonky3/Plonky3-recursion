@@ -51,6 +51,24 @@ pub(super) struct PolyMultiStarkRelation {
     pub(super) usage: InputResourceUsage,
 }
 
+/// The relation's own proof parts: the bus, the AIR sumcheck and the indexed lookups, without
+/// the openings of any commitment.
+pub(super) struct PolyRelationProof<'a, T = BinaryPoly192Target, B = BinaryPoly64Target> {
+    pub(super) bus: Option<&'a super::super::BinaryPolyProductGkrProofTargets<T>>,
+    pub(super) sumcheck: &'a BinaryPolyGenericSumcheckProofTargets<T, B>,
+    pub(super) indexed: Option<&'a super::super::BinaryPolyIndexedLookupProofTargets>,
+}
+
+impl<T, B> BinaryPolyWhirMultiStarkProofTargets<T, B> {
+    pub(super) const fn relation(&self) -> PolyRelationProof<'_, T, B> {
+        PolyRelationProof {
+            bus: self.bus.as_ref(),
+            sumcheck: &self.sumcheck,
+            indexed: self.indexed.as_ref(),
+        }
+    }
+}
+
 pub(super) struct Reduction<T = BinaryPoly192Target> {
     alpha: T,
     beta: T,
@@ -307,15 +325,15 @@ impl PolyMultiStarkRelation {
     pub(super) fn check_targets<Public, T, B>(
         &self,
         public: &[Vec<Public>],
-        proof: &BinaryPolyWhirMultiStarkProofTargets<T, B>,
+        proof: &PolyRelationProof<'_, T, B>,
     ) -> Result<(), VerificationError> {
         self.check_public(public)?;
-        match (&self.bus, &proof.bus) {
+        match (&self.bus, proof.bus) {
             (Some(verifier), Some(proof)) => verifier.check_targets(proof)?,
             (None, None) => {}
             _ => return Err(invalid("binary Poly MultiStark bus target shape mismatch")),
         }
-        match (&self.indexed, &proof.indexed) {
+        match (&self.indexed, proof.indexed) {
             (Some(verifier), Some(proof)) => verifier.check_proof_targets(proof)?,
             (None, None) => {}
             _ => {
@@ -324,7 +342,7 @@ impl PolyMultiStarkRelation {
                 ));
             }
         }
-        self.sumcheck.check_targets(&proof.sumcheck)
+        self.sumcheck.check_targets(proof.sumcheck)
     }
 
     pub(super) fn check_public<T>(&self, public: &[Vec<T>]) -> Result<(), VerificationError> {
@@ -390,8 +408,12 @@ impl PolyMultiStarkRelation {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let mut reduction = self
-            .reduce_common::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(b, ch, public, proof)?;
+        let mut reduction = self.reduce_common::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
+            b,
+            ch,
+            public,
+            &proof.relation(),
+        )?;
         let indexed = if let (Some(verifier), Some(proof)) = (&self.indexed, &proof.indexed) {
             Some(verifier.verify::<BF, EF>(
                 b,
@@ -431,7 +453,7 @@ impl PolyMultiStarkRelation {
         b: &mut CircuitBuilder<CF>,
         mut ch: BinaryTower128Challenger,
         public: &[Vec<P::BaseTarget>],
-        proof: &BinaryPolyWhirMultiStarkProofTargets<P::ChallengeTarget, P::BaseTarget>,
+        proof: &PolyRelationProof<'_, P::ChallengeTarget, P::BaseTarget>,
     ) -> Result<Reduction<P::ChallengeTarget>, VerificationError>
     where
         CF: Field + Eq + Hash,
@@ -441,7 +463,7 @@ impl PolyMultiStarkRelation {
         for values in public {
             P::observe_base::<H>(b, &mut ch, values)?;
         }
-        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, &proof.bus) {
+        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, proof.bus) {
             let (claims, next) = verifier.verify_using::<P, H, CF>(b, ch, proof)?;
             ch = next;
             Some(claims)
@@ -471,7 +493,7 @@ impl PolyMultiStarkRelation {
             b,
             sampled.continuation,
             &initial,
-            &proof.sumcheck,
+            proof.sumcheck,
         )?;
         Ok(Reduction {
             alpha,
@@ -486,6 +508,20 @@ impl PolyMultiStarkRelation {
             main_points: Vec::new(),
             preprocessed_points: None,
         })
+    }
+
+    /// The opening points of a relation without indexed lookups, from the reduced point alone.
+    pub(super) fn set_unindexed_points<T: Clone>(&self, reduction: &mut Reduction<T>) {
+        let heights: Vec<_> = self.input.airs.iter().map(|air| air.log_height()).collect();
+        reduction.main_points = self
+            .input
+            .main_schedule
+            .points(&heights, &reduction.point, None);
+        reduction.preprocessed_points = self
+            .input
+            .preprocessed_schedule
+            .as_ref()
+            .map(|schedule| schedule.points(&heights, &reduction.point, None));
     }
 
     pub(super) fn finish<EF: Field + Eq + Hash>(
