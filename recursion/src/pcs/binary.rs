@@ -78,6 +78,7 @@ pub(crate) use poly_whir_gadgets::{
 mod ring;
 mod ring_input;
 mod ring_native;
+mod ring_native_poly;
 mod tensor;
 mod tensor_native;
 mod tensor_native_poly;
@@ -153,6 +154,11 @@ pub use ring::{
 pub use ring_input::{BinaryRingInputShape, NativeBinaryRingInput};
 pub use ring_native::{
     NativeBitRingClaimTargets, NativeBitRingOutput, NativeBitRingProofTargets, NativeBitRingReading,
+};
+pub use ring_native_poly::{
+    BinaryPolyBitRingVerifier, BinaryPolyRingInputShape, NativeBinaryPolyRingInput,
+    NativePolyBitRingClaimTargets, NativePolyBitRingOutput, NativePolyBitRingProofTargets,
+    NativePolyBitRingReading,
 };
 pub use tensor::{BinaryTowerTensorTarget, binary_tensor_closing_weight};
 pub use tensor_native::{NativeBitTensorTarget, binary128_trace_dual_basis, closing_weight_native};
