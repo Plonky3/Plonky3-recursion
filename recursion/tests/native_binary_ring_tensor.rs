@@ -444,6 +444,48 @@ fn closing_weight_matches_released_and_prime_weights() {
     }
 }
 
+/// The prime-host gadget on high points with coordinates outside the kept
+/// block, whose equality factors the default prime cases leave out: two
+/// coordinates without a successor, and one coordinate before one or two kept.
+#[test]
+#[ignore = "runs the prime-host BabyBear gadget, several minutes in debug builds; run explicitly"]
+fn closing_weight_matches_prime_weight_beyond_the_kept_block() {
+    let mut sampler = Sampler(0x9f1e);
+    for (len, kept) in [(2, None), (2, Some(1)), (3, Some(2))] {
+        let high = sampler.fields(len);
+        let low = sampler.fields(ABSORBED);
+        let survivor = sampler.fields(len);
+        let batch = sampler.fields(ABSORBED);
+        let alpha = sampler.field();
+        let successor = kept.map(|kept| (kept, alpha));
+        let expected = released_closing_weight(&high, &low, &survivor, &batch, successor);
+        let mut n = Native::new();
+        let high_t = n.inputs(&high);
+        let survivor_t = n.inputs(&survivor);
+        let batch_t = n.inputs(&batch);
+        let alpha_t = n.input(alpha);
+        let actual = closing_weight_native(
+            &mut n.b,
+            &high_t,
+            &survivor_t,
+            &batch_t,
+            kept.map(|kept| (kept, &alpha_t)),
+        )
+        .unwrap();
+        n.expect(&actual, expected);
+        let (circuit, public, private) = n.build();
+        assert!(
+            accepts(&circuit, &public, &private),
+            "native, high {len}, kept {kept:?}"
+        );
+        assert_eq!(
+            prime_closing_verdicts(&high, &survivor, &batch, successor, expected),
+            [true, false],
+            "prime, high {len}, kept {kept:?}"
+        );
+    }
+}
+
 /// Node counts at the native recursion fixed point: 21 high coordinates, ten
 /// kept row variables. Bounds are 1.2 times the measured counts.
 ///
