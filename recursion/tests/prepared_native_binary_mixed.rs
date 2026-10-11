@@ -1,24 +1,30 @@
 //! Binary-in, packed-Keccak-out native recursion with an independently supplied statement.
 
 use p3_air::BaseAir;
+use p3_baby_bear::BabyBear;
 use p3_binary_field::BinaryField128;
 use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
 use p3_field::PrimeCharacteristicRing;
+use p3_recursion::ProveNextLayerParams;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
     BinaryNativeWhirPcsParameters, VerifiedBinaryNativeWhirProof,
 };
+use p3_recursion::builtin_config::{
+    BabyBearD4Poseidon2BinaryConfig, FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary,
+};
 use p3_recursion::prepared::{
     NativeBinaryMixedRecursionOptions, NativeBinaryRecursionOptions,
-    PreparedNativeBinaryMixedWhirLayer,
+    PreparedBinaryMixedWhirMultiStarkLayer, PreparedNativeBinaryMixedWhirLayer,
 };
 use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = BinaryField128;
+type C = BabyBearD4Poseidon2BinaryConfig;
 
 const fn protocol(security_level: usize, folding: usize) -> ProtocolParameters {
     ProtocolParameters {
@@ -214,4 +220,50 @@ fn mixed_output_layer_proves_and_binds_the_original_statement() {
     wrong[0][1] += F::ONE;
     assert!(layer.verify(&outer, &wrong).is_err());
     assert!(layer.verify(&outer, &[]).is_err());
+}
+
+/// The mixed layer's output token is wrapped by the prime-field layer built from the mixed
+/// layer's output authority, and the wrap proves the token's statement.
+#[test]
+#[ignore = "builds and proves a prime-field verifier of a full packed-Keccak native proof; run explicitly"]
+fn mixed_output_layer_token_is_wrapped_by_the_prime_layer() {
+    let Fixture {
+        public,
+        checked,
+        layer,
+        ..
+    } = prepare();
+    let outer = layer.prove_verified(&checked).unwrap();
+    let token = layer.verify(&outer, &public).unwrap();
+    let authority = layer.authority().clone();
+    drop(layer);
+    let config = baby_bear_d4_poseidon2_binary(
+        &FriConfigV1::new(
+            SuiteIdV1::BabyBearD4Poseidon2BinaryFri,
+            1,
+            0,
+            2,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ),
+        &authority.artifact_limits().verifier,
+    )
+    .unwrap();
+    let wrap = PreparedBinaryMixedWhirMultiStarkLayer::<C, 4>::from_native_authority(
+        &authority,
+        config,
+        ProveNextLayerParams::default(),
+    )
+    .unwrap();
+    let output = wrap.prove_verified(&token).unwrap();
+    let statement = wrap
+        .statement_layout()
+        .pack::<BabyBear>(token.public_values())
+        .unwrap();
+    wrap.verifier().verify(&output.0, &statement).unwrap();
 }
