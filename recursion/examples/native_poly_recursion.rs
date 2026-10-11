@@ -3,22 +3,27 @@
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_poly_recursion -- --layers 3
 //!
-//! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap height 4) keep every
-//! layer within the default limits. When a layer exceeds one anyway, the error names the flag
-//! that raises it and a value to start from.
+//! The defaults (WHIR security level 32 with 24 grinding bits, four-digest Merkle trees under a
+//! cap of 2 levels) keep every layer within the default limits. When a layer exceeds one anyway,
+//! the error names the flag that raises it and a value to start from.
 //!
 //! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
-//! last layer; wall time, maximum resident set and peak memory footprint of the whole run):
+//! last layer; wall time, maximum resident set and peak memory footprint of the whole run;
+//! arity is `--merkle-arity`):
 //!
-//! | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
-//! |----------|-----------|----------------|------------|--------|----------|-----------|
-//! | 2        | 1,521,969 | 402,653,184    | 6.9 s      | 8.3 s  | 15.2 GB  | 14.7 GB   |
-//! | 3        | 1,948,639 | 671,088,640    | 10.9 s     | 20.1 s | 25.5 GB  | 23.7 GB   |
+//! | arity | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
+//! |-------|----------|-----------|----------------|------------|--------|----------|-----------|
+//! | 4     | 2        | 1,049,178 | 335,544,320    | 6.1 s      | 8.4 s  | 12.3 GB  | 12.0 GB   |
+//! | 4     | 3        | 1,362,313 | 335,544,320    | 7.1 s      | 15.1 s | 14.2 GB  | 12.4 GB   |
+//! | 2     | 2        | 1,057,676 | 335,544,320    | 6.5 s      | 7.8 s  | 12.8 GB  | 12.5 GB   |
+//! | 2     | 3        | 1,380,220 | 603,979,776    | 10.9 s     | 19.1 s | 23.5 GB  | 21.9 GB   |
 //!
-//! Layer 1 takes 0.48 s with 17,921 witnesses and 5,242,880 codeword cells. From layer 3 on,
-//! more than 2,621 Keccak-f calls (25 trace rows each) give the Keccak table 2^17 rows instead
-//! of 2^16; hence the default limits of 2^29 trace cells and 2^30 codeword cells, 4 GiB and
-//! 8 GiB of Poly64 cells.
+//! Layer 1 takes 0.84 s with 8,284 witnesses and 4,718,592 codeword cells. A four-digest node
+//! absorbs one Keccak-f block, as a pairwise node does, and an opening walks half as many
+//! levels, so layer 3 takes 2,227 Keccak-f calls instead of 2,798. More than 2,621 calls (25
+//! trace rows each) give the Keccak table 2^17 rows instead of 2^16, so only at
+//! `--merkle-arity 2` does layer 3 need the default limit of 2^30 codeword cells, 8 GiB of
+//! Poly64 cells; at arity 4, layers 1 to 3 stay within 2^29.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits count field cells
 //! or graph entries, not bytes.
@@ -52,6 +57,19 @@ use limit_hint::at_layer;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 type F = Poly64;
+/// Default cap height of pairwise trees, in levels: 16 roots.
+const DEFAULT_CAP_HEIGHT: usize = 4;
+/// Default cap height of four-digest trees, in levels: 16 roots.
+const DEFAULT_FOUR_DIGEST_CAP_HEIGHT: usize = 2;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Arity {
+    /// Pairwise nodes.
+    #[value(name = "2")]
+    Two,
+    /// Four-digest nodes, each one Keccak-f block like a pairwise node, over half the levels.
+    #[value(name = "4")]
+    Four,
+}
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value_t = 1)]
@@ -84,12 +102,32 @@ struct Args {
     /// WHIR security level per opening; composed security still requires four bits.
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
-    /// Merkle cap height for the recursive output proofs.
-    #[arg(long, default_value_t = 4)]
-    cap_height: usize,
+    /// Digests per Merkle tree node of every recursive output commitment.
+    #[arg(long, value_enum, default_value_t = Arity::Four)]
+    merkle_arity: Arity,
+    /// Merkle cap height of the recursive output proofs, in tree levels: `h` levels hold `2^h`
+    /// roots of pairwise trees or `4^h` of four-digest trees. Defaults to 16 roots, 2 levels at
+    /// `--merkle-arity 4` and 4 at `--merkle-arity 2`.
+    #[arg(long)]
+    cap_height: Option<usize>,
     /// WHIR grinding bits per recursive opening; queries cover the rest of the security level.
     #[arg(long, default_value_t = 24)]
     pow_bits: usize,
+}
+impl Args {
+    const fn merkle_arity(&self) -> MerkleArity {
+        match self.merkle_arity {
+            Arity::Two => MerkleArity::Two,
+            Arity::Four => MerkleArity::Four,
+        }
+    }
+    /// `--cap-height`, or the default for the selected arity.
+    fn cap_height(&self) -> usize {
+        self.cap_height.unwrap_or(match self.merkle_arity {
+            Arity::Two => DEFAULT_CAP_HEIGHT,
+            Arity::Four => DEFAULT_FOUR_DIGEST_CAP_HEIGHT,
+        })
+    }
 }
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
@@ -137,8 +175,8 @@ fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
         main: recursive_protocol(args.pcs_security_level, args.pow_bits),
         preprocessed: recursive_protocol(args.pcs_security_level, args.pow_bits),
-        arity: MerkleArity::Two,
-        cap_height: args.cap_height,
+        arity: args.merkle_arity(),
+        cap_height: args.cap_height(),
         initial_bytes: format!("native-poly-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
