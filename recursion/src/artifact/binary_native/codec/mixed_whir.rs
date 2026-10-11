@@ -1,7 +1,8 @@
 //! Trusted-shape bounded dense and packed-bit WHIR proof bytes.
-use p3_binary_field::BinaryField128;
+use p3_binary_field::{BinaryField128, BitCoordinates};
+use p3_challenger::fs::TranscriptField;
 
-use super::super::config::MixedWhirProof;
+use super::super::config::{MixedWhirProof, NativeMixedWhirProof};
 use super::super::{
     BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirConfig, VerifiedBinaryNativeMixedWhirProof,
 };
@@ -63,23 +64,44 @@ impl<A: VerifierAir<E, E>> BinaryNativeMixedWhirAuthority<A> {
 }
 
 fn write_mixed(w: &mut Writer, p: &MixedWhirProof) -> Result<(), ArtifactError> {
-    whir::write_whir(w, &p.dense)?;
-    if let Some(packed) = &p.packed {
-        boolean_whir::write_trace(w, packed)?;
-    }
-    Ok(())
+    write_mixed_with::<E, E>(w, p)
 }
 fn read_mixed(
     r: &mut Reader<'_>,
     s: &MixedWhirDecode,
     total: &mut usize,
 ) -> Result<MixedWhirProof, ArtifactError> {
-    Ok(MixedWhirProof {
-        dense: whir::read_whir(r, &s.dense, total)?,
+    read_mixed_with::<E, E>(r, s, total)
+}
+pub(super) fn write_mixed_with<F, E>(
+    w: &mut Writer,
+    p: &NativeMixedWhirProof<F, E>,
+) -> Result<(), ArtifactError>
+where
+    F: ScalarWire + BitCoordinates + PackedValue<Value = F> + TranscriptField,
+    E: ScalarWire + BitCoordinates + ExtensionField<F>,
+{
+    whir::write_whir_with(w, &p.dense)?;
+    if let Some(packed) = &p.packed {
+        boolean_whir::write_trace_with(w, packed)?;
+    }
+    Ok(())
+}
+pub(super) fn read_mixed_with<F, E>(
+    r: &mut Reader<'_>,
+    s: &MixedWhirDecode,
+    total: &mut usize,
+) -> Result<NativeMixedWhirProof<F, E>, ArtifactError>
+where
+    F: ScalarWire + BitCoordinates + PackedValue<Value = F> + TranscriptField,
+    E: ScalarWire + BitCoordinates + ExtensionField<F>,
+{
+    Ok(NativeMixedWhirProof {
+        dense: whir::read_whir_with(r, &s.dense, total)?,
         packed: s
             .packed
             .as_ref()
-            .map(|packed| boolean_whir::read_trace(r, packed, total))
+            .map(|packed| boolean_whir::read_trace_with(r, packed, total))
             .transpose()?,
     })
 }
