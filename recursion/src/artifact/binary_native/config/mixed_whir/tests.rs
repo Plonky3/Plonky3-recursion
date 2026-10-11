@@ -513,6 +513,65 @@ fn tampered_mixed_proofs_are_rejected() {
     ));
 }
 
+/// The multi-STARK prover hands the opening the zerocheck's values of each table's first batch.
+/// The packed part binds the packed table's in place of evaluating its columns: honest values
+/// leave the proof as an evaluating opening makes it, and the packed opening's own comparison
+/// against the committed bits refuses a wrong one.
+#[test]
+fn supplied_packed_values_are_bound_by_the_packed_opening() {
+    let pcs = mixed_pcs(KECCAK);
+    let protocol = main_protocol(full_spec(keccak_shape()));
+    let mut rng = SmallRng::seed_from_u64(7);
+    let points = [DENSE_VARIABLES, KECCAK_VARIABLES, DENSE_VARIABLES]
+        .map(|variables| Point::new((0..variables).map(|_| rng.random()).collect()))
+        .to_vec();
+    let tables = vec![
+        dense_table(E::ONE, E::ZERO),
+        keccak_table(),
+        dense_table(E::ZERO, E::ONE),
+    ];
+    let mut committed = challenger();
+    let (_, data) = pcs.commit(tables, &mut committed).unwrap();
+    let open = |known: &[Option<OpeningEvals<E>>], challenger: &mut Challenger| {
+        pcs.open_at_known(data.clone(), &protocol, &points, known, challenger)
+    };
+    let bytes = |proof: &MixedWhirProof| postcard::to_allocvec(proof).unwrap();
+
+    let evaluated = pcs
+        .open_at(data.clone(), &protocol, &points, &mut committed.clone())
+        .unwrap();
+    let values = &evaluated.packed.as_ref().unwrap().values;
+    let (current, next) = values.split_at(NUM_KECCAK_BINARY_COLS);
+    let supplied =
+        |current: Vec<E>| vec![None, Some(OpeningEvals::new(current, next.to_vec())), None];
+
+    let bound = open(&supplied(current.to_vec()), &mut committed.clone()).unwrap();
+    assert_eq!(bytes(&bound), bytes(&evaluated));
+
+    let mut wrong = current.to_vec();
+    wrong[0] += E::ONE;
+    assert!(matches!(
+        open(&supplied(wrong), &mut committed.clone()),
+        Err(MixedWhirError::Packed(
+            BooleanTraceCommitmentError::ColumnBatchValueMismatch { .. }
+        ))
+    ));
+
+    // A list without one entry per batch, or an entry shaped unlike its batch, is refused
+    // before the dense opening moves the transcript.
+    for known in [vec![None; 2], supplied(current[1..].to_vec())] {
+        let mut moved = committed.clone();
+        assert!(matches!(
+            open(&known, &mut moved),
+            Err(MixedWhirError::Shape(_))
+        ));
+        assert_eq!(
+            CanSample::<E>::sample(&mut moved),
+            CanSample::<E>::sample(&mut committed.clone())
+        );
+    }
+}
+
 #[test]
 fn non_bit_cell_refused_before_transcript() {
     let fixture = Fixture::new();

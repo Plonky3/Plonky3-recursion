@@ -233,12 +233,13 @@ impl MixedWhirPcs {
         Ok([OpeningProtocol::new(dense), OpeningProtocol::new(packed)])
     }
 
-    /// Split the opening points the way [`Self::split`] splits their batches.
-    fn split_points(&self, protocol: &OpeningProtocol, points: &[Point<E>]) -> [Vec<Point<E>>; 2] {
+    /// Split one entry per batch, such as its opening point, the way [`Self::split`] splits
+    /// the batches.
+    fn split_entries<T: Clone>(&self, protocol: &OpeningProtocol, entries: &[T]) -> [Vec<T>; 2] {
         let packed = self.packed_table();
         let mut sides = [Vec::new(), Vec::new()];
-        for ((table, _), point) in protocol.iter_openings().zip(points) {
-            sides[usize::from(packed == Some(table))].push(point.clone());
+        for ((table, _), entry) in protocol.iter_openings().zip(entries) {
+            sides[usize::from(packed == Some(table))].push(entry.clone());
         }
         sides
     }
@@ -256,7 +257,7 @@ impl MixedWhirPcs {
         if (packed.num_openings() > 0) != self.packed.is_some() {
             return Err("the packed table is opened exactly when one is configured");
         }
-        let [dense_points, packed_points] = self.split_points(protocol, points);
+        let [dense_points, packed_points] = self.split_entries(protocol, points);
         if dense.check_points(&dense_points).is_err()
             || packed.check_points(&packed_points).is_err()
         {
@@ -498,12 +499,43 @@ impl PrescribedPointPcs<E, Challenger> for MixedWhirPcs {
         points: &[Point<E>],
         challenger: &mut Challenger,
     ) -> Result<MixedWhirProof, Self::ProverError> {
+        let known = vec![None; protocol.num_openings()];
+        self.open_at_known(prover_data, protocol, points, &known, challenger)
+    }
+
+    /// The packed part binds the supplied values of the packed table's batches in place of
+    /// evaluating its columns. The dense part has no such path and evaluates its own batches.
+    fn open_at_known(
+        &self,
+        prover_data: MixedWhirData,
+        protocol: &OpeningProtocol,
+        points: &[Point<E>],
+        known: &[Option<OpeningEvals<E>>],
+        challenger: &mut Challenger,
+    ) -> Result<MixedWhirProof, Self::ProverError> {
         let [
             (dense_protocol, dense_points),
             (packed_protocol, packed_points),
         ] = self
             .split_opening(protocol, points)
             .map_err(MixedWhirError::Shape)?;
+        // The dense opening moves the transcript first, so the packed part's supplied values
+        // are checked here.
+        if known.len() != protocol.num_openings()
+            || protocol
+                .iter_openings()
+                .zip(known)
+                .any(|((_, batch), known)| {
+                    known
+                        .as_ref()
+                        .is_some_and(|known| !batch.has_same_shape(known))
+                })
+        {
+            return Err(MixedWhirError::Shape(
+                "the supplied values do not match the opening batches",
+            ));
+        }
+        let [_, packed_known] = self.split_entries(protocol, known);
         let MixedWhirData { dense, packed, .. } = prover_data;
         let packed = match (&self.packed, packed) {
             (Some((pcs, _)), Some(data)) => Some((pcs, data)),
@@ -519,7 +551,15 @@ impl PrescribedPointPcs<E, Challenger> for MixedWhirPcs {
             .open_at(dense, &dense_protocol, &dense_points, challenger)
             .map_err(MixedWhirError::Dense)?;
         let packed = packed
-            .map(|(pcs, data)| pcs.open_at(data, &packed_protocol, &packed_points, challenger))
+            .map(|(pcs, data)| {
+                pcs.open_at_known(
+                    data,
+                    &packed_protocol,
+                    &packed_points,
+                    &packed_known,
+                    challenger,
+                )
+            })
             .transpose()
             .map_err(MixedWhirError::Packed)?;
         Ok(MixedWhirProof { dense, packed })
