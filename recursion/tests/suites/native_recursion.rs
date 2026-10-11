@@ -20,6 +20,8 @@ mod native_binary_product;
 mod native_binary_recursion_limits;
 #[path = "../native_binary_recursive_verifier.rs"]
 mod native_binary_recursive_verifier;
+#[path = "../native_binary_ring_tensor.rs"]
+mod native_binary_ring_tensor;
 #[path = "../native_binary_second_layer.rs"]
 mod native_binary_second_layer;
 #[path = "../native_binary_sumcheck.rs"]
