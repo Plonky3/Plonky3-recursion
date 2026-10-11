@@ -1,7 +1,7 @@
 //! Native Tower128 proving followed by native Tower128 recursion.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
-//!     --example native_binary_recursion -- --layers 3
+//!     --example native_binary_recursion -- --layers 2
 //!
 //! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap
 //! height 4) keep every layer within the default limits. The recursive verifier
@@ -14,16 +14,17 @@
 //!
 //! | --layers | last layer | footprint | resident |
 //! |----------|------------|-----------|----------|
-//! | 1        | 3-7 s      | 0.3 GB    | 0.3 GB   |
+//! | 1        | 1.6 s      | 0.3 GB    | 0.3 GB   |
 //! | 2        | 35 s       | 11.6 GB   | 13.8 GB  |
 //! | 3        | 45 s       | 13.4 GB   | 17.8 GB  |
-//! | 4        | 48 s       | 13.5 GB   | 19.6 GB  |
+//! | 4        | 45 s       | 13.5 GB   | 19.6 GB  |
 //!
-//! Other jobs on the machine slowed layers by up to 1.8x. Grinding takes most
-//! of layer 1 and 1.5-6 s of each later layer. With `--pow-bits 20`, layer 2
-//! takes 40-46 s (15.5 GB resident) but layer 3 needs 603,979,776 codeword
-//! cells. With `--cap-height 0 --pow-bits 0`, layer 2 takes 95 s (24 GB
-//! resident) and needs `--max-pcs-codeword-cells 1073741824`.
+//! Other jobs on the machine slowed layer 1 by up to 4.5x and later layers by
+//! up to 1.8x. Grinding takes most of layer 1 and 1.5-6 s of each later layer.
+//! With `--pow-bits 20`, layer 2 takes 40-46 s (15.5 GB resident) but layer 3
+//! needs 603,979,776 codeword cells. With `--cap-height 0 --pow-bits 0`, layer
+//! 2 takes 95 s (24 GB resident) and needs
+//! `--max-pcs-codeword-cells 1073741824`.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits
 //! count field cells or graph entries, not bytes.
