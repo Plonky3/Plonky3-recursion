@@ -7,7 +7,7 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 
 use super::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding};
 use super::binary_native::BinaryCoordinateField;
-use super::{ByteHash, KECCAK256_RATE_BYTES, NpoTypeId};
+use super::{ByteHash, KECCAK256_RATE_BYTES};
 use crate::{CircuitBuilder, CircuitBuilderError, ExprId};
 
 /// A byte-hash digest as sixteen low-first limbs, each also with its two bytes
@@ -159,7 +159,9 @@ pub trait BinaryCircuitHost<F: Field + Eq + Hash>: BinaryCircuitEncoding<F> + Si
     ///
     /// `N` is two to four: under Keccak-256 the at most 128 message bytes and
     /// their padding fill one rate block, so a node costs a single Keccak-f
-    /// call that absorbs every input word as a first-block lane.
+    /// call that absorbs every input word as a first-block lane. Under
+    /// Blake3, `32 * N` bytes are `ceil(N / 2)` compressions, each digest word
+    /// a direct block input.
     fn compress_n(
         builder: &mut CircuitBuilder<F>,
         hash: ByteHash,
@@ -179,18 +181,16 @@ pub trait BinaryCircuitHost<F: Field + Eq + Hash>: BinaryCircuitEncoding<F> + Si
     }
 }
 
-/// The most 32-byte digests one node compression hashes: their concatenation
-/// leaves at least the one padding byte Keccak-256 needs in its rate block.
+/// The most 32-byte digests one node compression hashes under any hash: their
+/// concatenation leaves at least the one padding byte Keccak-256 needs in its
+/// rate block.
 const MAX_COMPRESSION_ARITY: usize = (KECCAK256_RATE_BYTES - 1) / 32;
 
 impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
     fn check_hash(hash: ByteHash) -> Result<(), CircuitBuilderError> {
         <Self as BinaryCircuitEncoding<F>>::check_carrier()?;
         match hash {
-            ByteHash::Keccak256 => Ok(()),
-            ByteHash::Blake3 => Err(CircuitBuilderError::UnsupportedNonPrimitiveOp {
-                op: NpoTypeId::blake3_compress(),
-            }),
+            ByteHash::Keccak256 | ByteHash::Blake3 => Ok(()),
         }
     }
 
@@ -200,7 +200,10 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
         bytes: &[ExprId],
     ) -> Result<[ExprId; 32], CircuitBuilderError> {
         <Self as BinaryCircuitHost<F>>::check_hash(hash)?;
-        builder.native_keccak256_bytes(bytes)
+        match hash {
+            ByteHash::Keccak256 => builder.native_keccak256_bytes(bytes),
+            ByteHash::Blake3 => builder.native_blake3_bytes(bytes),
+        }
     }
 
     fn hash_words(
@@ -209,13 +212,15 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
         words: &[ExprId],
     ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         <Self as BinaryCircuitHost<F>>::check_hash(hash)?;
-        Ok(builder.native_keccak256_words(words)?.to_vec())
+        Ok(match hash {
+            ByteHash::Keccak256 => builder.native_keccak256_words(words)?.to_vec(),
+            ByteHash::Blake3 => builder.native_blake3_words(words)?.to_vec(),
+        })
     }
 
-    /// Keccak-256 returns swapped limbs that are outputs of the final native
-    /// Keccak-f call, which the native hash AIR derives from that call's
-    /// output bits, or constants for a message absorbed while building. Any
-    /// other hash returns `None`.
+    /// Returns swapped limbs that are outputs of the final native compression
+    /// call (Keccak-f or Blake3), which the native hash AIR derives from that
+    /// call's output bits, or constants for a message absorbed while building.
     fn hash_bytes_to_limbs(
         builder: &mut CircuitBuilder<F>,
         hash: ByteHash,
@@ -227,7 +232,10 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
                 let (limbs, swapped) = builder.native_keccak256_bytes_with_swapped_digest(bytes)?;
                 Ok(Some(DigestLimbs { limbs, swapped }))
             }
-            ByteHash::Blake3 => Ok(None),
+            ByteHash::Blake3 => {
+                let (limbs, swapped) = builder.native_blake3_bytes_with_swapped_digest(bytes)?;
+                Ok(Some(DigestLimbs { limbs, swapped }))
+            }
         }
     }
 
@@ -243,7 +251,10 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
                 let (limbs, swapped) = builder.native_keccak256_words_with_swapped_digest(words)?;
                 Ok(Some(DigestLimbs { limbs, swapped }))
             }
-            ByteHash::Blake3 => Ok(None),
+            ByteHash::Blake3 => {
+                let (limbs, swapped) = builder.native_blake3_words_with_swapped_digest(words)?;
+                Ok(Some(DigestLimbs { limbs, swapped }))
+            }
         }
     }
 
@@ -257,8 +268,9 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
     /// Adds no constraint. Under Boolean index bits the selected digests are
     /// the current digest and the level's siblings, each in exactly one input,
     /// so each sibling word equals a word that [`Self::compress`] or
-    /// [`Self::compress_n`] absorbs as a first-block native Keccak lane, which
-    /// the native Keccak AIR constrains to sixteen coordinates.
+    /// [`Self::compress_n`] absorbs: under Keccak-256 a first-block native
+    /// Keccak lane, under Blake3 a direct block input of a native compression,
+    /// which the respective native AIR constrains to sixteen coordinates.
     fn constrain_sibling(
         _builder: &mut CircuitBuilder<F>,
         _sibling: &[ExprId],

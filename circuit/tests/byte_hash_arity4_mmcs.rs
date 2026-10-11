@@ -194,6 +194,19 @@ fn prime() -> Carrier<BabyBear> {
     }
 }
 
+fn native_blake3<F: BinaryCoordinateField>() -> Carrier<F, Blake3> {
+    Carrier {
+        builder: || {
+            let mut b = CircuitBuilder::new();
+            b.enable_native_blake3_compress().unwrap();
+            b
+        },
+        widen: |word| word + F::from_raw_coordinates(1 << 16).unwrap(),
+        hash: ByteHash::Blake3,
+        hasher: Blake3,
+    }
+}
+
 fn prime_blake3() -> Carrier<BabyBear, Blake3> {
     Carrier {
         builder: || {
@@ -238,7 +251,7 @@ fn matrices(heights: &[usize], words: bool) -> Vec<RowMajorMatrix<BinaryField8>>
 /// input word of one node hash, which bounds it to sixteen bits as a native
 /// Keccak lane or through the prime host's word decomposition, so a sibling
 /// word widened past sixteen bits is rejected with no range check of its own.
-fn check_opening<F, H, Hs>(
+fn check_opening<F, H, Hs, const N: usize>(
     carrier: &Carrier<F, Hs>,
     heights: &[usize],
     cap_height: usize,
@@ -249,14 +262,14 @@ fn check_opening<F, H, Hs>(
     H: BinaryCircuitHost<F>,
     Hs: CryptographicHasher<u8, [u8; 32]> + Copy + Sync,
 {
-    let mmcs = byte_mmcs::<Hs, 4>(carrier.hasher, cap_height);
+    let mmcs = byte_mmcs::<Hs, N>(carrier.hasher, cap_height);
     let matrices = matrices(heights, words);
     let dims: Vec<_> = matrices.iter().map(Matrix::dimensions).collect();
     let (commitment, data) = mmcs.commit(matrices);
     let opening = mmcs.open_batch(index, &data);
     mmcs.verify_batch(&commitment, &dims, index, (&opening).into())
         .unwrap();
-    let schedule = MmcsAritySchedule::new::<4>(heights).unwrap();
+    let schedule = MmcsAritySchedule::new::<N>(heights).unwrap();
     let proof = &opening.opening_proof;
     let roots = commitment.roots();
     assert_eq!(proof.len(), schedule.proof_siblings(cap_height));
@@ -274,7 +287,7 @@ fn check_opening<F, H, Hs>(
     let siblings: Vec<_> = proof.iter().map(|_| inputs(16)).collect();
     let cap: Vec<_> = roots.iter().map(|_| inputs(16)).collect();
     if words {
-        b.verify_byte_hash_mmcs_opening_words_with_host_arity::<H, 4>(
+        b.verify_byte_hash_mmcs_opening_words_with_host_arity::<H, N>(
             carrier.hash,
             &rows,
             heights,
@@ -283,7 +296,7 @@ fn check_opening<F, H, Hs>(
             &cap,
         )
     } else {
-        b.verify_byte_hash_mmcs_opening_bytes_with_host_arity::<H, 4>(
+        b.verify_byte_hash_mmcs_opening_bytes_with_host_arity::<H, N>(
             carrier.hash,
             &rows,
             heights,
@@ -401,7 +414,7 @@ fn check_opening<F, H, Hs>(
 /// Single matrices of `2^k` rows for odd and even `k` under caps of up to two
 /// levels, whose odd top groups pad two digests to four; then mixed heights
 /// with injections, pairwise bridges and a tallest height of seven rows.
-fn check_openings<F, H, Hs>(carrier: &Carrier<F, Hs>)
+fn check_openings<F, H, Hs, const N: usize>(carrier: &Carrier<F, Hs>)
 where
     F: Field + Eq + Hash,
     H: BinaryCircuitHost<F>,
@@ -413,9 +426,10 @@ where
             let mut indices = vec![0, 5 % height, 10 % height, height - 1];
             indices.sort_unstable();
             indices.dedup();
-            for cap_height in 0..=k.div_ceil(2).min(2) {
+            let levels = if N == 4 { k.div_ceil(2) } else { k };
+            for cap_height in 0..=levels.min(2) {
                 for &index in &indices {
-                    check_opening::<F, H, Hs>(carrier, &[height], cap_height, index, words);
+                    check_opening::<F, H, Hs, N>(carrier, &[height], cap_height, index, words);
                 }
             }
         }
@@ -429,7 +443,7 @@ where
             let max_height = heights[0];
             for cap_height in 0..=top_cap {
                 for index in [0, 3, max_height - 1] {
-                    check_opening::<F, H, Hs>(carrier, heights, cap_height, index, words);
+                    check_opening::<F, H, Hs, N>(carrier, heights, cap_height, index, words);
                 }
             }
         }
@@ -438,23 +452,33 @@ where
 
 #[test]
 fn native_tower_openings_match_p3_arity_four_trees() {
-    check_openings::<BinaryField128, NativeBinaryEncoding, _>(&native());
+    check_openings::<BinaryField128, NativeBinaryEncoding, _, 4>(&native());
 }
 
 #[test]
 fn native_polynomial_openings_match_p3_arity_four_trees() {
-    check_openings::<Poly64, NativeBinaryEncoding, _>(&native());
+    check_openings::<Poly64, NativeBinaryEncoding, _, 4>(&native());
 }
 
 #[test]
 fn prime_openings_match_p3_arity_four_trees() {
-    check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>, _>(&prime());
+    check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>, _, 4>(&prime());
 }
 
 /// A Blake3 node hashes its 128 digest bytes as two blocks of one chunk.
 #[test]
 fn prime_blake3_openings_match_p3_arity_four_trees() {
-    check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>, _>(&prime_blake3());
+    check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>, _, 4>(&prime_blake3());
+}
+
+/// Under native Blake3 an arity-two node is one compression and an arity-four
+/// node two, every digest word a direct block input.
+#[test]
+fn native_blake3_openings_match_p3_trees() {
+    check_openings::<BinaryField128, NativeBinaryEncoding, _, 2>(&native_blake3());
+    check_openings::<BinaryField128, NativeBinaryEncoding, _, 4>(&native_blake3());
+    check_openings::<Poly64, NativeBinaryEncoding, _, 2>(&native_blake3());
+    check_openings::<Poly64, NativeBinaryEncoding, _, 4>(&native_blake3());
 }
 
 /// Every height ladder of up to sixteen rows, one index each: the root binds
@@ -467,7 +491,7 @@ fn native_openings_match_p3_arity_four_trees_for_every_small_height_ladder() {
             let heights = ladder(max_height, mask);
             let index = mask as usize % max_height;
             for words in [false, true] {
-                check_opening::<Poly64, NativeBinaryEncoding, _>(
+                check_opening::<Poly64, NativeBinaryEncoding, _, 4>(
                     &native(),
                     &heights,
                     0,

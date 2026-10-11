@@ -136,9 +136,9 @@ impl CircuitBuilder<BinaryField128> {
     /// by `x_j` shifts its coordinates up by `16 * j`, so the packed scalar's
     /// coordinates are the words' in order once every word has at most sixteen
     /// coordinates. The caller must establish that range, for example by
-    /// reading the words from native Keccak-f outputs, which the native hash
-    /// AIR derives from Boolean bits. No coordinates are recorded, so a later
-    /// decomposition of the scalar is a full one. IDs must belong to this
+    /// reading the words from native Keccak-f or Blake3 outputs, which the
+    /// native hash AIR derives from Boolean bits. No coordinates are recorded,
+    /// so a later decomposition of the scalar is a full one. IDs must belong to this
     /// builder's graph.
     pub fn native_tower128_from_unchecked_words(
         &mut self,

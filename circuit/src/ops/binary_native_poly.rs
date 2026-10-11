@@ -107,9 +107,9 @@ impl CircuitBuilder<Poly64> {
     /// A word of degree below sixteen times `x^(16j)` has degree below 64, so
     /// the product only shifts its coefficients up by `16 * j` once every word
     /// has at most sixteen coefficients. The caller must establish that range,
-    /// for example by reading the words from native Keccak-f outputs, which
-    /// the native hash AIR derives from Boolean bits. No coordinates are
-    /// recorded. IDs must belong to this builder's graph.
+    /// for example by reading the words from native Keccak-f or Blake3
+    /// outputs, which the native hash AIR derives from Boolean bits. No
+    /// coordinates are recorded. IDs must belong to this builder's graph.
     pub fn native_poly64_from_unchecked_words(
         &mut self,
         words: [ExprId; 4],
