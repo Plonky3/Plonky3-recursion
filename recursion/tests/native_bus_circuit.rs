@@ -1955,20 +1955,14 @@ fn blake3_multi_chunk_bytes() -> (NativeBusCircuit<F>, Vec<Vec<F>>, Vec<RowMajor
     (prepared, public, traces)
 }
 
-/// The runner accepts the p3 digest of the multi-chunk message, and every table satisfies its
-/// local constraints over the circuit's traces.
+/// The runner accepts the p3 digest of the multi-chunk message, every table satisfies its local
+/// constraints over the circuit's traces, and the traces prove.
 #[test]
-fn native_blake3_bytes_satisfy_every_table_for_a_multi_chunk_message() {
+fn native_blake3_bytes_prove_the_digest_of_a_multi_chunk_message() {
     let (prepared, public, traces) = blake3_multi_chunk_bytes();
     for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
         check_constraints(air, trace, public);
     }
-}
-
-#[test]
-#[ignore = "proves 3073 bytes in about 330 s in debug; run explicitly"]
-fn native_blake3_bytes_prove_the_digest_of_a_multi_chunk_message() {
-    let (prepared, public, traces) = blake3_multi_chunk_bytes();
     assert!(tower_accepts(&prepared, public)(traces));
 }
 
