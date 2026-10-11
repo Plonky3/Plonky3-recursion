@@ -7,9 +7,12 @@ use p3_air::{AirLayout, BaseAir, check_constraints};
 use p3_blake3_air::{Blake3BinaryCols, NUM_BLAKE3_BINARY_COLS};
 use p3_bus::{BusDebugInstance, BusDebugReport, BusSymbolicBuilder};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::{BLAKE3_INPUT_WORDS, NpoTypeId, blake3_compress, words_to_limbs};
+use p3_circuit::ops::{
+    BLAKE3_INPUT_WORDS, ExecutionContext, NonPrimitiveExecutor, NpoTypeId, blake3_compress,
+    words_to_limbs,
+};
 use p3_circuit::tables::WitnessTrace;
-use p3_circuit::{Circuit, CircuitBuilder, ExprId, Op, WitnessId};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitError, ExprId, NonPrimitiveOpId, Op, WitnessId};
 use p3_circuit_prover::direct::{DirectCircuitError, DirectCircuitLimits};
 use p3_circuit_prover::native_binary::NativeBinaryCircuit;
 use p3_circuit_prover::native_bus::{
@@ -18,7 +21,7 @@ use p3_circuit_prover::native_bus::{
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::Matrix;
 use p3_sumcheck::layout::Table;
-use p3_test_utils::binary_field_params::{BinaryField128, Poly64};
+use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128, Poly64};
 
 type F = BinaryField128;
 
@@ -303,6 +306,65 @@ fn mixed_hash_calls_and_the_indexed_backend_are_refused() {
 
     let (circuit, _) = chain::<F>(2, false);
     assert!(NativeBinaryCircuit::new(&circuit).is_err());
+}
+
+/// A native BLAKE3 operation over a carrier the builder refuses: it computes nothing.
+#[derive(Clone, Debug)]
+struct NarrowBlake3(NpoTypeId);
+
+impl NonPrimitiveExecutor<BinaryField8> for NarrowBlake3 {
+    fn execute(
+        &self,
+        _inputs: &[Vec<WitnessId>],
+        _outputs: &[Vec<WitnessId>],
+        _ctx: &mut ExecutionContext<'_, BinaryField8>,
+    ) -> Result<(), CircuitError> {
+        Ok(())
+    }
+
+    fn op_type(&self) -> &NpoTypeId {
+        &self.0
+    }
+
+    fn boxed(&self) -> Box<dyn NonPrimitiveExecutor<BinaryField8>> {
+        Box::new(self.clone())
+    }
+}
+
+/// An output group of neither 16 nor 32 limbs, and a carrier narrower than a 16-bit limb, are
+/// refused before any table is laid out.
+#[test]
+fn malformed_calls_and_narrow_carriers_are_refused() {
+    let is_blake3 = |op: &Op<F>| {
+        matches!(op, Op::NonPrimitiveOpWithExecutor { executor, .. }
+            if executor.op_type() == &NpoTypeId::native_blake3_compress())
+    };
+    let (mut circuit, _) = chain::<F>(1, true);
+    let operation = circuit.ops.iter().position(is_blake3).unwrap();
+    let Op::NonPrimitiveOpWithExecutor { outputs, .. } = &mut circuit.ops[operation] else {
+        unreachable!()
+    };
+    outputs[0].truncate(17);
+    assert!(matches!(
+        NativeBusCircuit::new(&circuit, "blake3"),
+        Err(NativeBusCircuitError::Blake3Layout { operation: refused }) if refused == operation
+    ));
+
+    let mut b = CircuitBuilder::<BinaryField8>::new();
+    assert!(b.enable_native_blake3_compress().is_err());
+    b.alloc_public_input_array::<72>("limbs");
+    let mut circuit = b.build().unwrap();
+    let limbs = circuit.public_rows.clone();
+    circuit.ops.push(Op::NonPrimitiveOpWithExecutor {
+        inputs: vec![limbs[..56].to_vec()],
+        outputs: vec![limbs[56..].to_vec()],
+        executor: Box::new(NarrowBlake3(NpoTypeId::native_blake3_compress())),
+        op_id: NonPrimitiveOpId(0),
+    });
+    assert!(matches!(
+        NativeBusCircuit::new(&circuit, "blake3"),
+        Err(NativeBusCircuitError::Blake3CoordinateWidth { bits: 8 })
+    ));
 }
 
 /// The BLAKE3 table is the last AIR. It reads no next row, assumes a Boolean trace only when bit
