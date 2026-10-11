@@ -417,9 +417,8 @@ fn prime_openings_match_p3_arity_four_trees() {
     check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>>(&prime());
 }
 
-/// The pairwise opening, rebuilt through the arity entry points at arity two:
-/// the same expressions, witnesses and operations, so pairwise circuits do
-/// not change.
+/// At arity two the arity entry points build the pairwise opening: the same
+/// expressions, witnesses and operations.
 fn check_pairwise_identity<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(carrier: &Carrier<F>) {
     for words in [false, true] {
         let build = |through_arity: bool| {
