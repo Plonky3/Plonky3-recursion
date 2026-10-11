@@ -173,9 +173,11 @@ impl BinaryMixedWhirMultiStarkVerifier {
         self.relation.check_targets(public, &common)?;
         let (dense_cap, packed_cap) = self.split_cap(&proof.commitment)?;
         let zero = b.native_tower128_constant(0);
-        let (dense_points, _) = self.split(&self.relation.zero_points(false, zero))?;
+        let (dense_points, packed_points) = self.split(&self.relation.zero_points(false, zero))?;
         self.dense
             .check_targets(dense_cap, &dense_points, &proof.dense)?;
+        self.packed
+            .check_native_targets(b, packed_cap, &packed_points, &proof.packed)?;
         let preprocessed_cap = match (
             &self.preprocessed,
             &self.input.preprocessed,

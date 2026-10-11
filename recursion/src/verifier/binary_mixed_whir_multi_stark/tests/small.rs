@@ -8,6 +8,7 @@ use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 
 use super::*;
+use crate::pcs::binary::NativeBooleanWhirTraceProofTargets;
 
 /// Above the seven row variables a field element absorbs, so the ring switch of a table read
 /// one row ahead also sends the successor's carry and last tensors.
@@ -354,6 +355,51 @@ fn small_mixed_proof_satisfies_the_prime_circuit_and_refuses_tampers() {
 #[test]
 fn small_mixed_proof_satisfies_the_native_circuit_and_refuses_tampers() {
     assert_native_circuit_accepts_and_refuses_tampers(&small_proof());
+}
+
+/// The native verifier checks the packed opening's target shapes with the dense opening's,
+/// before the transcript: refusing a malformed packed opening builds no more nodes than
+/// refusing a malformed dense one.
+#[test]
+fn native_verifier_refuses_a_malformed_packed_opening_before_the_transcript() {
+    let airs = [
+        TestAir::Square,
+        TestAir::Bits { next: vec![] },
+        TestAir::Square,
+    ];
+    let heights = [SQUARE_VARIABLES, BIT_VARIABLES, SQUARE_VARIABLES];
+    let parameters = Parameters::new(&airs, &heights, Some(BITS));
+    let verifier = parameters
+        .verifier(&airs, &heights, BITS, parameters.preprocessed_cap(&airs))
+        .unwrap();
+    let shape = verifier.input_shape();
+    type Targets = BinaryMixedWhirMultiStarkProofTargets<
+        NativeTower128Target,
+        NativeBooleanWhirTraceProofTargets,
+    >;
+    let refusal = |malform: &dyn Fn(&mut Targets)| {
+        let (mut b, public) = native_builder(shape.public_value_counts());
+        let mut targets = shape.allocate_native_targets(&mut b).unwrap();
+        malform(&mut targets);
+        let ch = native_challenger(&mut b);
+        let before = b.construction_usage().unwrap().expression_nodes;
+        let Err(VerificationError::InvalidProofShape(message)) =
+            verifier.verify_native(&mut b, ch, &public, &targets)
+        else {
+            panic!("the native verifier did not refuse malformed targets by their shape");
+        };
+        let nodes = b.construction_usage().unwrap().expression_nodes - before;
+        (message, nodes)
+    };
+    let (dense, dense_nodes) = refusal(&|targets| {
+        targets.dense.final_poly.pop();
+    });
+    let (packed, packed_nodes) = refusal(&|targets| {
+        targets.packed.values.pop();
+    });
+    assert_eq!(dense, "binary WHIR target opening or proof shape mismatch");
+    assert_eq!(packed, "binary trace row point or value count mismatch");
+    assert_eq!(packed_nodes, dense_nodes);
 }
 
 #[test]

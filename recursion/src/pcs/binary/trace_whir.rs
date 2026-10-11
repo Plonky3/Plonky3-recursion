@@ -374,6 +374,20 @@ impl BinaryBooleanWhirTraceVerifier {
         self.child.observe_commitment_native(b, ch, cap)
     }
 
+    /// Native target shapes at `points`: the opened values against the routing plan, then the
+    /// packed opening's targets.
+    pub(crate) fn check_native_targets(
+        &self,
+        b: &CircuitBuilder<BinaryField128>,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<NativeTower128Target>],
+        proof: &NativeBooleanWhirTraceProofTargets,
+    ) -> Result<(), VerificationError> {
+        self.routing
+            .check_points(points.iter().map(Vec::len), proof.values.len())?;
+        self.child.check_native_targets(b, cap, &proof.opening)
+    }
+
     /// Native carrier counterpart of [`Self::verify_at`] for the column-batched route: binds
     /// the opened values to one column-batched ring claim per opening, runs every ring-switch
     /// round, authenticates the packed opening, and returns the opened values in protocol
@@ -393,9 +407,7 @@ impl BinaryBooleanWhirTraceVerifier {
         VerificationError,
     > {
         self.check_native_circuit_support()?;
-        self.routing
-            .check_points(points.iter().map(Vec::len), proof.values.len())?;
-        self.child.check_native_targets(b, cap, &proof.opening)?;
+        self.check_native_targets(b, cap, points, proof)?;
         let (readings, ch) = self.routing.bind_native(b, ch, points, &proof.values)?;
         let ch = self
             .child
