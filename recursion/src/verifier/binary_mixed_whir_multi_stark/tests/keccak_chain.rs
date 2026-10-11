@@ -119,17 +119,16 @@ fn keccak_chain_satisfies_the_prime_circuit() {
 fn keccak_chain_satisfies_the_native_circuit() {
     let mixed = keccak_chain_proof();
     let verifier = mixed.verifier();
-    let (_, private) = mixed.honest_private_values::<Native>(&verifier);
+    let (input, private) = mixed.honest_private_values::<Native>(&verifier);
     let (circuit, _) = native_circuit(&verifier);
     let public = mixed.public_values::<Native>();
     assert!(accepts(&circuit, &private, &public));
     // The packed opening's witnesses start with the opened Keccak values.
+    let (_, packed) = opening_offsets::<Native>(&input, &verifier.input_shape());
     let values = &mixed.proof.opening.packed.as_ref().unwrap().values;
-    let start = (0..private.len())
-        .find(|&i| private[i..].starts_with(values))
-        .unwrap();
+    assert!(private[packed..].starts_with(values));
     let mut tampered = private;
-    tampered[start] += F::ONE;
+    Native::flip(&mut tampered[packed]);
     assert!(!accepts(&circuit, &tampered, &public));
 }
 
