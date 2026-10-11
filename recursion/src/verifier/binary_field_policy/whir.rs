@@ -207,6 +207,27 @@ impl BinaryWhirPolicy<Poly64> for NativePoly64Relation {
             }
         }
     }
+    fn oracle_words(
+        b: &mut CircuitBuilder<Poly64>,
+        value: &NativePoly192Target,
+        mode: BinaryOracleWord,
+    ) -> Result<Option<Vec<ExprId>>, VerificationError> {
+        let coefficients = match mode {
+            BinaryOracleWord::Base => {
+                // Allocation embeds base rows, but callers may supply other targets.
+                for &coefficient in &value.coefficients()[1..] {
+                    b.assert_zero(coefficient);
+                }
+                &value.coefficients()[..1]
+            }
+            BinaryOracleWord::Challenge => &value.coefficients()[..],
+        };
+        let mut words = Vec::with_capacity(4 * coefficients.len());
+        for &coefficient in coefficients {
+            words.extend(b.native_poly64_unchecked_words(coefficient, 4)?);
+        }
+        Ok(Some(words))
+    }
     fn query_point(
         b: &mut CircuitBuilder<Poly64>,
         index_bits: &[ExprId],
@@ -311,6 +332,52 @@ mod tests {
         for upper in [Poly64::ONE, Poly64::new(1 << 63)] {
             assert!(!run(&[Poly64::new(raw), upper, Poly64::ZERO]));
             assert!(!run(&[Poly64::new(raw), Poly64::ZERO, upper]));
+        }
+    }
+
+    /// Leaf words are the low-first sixteen-bit words of the bytes
+    /// `oracle_bytes` serializes: the four words of the base coefficient,
+    /// whose upper coefficients must be zero, or the twelve words of all
+    /// three coefficients in ascending order.
+    #[test]
+    fn native_poly_oracle_words_split_the_oracle_bytes() {
+        let raw = [
+            0x8123456789abcdefu64,
+            0x0fedcba987654321,
+            0xdeadbeef01234567,
+        ];
+        let bytes: Vec<u8> = raw.iter().flat_map(|value| value.to_le_bytes()).collect();
+        for (mode, honest, count) in [
+            (BinaryOracleWord::Base, [raw[0], 0, 0], 4),
+            (BinaryOracleWord::Challenge, raw, 12),
+        ] {
+            let mut b = CircuitBuilder::<Poly64>::new();
+            let coefficients = b.alloc_private_input_array::<3>("manual oracle value");
+            let value = b.native_poly192_from_coefficients(coefficients);
+            let words = NativePoly64Relation::oracle_words(&mut b, &value, mode)
+                .unwrap()
+                .unwrap();
+            assert_eq!(words.len(), count);
+            for (word, pair) in words.into_iter().zip(bytes.as_chunks::<2>().0) {
+                let expected = b.define_const(Poly64::new(u16::from_le_bytes(*pair).into()));
+                b.connect(word, expected);
+            }
+            let circuit = b.build().unwrap();
+            let run = |values: [u64; 3]| {
+                let mut runner = circuit.runner();
+                runner
+                    .set_private_inputs(&values.map(Poly64::new))
+                    .and_then(|()| runner.run().map(|_| ()))
+                    .is_ok()
+            };
+            assert!(run(honest));
+            for coefficient in 0..3 {
+                for bit in [0, 63] {
+                    let mut wrong = honest;
+                    wrong[coefficient] ^= 1 << bit;
+                    assert!(!run(wrong), "coefficient {coefficient}, bit {bit}");
+                }
+            }
         }
     }
 
