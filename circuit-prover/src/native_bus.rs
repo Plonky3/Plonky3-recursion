@@ -137,6 +137,9 @@ pub struct NativeBusCircuit<F> {
     main_variables: usize,
     preprocessed_variables: usize,
     keccak: KeccakCommitment,
+    limits: DirectCircuitLimits,
+    /// The bound of [`Self::traces`], which builds every table dense.
+    dense_cells: usize,
 }
 
 impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
@@ -173,7 +176,8 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
 
     /// As [`Self::with_min_log_height_and_limits`], committing the Keccak table as `keccak`.
     /// In [`KeccakCommitment::Bits`] mode the Keccak table is left out of
-    /// [`Self::main_variables`] and its trace is requested through [`Self::trace_tables`].
+    /// [`Self::main_variables`] and its trace is requested through [`Self::trace_tables`];
+    /// `limits` charge its packed words, at `F::COORDINATE_BITS` bits a cell.
     pub fn with_options(
         circuit: &Circuit<F>,
         namespace: &str,
@@ -260,23 +264,36 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             add(cells(witness_height, 4)?, cells(gate_height, GATE_PP)?)?,
             add(cells(hash_height, 3)?, cells(bridge_height, 102)?)?,
         )?;
-        // The bus uses the bit matrix directly. Only an enlarged minimum
-        // height needs an old allocation alongside the final one.
+        // The bus uses the bit matrix, dense or packed, directly. Only an
+        // enlarged minimum height needs an old allocation alongside the final one.
         let natural_hash_height = if calls.is_empty() {
             0
         } else {
             padded_height(cells(calls.len(), KECCAK_BINARY_ROWS_PER_PERM)?)?
         };
-        let hash_temporary = if hash_height > natural_hash_height {
-            cells(natural_hash_height, NUM_KECCAK_BINARY_COLS)?
+        let temporary_height = if hash_height > natural_hash_height {
+            natural_hash_height
         } else {
             0
         };
-        let packed_cells = if bits { add(hash_cells, 127)? / 128 } else { 0 };
-        let bounded = add(
-            add(add(main_cells, pp_cells)?, hash_temporary)?,
-            packed_cells,
+        let hash_temporary = cells(temporary_height, NUM_KECCAK_BINARY_COLS)?;
+        let field_cells = add(main_cells, pp_cells)?;
+        // `traces` builds the dense Keccak table in either mode.
+        let dense_cells = add(
+            add(field_cells, if bits { hash_cells } else { 0 })?,
+            hash_temporary,
         )?;
+        let bounded = if bits {
+            add(
+                field_cells,
+                add(
+                    packed_cells::<F>(hash_height)?,
+                    packed_cells::<F>(temporary_height)?,
+                )?,
+            )?
+        } else {
+            dense_cells
+        };
         limits.check(
             "native bus traces, preprocessing and temporary cells",
             bounded,
@@ -379,6 +396,8 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             main_variables,
             preprocessed_variables,
             keccak,
+            limits,
+            dense_cells,
         })
     }
 
@@ -427,11 +446,18 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             .collect())
     }
 
-    /// Dense main traces of every table, including the Keccak table in either mode.
+    /// Dense main traces of every table, including the Keccak table in either mode. The
+    /// construction limits bound the dense geometry, which [`KeccakCommitment::Bits`] mode
+    /// charges here rather than at construction.
     pub fn traces(
         &self,
         witness: &WitnessTrace<F>,
     ) -> Result<Vec<RowMajorMatrix<F>>, NativeBusCircuitError> {
+        self.limits.check(
+            "native bus dense traces, preprocessing and temporary cells",
+            self.dense_cells,
+            self.limits.max_trace_cells,
+        )?;
         Ok(self
             .trace_tables_with(witness, false)?
             .into_iter()
@@ -575,6 +601,13 @@ fn checked_label<F: BinaryCoordinateField>(id: usize) -> F {
 fn add(a: usize, b: usize) -> Result<usize, IndexedCircuitError> {
     a.checked_add(b)
         .ok_or(IndexedCircuitError::AllocationOverflow)
+}
+/// Cells of `F::COORDINATE_BITS` bits holding the packed words of a Keccak table of `height`
+/// rows, one word per column and started block of 64 rows.
+fn packed_cells<F: BinaryCoordinateField>(height: usize) -> Result<usize, IndexedCircuitError> {
+    const BITS: usize = u64::BITS as usize;
+    let words = cells(height.div_ceil(BITS), HASH_WIDTH)?;
+    Ok(cells(words, BITS)?.div_ceil(F::COORDINATE_BITS))
 }
 fn label<F: BinaryCoordinateField>(label: usize) -> Result<F, NativeBusCircuitError> {
     F::from_raw_coordinates(label as u128).ok_or(NativeBusCircuitError::LabelCapacity {

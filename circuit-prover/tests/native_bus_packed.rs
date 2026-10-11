@@ -6,8 +6,10 @@ use p3_bus::BusSymbolicBuilder;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::{Circuit, CircuitBuilder};
-use p3_circuit_prover::direct::DirectCircuitLimits;
-use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusTrace};
+use p3_circuit_prover::direct::{DirectCircuitError, DirectCircuitLimits};
+use p3_circuit_prover::native_bus::{
+    KeccakCommitment, NativeBusCircuit, NativeBusCircuitError, NativeBusTrace,
+};
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak::KeccakF;
 use p3_symmetric::Permutation;
@@ -195,4 +197,110 @@ fn bits_mode_stacks_only_the_other_tables() {
         bits.preprocessed_variables(),
         dense.preprocessed_variables()
     );
+}
+
+/// Main and preprocessed cells of every table at its final height.
+fn table_cells(prepared: &NativeBusCircuit<F>) -> usize {
+    prepared
+        .airs()
+        .iter()
+        .zip(prepared.log_heights())
+        .map(|(air, &log)| {
+            (BaseAir::<F>::width(air) + BaseAir::<F>::preprocessed_width(air)) << log
+        })
+        .sum()
+}
+
+/// 128-bit cells, two words each, holding a packed Keccak table of `height` rows: one word per
+/// column and started block of 64 rows.
+const fn packed_cells(height: usize) -> usize {
+    (WIDTH * height.div_ceil(64)).div_ceil(2)
+}
+
+fn with_trace_cells(
+    circuit: &Circuit<F>,
+    min_log_height: usize,
+    max_trace_cells: usize,
+    keccak: KeccakCommitment,
+) -> Result<NativeBusCircuit<F>, NativeBusCircuitError> {
+    let limits = DirectCircuitLimits {
+        max_trace_cells,
+        ..DirectCircuitLimits::default()
+    };
+    NativeBusCircuit::with_options(circuit, "packed", min_log_height, limits, keccak)
+}
+
+/// Whether `result` is the trace-cell limit refusing `actual` cells under `limit`.
+const fn refused<T>(
+    result: &Result<T, NativeBusCircuitError>,
+    actual: usize,
+    limit: usize,
+) -> bool {
+    matches!(
+        result,
+        Err(NativeBusCircuitError::Primitive(DirectCircuitError::ResourceLimit {
+            actual: refused,
+            limit: max,
+            ..
+        })) if *refused == actual && *max == limit
+    )
+}
+
+/// The trace-cell limit is a memory bound: a Bits circuit is charged the packed words it
+/// allocates, and building its dense traces is charged the dense table it allocates instead.
+#[test]
+fn trace_cell_limit_charges_the_keccak_table_as_committed() {
+    // One call's 32 rows fill half a block of 64; the enlarged floor adds the natural-height
+    // table that is built before the final one.
+    for (calls, min_log_height) in [(1, 1), (3, 1), (3, 10)] {
+        let (circuit, public) = chain(calls);
+        let witness = witness(&circuit, &public);
+        let dense = build(&circuit, min_log_height, KeccakCommitment::Dense);
+        let keccak = build(&circuit, min_log_height, KeccakCommitment::Bits)
+            .keccak_table_index()
+            .unwrap();
+        let height = 1usize << dense.log_heights()[keccak];
+        let natural = (calls * 25).next_power_of_two();
+        let temporary = if height > natural { natural } else { 0 };
+        let dense_bound = table_cells(&dense) + WIDTH * temporary;
+        let bits_bound =
+            table_cells(&dense) - WIDTH * height + packed_cells(height) + packed_cells(temporary);
+        assert!(bits_bound < dense_bound);
+
+        for (mode, bound) in [
+            (KeccakCommitment::Dense, dense_bound),
+            (KeccakCommitment::Bits, bits_bound),
+        ] {
+            assert!(
+                with_trace_cells(&circuit, min_log_height, bound, mode).is_ok(),
+                "{mode:?}, calls {calls}"
+            );
+            assert!(
+                refused(
+                    &with_trace_cells(&circuit, min_log_height, bound - 1, mode),
+                    bound,
+                    bound - 1
+                ),
+                "{mode:?}, calls {calls}"
+            );
+        }
+
+        let bits =
+            with_trace_cells(&circuit, min_log_height, bits_bound, KeccakCommitment::Bits).unwrap();
+        assert!(bits.trace_tables(&witness).is_ok());
+        assert!(refused(&bits.traces(&witness), dense_bound, bits_bound));
+        let bits = with_trace_cells(
+            &circuit,
+            min_log_height,
+            dense_bound,
+            KeccakCommitment::Bits,
+        )
+        .unwrap();
+        let traces = bits.traces(&witness).unwrap();
+        let expected = dense.traces(&witness).unwrap();
+        assert_eq!(traces.len(), expected.len());
+        for (trace, expected) in traces.iter().zip(&expected) {
+            assert_eq!(trace.values, expected.values);
+        }
+    }
 }
