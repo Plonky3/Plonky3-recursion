@@ -55,7 +55,7 @@ pub struct NativeBinaryMixedRecursionOptions {
 
 /// Retains the child authority's identity, native verifier graph, product-bus relation, and
 /// matched mixed proving/verification keys for repeatable proving. `S` is the child verifier's
-/// input shape: dense for a dense child, mixed for a child that is itself a mixed proof.
+/// input shape: dense for a dense child authority, mixed for a mixed child authority.
 pub struct PreparedNativeBinaryMixedWhirLayer<Base = F, S = BinaryWhirMultiStarkInputShape<Base>>
 where
     Base: RecursiveBinaryWhirTowerField,
@@ -130,10 +130,10 @@ where
 }
 
 impl PreparedNativeBinaryMixedWhirLayer<F, BinaryMixedWhirMultiStarkInputShape> {
-    /// Builds the full native verifier of a child whose Keccak table is committed as packed
-    /// bits, such as another mixed layer's output, and an output authority that commits the
-    /// output Keccak table as packed bits. All child plans and preprocessing come from
-    /// `authority`, independently of any proof. Native Keccak is required.
+    /// Builds the full native verifier of a child with one table committed as packed bits,
+    /// such as another mixed layer's output, whose Keccak table is, and an output authority
+    /// that commits the output Keccak table as packed bits. All child plans and preprocessing
+    /// come from `authority`, independently of any proof. Native Keccak is required.
     pub fn from_mixed_authority<A: VerifierAir<F, F>>(
         authority: &BinaryNativeMixedWhirAuthority<A>,
         options: NativeBinaryMixedRecursionOptions,
