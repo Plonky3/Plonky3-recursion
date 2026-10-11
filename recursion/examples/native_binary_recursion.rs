@@ -11,40 +11,31 @@
 //!
 //! The defaults (WHIR with packed Keccak tables at log inverse rate 3 and every other table at
 //! rate 1, PCS security level 32 with 24 grinding bits, Merkle cap height 4) keep every layer
-//! within the default limits. Packed layers level off from layer 3 at about 1.18M witnesses and
-//! 109,051,904 initial codeword cells; dense ones from layer 4 at about 983k witnesses and
-//! 335,544,320 cells.
+//! within the default limits. When a layer exceeds one anyway, the error names the flag that
+//! raises it and the value the layer needs.
 //!
-//! Measured on a 14-core Apple M-series machine with 48 GB, another build sometimes running
-//! (fastest observed time of the last layer; maximum resident set and peak memory footprint of
-//! the whole run):
+//! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
+//! last layer; wall time, maximum resident set and peak memory footprint of the whole run):
 //!
-//! | Keccak | --layers | witnesses | codeword cells | last layer | resident | footprint |
-//! |--------|----------|-----------|----------------|------------|----------|-----------|
-//! | packed | 1        | 19,828    | 1,703,936      | 0.8 s      | 0.15 GB  | 0.15 GB   |
-//! | packed | 2        | 894,772   | 109,051,904    | 10.6 s     | 6.1 GB   | 5.8 GB    |
-//! | packed | 3        | 1,175,552 | 109,051,904    | 10.6 s     | 6.5 GB   | 6.0 GB    |
-//! | packed | 4        | 1,175,612 | 109,051,904    | 11.7 s     | 6.6 GB   | 6.1 GB    |
-//! | dense  | 1        | 19,828    | 5,242,880      | 0.7 s      | 0.29 GB  | 0.28 GB   |
-//! | dense  | 2        | 751,391   | 301,989,888    | 12.3 s     | 12.9 GB  | 11.1 GB   |
-//! | dense  | 3        | 961,986   | 335,544,320    | 13.3 s     | 16.7 GB  | 12.4 GB   |
-//! | dense  | 4        | 983,427   | 335,544,320    | 13.6 s     | 18.4 GB  | 12.4 GB   |
+//! | Command                                  | witnesses | codeword cells | last layer | wall   | resident | footprint |
+//! |------------------------------------------|-----------|----------------|------------|--------|----------|-----------|
+//! | `--layers 2`                             | 873,971   | 109,051,904    | 10.7 s     | 12.3 s | 6.1 GB   | 5.8 GB    |
+//! | `--layers 3`                             | 1,154,682 | 109,051,904    | 10.0 s     | 23.1 s | 6.5 GB   | 5.9 GB    |
+//! | `--keccak-commitment dense --layers 3`   | 941,172   | 335,544,320    | 13.0 s     | 27.7 s | 16.7 GB  | 12.4 GB   |
+//! | `--pcs folding --layers 2`               | 1,063,069 | 603,979,776    | 20.0 s     | 21.4 s | 26.6 GB  | 27.8 GB   |
+//! | `--log-inv-rate 2 --layers 2`            | 815,367   | 209,715,200    | 9.8 s      | 11.3 s | 9.2 GB   | 7.8 GB    |
 //!
-//! At PCS security level 100 (`--pcs-security-level 100 --log-inv-rate 2
-//! --max-verifier-rounds 512`, packed rate 3, 24 grinding bits), packed layer 2 takes 33 s with
-//! 1,759,232 witnesses and 369,098,752 codeword cells (20.0 GB resident), and layer 3 34 s with
-//! 2,731,836 witnesses and 436,207,616 cells (20.7 GB resident for the run). A dense layer 2
-//! there needs 2,281,701,376 codeword cells, 36.5 GB of field elements.
+//! Layer 1 takes 0.5 to 1.0 s with 19,596 witnesses (36,317 with `--pcs folding`). The default
+//! codeword-cell limit is 2^29 at `--log-inv-rate 1`, doubled for each further rate bit and for
+//! `--pcs folding`, which multiplies every dense codeword.
 //!
 //! `--pcs folding` takes the same security level and grinding bits. Its coset leaves default to
 //! cap height 1.
 //!
 //! Each layer prints the security report of its output statement. Without
-//! `--security-target`, every output requires four bits of composed security; the defaults
-//! give about 29. The binary-bus term caps the composed security whatever the PCS level: at
-//! level 100 a packed layer 2 composes 85.2 bits and a dense layer 1 94.9, so
-//! `--security-target 100` is refused at these settings. Proofs are non-hiding. Limits count
-//! field cells or graph entries, not bytes.
+//! `--security-target`, every output requires four bits of composed security. The binary-bus
+//! term caps the composed security whatever the PCS level, so a `--security-target` above the
+//! cap is refused. Proofs are non-hiding. Limits count field cells or graph entries, not bytes.
 
 use std::error::Error;
 use std::time::Instant;

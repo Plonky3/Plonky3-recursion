@@ -3,31 +3,25 @@
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_poly_recursion -- --layers 3
 //!
-//! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap
-//! height 4) keep every layer within the default limits. Layer 2 has 1.65M
-//! witnesses, 2,209 Keccak-f calls and 402,653,184 initial codeword cells. The
-//! recursive verifier levels off from layer 3: about 2.15M witnesses, 2,882
-//! Keccak-f calls and 671,088,640 initial codeword cells (5 GiB) per layer.
+//! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap height 4) keep every
+//! layer within the default limits. When a layer exceeds one anyway, the error names the flag
+//! that raises it and the value the layer needs.
 //!
-//! Measured with the defaults on a 14-core Apple M-series machine with 48 GB
-//! (fastest observed time of the last layer; peak memory footprint and maximum
-//! resident set of the whole run):
+//! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
+//! last layer; wall time, maximum resident set and peak memory footprint of the whole run):
 //!
-//! | --layers | last layer | footprint | resident |
-//! |----------|------------|-----------|----------|
-//! | 1        | 0.7 s      | 0.3 GB    | 0.3 GB   |
-//! | 2        | 6.5 s      | 11.5 GB   | 15.3 GB  |
-//! | 3        | 11.3 s     | 20.8 GB   | 25.6 GB  |
-//! | 4        | 11.2 s     | 23.6 GB   | 25.7 GB  |
+//! | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
+//! |----------|-----------|----------------|------------|--------|----------|-----------|
+//! | 2        | 1,650,094 | 402,653,184    | 6.8 s      | 9.5 s  | 15.2 GB  | 14.5 GB   |
+//! | 3        | 2,111,009 | 671,088,640    | 11.0 s     | 20.3 s | 25.5 GB  | 23.3 GB   |
 //!
-//! From layer 3 on, more than 2,730 Keccak-f calls give the Keccak table 2^17
-//! rows, so a layer needs about 293M trace cells; hence the limits of 2^29
-//! trace cells and 2^30 codeword cells, 4 GiB and 8 GiB of Poly64 cells. With
-//! `--cap-height 0 --pow-bits 0`, layer 2 has 2.25M witnesses and needs
-//! 1,207,959,552 codeword cells.
+//! Layer 1 takes 0.55 s with 24,289 witnesses and 6,291,456 codeword cells. From layer 3 on,
+//! more than 2,621 Keccak-f calls (25 trace rows each) give the Keccak table 2^17 rows instead
+//! of 2^16; hence the default limits of 2^29 trace cells and 2^30 codeword cells, 4 GiB and
+//! 8 GiB of Poly64 cells.
 //!
-//! Requests four bits of composed security and uses non-hiding proofs. Limits
-//! count field cells or graph entries, not bytes.
+//! Requests four bits of composed security and uses non-hiding proofs. Limits count field cells
+//! or graph entries, not bytes.
 
 use std::error::Error;
 use std::time::Instant;
