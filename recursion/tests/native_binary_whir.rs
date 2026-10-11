@@ -298,6 +298,43 @@ macro_rules! check {
             wrong[index] += F::ONE;
             assert!(!run(&circuit, &public, &wrong));
         }
+        // Every site binds the first and last sibling of its paths to the cap.
+        // A four-digest tree of odd height under a zero cap pads its top group
+        // with two default digests, the last siblings of each of its paths.
+        let private_index = |limb: &p3_circuit::ExprId| {
+            let row = circuit.expr_to_widx[limb];
+            circuit
+                .private_input_rows
+                .iter()
+                .position(|&private_row| private_row == row)
+                .unwrap()
+        };
+        let whir_shape = p3_whir::transcript::WhirShape::new(&config, protocol.num_openings());
+        assert_eq!(whir_shape.rounds.len(), proof.rounds.len());
+        let site_bits = whir_shape
+            .rounds
+            .iter()
+            .map(|round| round.index_bits)
+            .chain([whir_shape.final_index_bits]);
+        let site_paths = proof
+            .rounds
+            .iter()
+            .map(|round| &round.paths)
+            .chain([&proof.final_paths]);
+        let mut padded_sites = 0;
+        for (bits, paths) in site_bits.zip(site_paths) {
+            let path = &paths[0];
+            if arity == MerkleArity::Four && bits % 2 == 1 && $cap_height == 0 {
+                let default = path.last().unwrap();
+                assert!(default.iter().all(|limb| private[private_index(limb)] == F::ZERO));
+                padded_sites += 1;
+            }
+            for digest in [path.first(), path.last()].into_iter().flatten() {
+                let mut wrong = private.clone();
+                wrong[private_index(&digest[0])] += F::ONE;
+                assert!(!run(&circuit, &public, &wrong));
+            }
+        }
         let other = BinaryWhirVerifier::<$base>::with_limits(
             &config,
             protocol,
@@ -317,7 +354,7 @@ macro_rules! check {
                 .private_native_values(&other.input_shape())
                 .is_err()
         );
-        (circuit, config)
+        (circuit, config, padded_sites)
     }};
 }
 
@@ -364,9 +401,9 @@ fn tower32_whir_keeps_base_rows_narrow_and_challenges_wide() {
 /// is split into checked bytes; the bounds sit about 25% above the former.
 #[test]
 fn native_sixteen_value_rows_authenticate_as_word_leaves() {
-    let (tower128, _) = check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
+    let (tower128, _, _) = check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
     assert!(tower128.witness_count <= 55_000);
-    let (tower32, _) = check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
+    let (tower32, _, _) = check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
     assert!(tower32.witness_count <= 47_000);
 }
 
@@ -376,7 +413,8 @@ fn native_sixteen_value_rows_authenticate_as_word_leaves() {
 /// digests; a one-level cap holds four roots.
 #[test]
 fn native_arity_four_trees_bind_every_query_at_even_and_odd_heights() {
-    check!(F, SuffixProver, protocol(9, 1, true), 0, 2, 2, 8, Four, 4);
+    let (_, _, padded_sites) = check!(F, SuffixProver, protocol(9, 1, true), 0, 2, 2, 8, Four, 4);
+    assert!(padded_sites > 0);
     check!(F, PrefixProver, protocol(9, 1, false), 1, 0, 2, 8, Four, 4);
     check!(
         BinaryField32,
@@ -396,7 +434,7 @@ fn native_arity_four_trees_bind_every_query_at_even_and_odd_heights() {
 /// within the first byte.
 #[test]
 fn native_grinding_beyond_one_sampled_byte_binds_every_witness() {
-    let (_, config) = check!(F, SuffixProver, protocol(9, 1, true), 0, 12, 2, 16);
+    let (_, config, _) = check!(F, SuffixProver, protocol(9, 1, true), 0, 12, 2, 16);
     assert!(config.max_pow_bits() > 8);
 }
 

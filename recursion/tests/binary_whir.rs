@@ -7,7 +7,7 @@ use p3_challenger::FieldChallenger;
 use p3_circuit::ops::{ByteHash, bytes_to_limbs};
 use p3_circuit::{Circuit, CircuitBuilder};
 use p3_commit::MultilinearPcs;
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{PrimeCharacteristicRing, PrimeField32};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::point::Point;
@@ -336,7 +336,50 @@ macro_rules! check {
             );
             last_values = values;
         }
-        (circuit, last_values)
+        // Every site binds the first and last sibling of its paths to the cap.
+        // A four-digest tree of odd height under a zero cap pads its top group
+        // with two default digests, the last siblings of each of its paths.
+        let value_index = |limb: &p3_circuit::ExprId| {
+            let row = circuit.expr_to_widx[limb];
+            circuit
+                .private_input_rows
+                .iter()
+                .position(|&private_row| private_row == row)
+                .unwrap()
+        };
+        let whir_shape = p3_whir::transcript::WhirShape::new(&config, protocol.num_openings());
+        assert_eq!(whir_shape.rounds.len(), proof.rounds.len());
+        let site_bits = whir_shape
+            .rounds
+            .iter()
+            .map(|round| round.index_bits)
+            .chain([whir_shape.final_index_bits]);
+        let site_paths = proof
+            .rounds
+            .iter()
+            .map(|round| &round.paths)
+            .chain([&proof.final_paths]);
+        let mut padded_sites = 0;
+        for (bits, paths) in site_bits.zip(site_paths) {
+            let path = &paths[0];
+            if arity == MerkleArity::Four && bits % 2 == 1 && $cap_height == 0 {
+                let default = path.last().unwrap();
+                assert!(
+                    default
+                        .iter()
+                        .all(|limb| last_values[value_index(limb)] == BabyBear::ZERO)
+                );
+                padded_sites += 1;
+            }
+            for digest in [path.first(), path.last()].into_iter().flatten() {
+                // A flipped low bit keeps the limb a sixteen-bit word.
+                let mut wrong = last_values.clone();
+                let index = value_index(&digest[0]);
+                wrong[index] = BabyBear::from_u32(wrong[index].as_canonical_u32() ^ 1);
+                assert!(!run(&circuit, &wrong));
+            }
+        }
+        (circuit, last_values, padded_sites)
     }};
 }
 
@@ -465,7 +508,7 @@ fn arity_four_trees_match_native_openings_in_prime_field_circuits() {
         Four,
         4
     );
-    check!(
+    let (_, _, padded_sites) = check!(
         BinaryField32,
         blake3,
         ByteHash::Blake3,
@@ -476,6 +519,7 @@ fn arity_four_trees_match_native_openings_in_prime_field_circuits() {
         Four,
         4
     );
+    assert!(padded_sites > 0);
 }
 
 #[test]
@@ -484,7 +528,7 @@ fn full_additive_whir_opening_proves_in_a_prime_field_circuit() {
     use p3_circuit_prover::batch_stark_prover::{
         BatchStarkProver, KeccakF1600AirBuilder, KeccakF1600Preprocessor, KeccakF1600Prover,
     };
-    let (circuit, values) = check!(
+    let (circuit, values, _) = check!(
         BinaryField128,
         keccak,
         ByteHash::Keccak256,
