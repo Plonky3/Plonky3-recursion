@@ -3,7 +3,8 @@
 //! One call consumes 56 raw 16-bit limbs (sixteen block words, eight chaining
 //! value words, the two counter words, the block length and the flags, each as
 //! a low/high limb pair) and produces the 16 limbs of the output chaining
-//! value. The native hash AIR supplied by the native binary circuit backend
+//! value, optionally followed by the same 16 limbs with their two bytes
+//! swapped. The native hash AIR supplied by the native binary circuit backend
 //! range-constrains every input and output limb.
 //!
 //! The BLAKE3 hash of words or bytes runs the standard chunk and tree
@@ -49,6 +50,45 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         &mut self,
         input: &[ExprId],
     ) -> Result<[ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS], CircuitBuilderError> {
+        let outputs = self.push_native_blake3_compress(input, false)?;
+        Ok(outputs
+            .try_into()
+            .expect("requested 16 native BLAKE3 outputs"))
+    }
+
+    /// Compresses one block like [`Self::add_native_blake3_compress`], and
+    /// also returns the output limbs with their two bytes swapped: swapped
+    /// limb `m` has the raw coordinates of output limb `m` with coordinates
+    /// `0..8` and `8..16` exchanged. Both are outputs of the same call. The
+    /// native bus backend derives them from the same output bits of its hash
+    /// AIR, so they are range-constrained like every other output limb.
+    pub fn add_native_blake3_compress_with_swapped_digest(
+        &mut self,
+        input: &[ExprId],
+    ) -> Result<
+        (
+            [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+            [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+        ),
+        CircuitBuilderError,
+    > {
+        let outputs = self.push_native_blake3_compress(input, true)?;
+        let (limbs, swapped) = outputs.split_at(NATIVE_BLAKE3_OUTPUT_LIMBS);
+        Ok((
+            limbs
+                .try_into()
+                .expect("requested 16 native BLAKE3 outputs"),
+            swapped
+                .try_into()
+                .expect("requested 16 swapped digest limbs"),
+        ))
+    }
+
+    fn push_native_blake3_compress(
+        &mut self,
+        input: &[ExprId],
+        swapped_digest: bool,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         check_field::<F>()?;
         self.check_construction_limits()?;
         let op = NpoTypeId::native_blake3_compress();
@@ -60,11 +100,15 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
                 got: input.len(),
             });
         }
+        let mut names = vec![Some("native_blake3_out"); NATIVE_BLAKE3_OUTPUT_LIMBS];
+        if swapped_digest {
+            names.extend([Some("native_blake3_swapped_digest"); NATIVE_BLAKE3_OUTPUT_LIMBS]);
+        }
         let outputs = self
             .push_non_primitive_op_with_outputs(
                 op,
                 input.iter().map(|&limb| vec![limb]).collect(),
-                vec![Some("native_blake3_out"); NATIVE_BLAKE3_OUTPUT_LIMBS],
+                names,
                 None,
                 "native_blake3_compress",
             )
@@ -73,9 +117,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             .collect::<Option<Vec<_>>>()
             .ok_or(CircuitBuilderError::MissingOutput)?;
         self.check_construction_limits()?;
-        Ok(outputs
-            .try_into()
-            .expect("requested 16 native BLAKE3 outputs"))
+        Ok(outputs)
     }
 
     /// BLAKE3 of low-first raw sixteen-coordinate words.
@@ -93,6 +135,40 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         &mut self,
         words: &[ExprId],
     ) -> Result<[ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS], CircuitBuilderError> {
+        let root = self.native_blake3_words_root(words, false)?;
+        Ok(self
+            .native_blake3_wire(&cv_limbs(root))?
+            .try_into()
+            .expect("a chaining value has 16 limbs"))
+    }
+
+    /// [`Self::native_blake3_words`] with each digest limb also returned
+    /// with its two bytes swapped, as in
+    /// [`Self::add_native_blake3_compress_with_swapped_digest`]. The swapped
+    /// limbs are outputs of the root compression call, or circuit constants
+    /// when the root is compressed while building.
+    pub fn native_blake3_words_with_swapped_digest(
+        &mut self,
+        words: &[ExprId],
+    ) -> Result<
+        (
+            [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+            [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+        ),
+        CircuitBuilderError,
+    > {
+        let root = self.native_blake3_words_root(words, true)?;
+        self.native_blake3_swapped_digest(root)
+    }
+
+    /// The root chaining value of [`Self::native_blake3_words`]. With
+    /// `swapped_digest`, a root compression call also outputs its swapped
+    /// digest limbs.
+    fn native_blake3_words_root(
+        &mut self,
+        words: &[ExprId],
+        swapped_digest: bool,
+    ) -> Result<Cv, CircuitBuilderError> {
         check_field::<F>()?;
         self.check_construction_limits()?;
         self.ensure_op_enabled(&NpoTypeId::native_blake3_compress())?;
@@ -103,11 +179,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
                     .map_or(Limb::Wired(word), Limb::Raw)
             })
             .collect();
-        let cv = self.native_blake3_message(&limbs, 2 * words.len())?;
-        Ok(self
-            .native_blake3_wire(&cv_limbs(cv))?
-            .try_into()
-            .expect("a chaining value has 16 limbs"))
+        self.native_blake3_message(&limbs, 2 * words.len(), swapped_digest)
     }
 
     /// BLAKE3 of any byte length, including odd lengths.
@@ -124,27 +196,9 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         &mut self,
         message: &[ExprId],
     ) -> Result<[ExprId; 32], CircuitBuilderError> {
-        check_field::<F>()?;
-        self.check_construction_limits()?;
-        self.ensure_op_enabled(&NpoTypeId::native_blake3_compress())?;
-        let mut limbs = Vec::with_capacity(message.len().div_ceil(2));
-        for pair in message.chunks(2) {
-            let low = pair[0];
-            let high = pair.get(1).copied().unwrap_or(ExprId::ZERO);
-            let limb = match (self.constant_raw(low, 8), self.constant_raw(high, 8)) {
-                (Some(low), Some(high)) => Limb::Raw(low | high << 8),
-                _ => {
-                    let mut bits = self.binary_decompose_coordinates(low, 8)?;
-                    bits.extend(self.binary_decompose_coordinates(high, 8)?);
-                    Limb::Wired(self.binary_recompose_coordinates(&bits)?)
-                }
-            };
-            limbs.push(limb);
-            self.check_construction_limits()?;
-        }
-        let cv = self.native_blake3_message(&limbs, message.len())?;
+        let root = self.native_blake3_bytes_root(message, false)?;
         let mut digest = Vec::with_capacity(32);
-        for limb in cv_limbs(cv) {
+        for limb in cv_limbs(root) {
             match limb {
                 Limb::Raw(raw) => {
                     for byte in raw.to_le_bytes() {
@@ -166,13 +220,96 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             .expect("sixteen low-first limbs produce 32 bytes"))
     }
 
+    /// The BLAKE3 digest of [`Self::native_blake3_bytes`] as sixteen
+    /// low-first limbs, each also returned with its two bytes swapped, as in
+    /// [`Self::native_blake3_words_with_swapped_digest`]. The digest is not
+    /// split into bytes.
+    pub fn native_blake3_bytes_with_swapped_digest(
+        &mut self,
+        message: &[ExprId],
+    ) -> Result<
+        (
+            [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+            [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+        ),
+        CircuitBuilderError,
+    > {
+        let root = self.native_blake3_bytes_root(message, true)?;
+        self.native_blake3_swapped_digest(root)
+    }
+
+    /// The root chaining value of [`Self::native_blake3_bytes`]. With
+    /// `swapped_digest`, a root compression call also outputs its swapped
+    /// digest limbs.
+    fn native_blake3_bytes_root(
+        &mut self,
+        message: &[ExprId],
+        swapped_digest: bool,
+    ) -> Result<Cv, CircuitBuilderError> {
+        check_field::<F>()?;
+        self.check_construction_limits()?;
+        self.ensure_op_enabled(&NpoTypeId::native_blake3_compress())?;
+        let mut limbs = Vec::with_capacity(message.len().div_ceil(2));
+        for pair in message.chunks(2) {
+            let low = pair[0];
+            let high = pair.get(1).copied().unwrap_or(ExprId::ZERO);
+            let limb = match (self.constant_raw(low, 8), self.constant_raw(high, 8)) {
+                (Some(low), Some(high)) => Limb::Raw(low | high << 8),
+                _ => {
+                    let mut bits = self.binary_decompose_coordinates(low, 8)?;
+                    bits.extend(self.binary_decompose_coordinates(high, 8)?);
+                    Limb::Wired(self.binary_recompose_coordinates(&bits)?)
+                }
+            };
+            limbs.push(limb);
+            self.check_construction_limits()?;
+        }
+        self.native_blake3_message(&limbs, message.len(), swapped_digest)
+    }
+
+    /// The digest limbs of a root chaining value and their byte-swapped
+    /// copies: the outputs of a root compression call that outputs them, or
+    /// constants for a root compressed while building.
+    fn native_blake3_swapped_digest(
+        &mut self,
+        root: Cv,
+    ) -> Result<
+        (
+            [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+            [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+        ),
+        CircuitBuilderError,
+    > {
+        let digest = self
+            .native_blake3_wire(&cv_limbs(root))?
+            .try_into()
+            .expect("a chaining value has 16 limbs");
+        let swapped = match root {
+            Cv::Known(words) => {
+                let swapped: Vec<_> = words_to_limbs(&words)
+                    .into_iter()
+                    .map(|raw| Limb::Raw(raw.swap_bytes()))
+                    .collect();
+                self.native_blake3_wire(&swapped)?
+                    .try_into()
+                    .expect("a chaining value has 16 limbs")
+            }
+            Cv::Wired(_, swapped) => {
+                swapped.expect("a root call asked for its swapped digest outputs them")
+            }
+        };
+        Ok((digest, swapped))
+    }
+
     /// The root chaining value of BLAKE3 over `message` limbs that hold
     /// `message_bytes` bytes. The message is split into 1024-byte chunks, and
-    /// the empty message is one empty chunk.
+    /// the empty message is one empty chunk. With `swapped_digest`, a root
+    /// compression call also outputs its swapped digest limbs.
     fn native_blake3_message(
         &mut self,
         message: &[Limb],
         message_bytes: usize,
+        swapped_digest: bool,
     ) -> Result<Cv, CircuitBuilderError> {
         let chunks: Vec<&[Limb]> = if message.is_empty() {
             vec![&[]]
@@ -180,32 +317,39 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             message.chunks(CHUNK_LIMBS).collect()
         };
         let last_chunk_bytes = message_bytes - (chunks.len() - 1) * BLAKE3_CHUNK_BYTES;
-        self.native_blake3_subtree(&chunks, last_chunk_bytes, 0, true)
+        self.native_blake3_subtree(&chunks, last_chunk_bytes, 0, true, swapped_digest)
     }
 
     /// The chaining value of the subtree over `chunks`, whose first chunk has
     /// index `first`: a single chunk's own value, or the `PARENT` compression,
     /// keyed by the IV, of the left subtree (the largest power of two of
     /// chunks strictly fewer than all) and the right subtree. The node at the
-    /// top also carries `ROOT`.
+    /// top also carries `ROOT`; `swapped_digest` is passed to every block.
     fn native_blake3_subtree(
         &mut self,
         chunks: &[&[Limb]],
         last_chunk_bytes: usize,
         first: u64,
         root: bool,
+        swapped_digest: bool,
     ) -> Result<Cv, CircuitBuilderError> {
         if let [chunk] = chunks {
-            return self.native_blake3_chunk(chunk, last_chunk_bytes, first, root);
+            return self.native_blake3_chunk(chunk, last_chunk_bytes, first, root, swapped_digest);
         }
         let left_len = 1 << (chunks.len() - 1).ilog2();
-        let left =
-            self.native_blake3_subtree(&chunks[..left_len], BLAKE3_CHUNK_BYTES, first, false)?;
+        let left = self.native_blake3_subtree(
+            &chunks[..left_len],
+            BLAKE3_CHUNK_BYTES,
+            first,
+            false,
+            swapped_digest,
+        )?;
         let right = self.native_blake3_subtree(
             &chunks[left_len..],
             last_chunk_bytes,
             first + left_len as u64,
             false,
+            swapped_digest,
         )?;
         let mut block = cv_limbs(left).to_vec();
         block.extend(cv_limbs(right));
@@ -220,19 +364,22 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             0,
             BLAKE3_BLOCK_BYTES as u32,
             flags,
+            swapped_digest,
         )
     }
 
     /// The chaining value of chunk `index`: its 64-byte blocks compressed in
     /// order from the IV, with the chunk index as counter, the first with
     /// `CHUNK_START` and the last with `CHUNK_END` (and `ROOT` if `root`) and
-    /// its true length. An empty chunk is one empty block.
+    /// its true length. An empty chunk is one empty block. `swapped_digest`
+    /// is passed to every block.
     fn native_blake3_chunk(
         &mut self,
         chunk: &[Limb],
         chunk_bytes: usize,
         index: u64,
         root: bool,
+        swapped_digest: bool,
     ) -> Result<Cv, CircuitBuilderError> {
         let blocks: Vec<&[Limb]> = if chunk.is_empty() {
             vec![&[]]
@@ -257,7 +404,14 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             } else {
                 BLAKE3_BLOCK_BYTES
             };
-            cv = self.native_blake3_block(block, cv, index, block_len as u32, flags)?;
+            cv = self.native_blake3_block(
+                block,
+                cv,
+                index,
+                block_len as u32,
+                flags,
+                swapped_digest,
+            )?;
         }
         Ok(cv)
     }
@@ -266,7 +420,8 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
     /// value with raw block limbs is compressed while building; otherwise the
     /// block is a native compression call, with the raw limbs, a known
     /// chaining value, the counter, the block length and the flags as
-    /// constants.
+    /// constants. With `swapped_digest`, a call with the `ROOT` flag also
+    /// outputs its swapped digest limbs.
     fn native_blake3_block(
         &mut self,
         block: &[Limb],
@@ -274,6 +429,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         counter: u64,
         block_len: u32,
         flags: u32,
+        swapped_digest: bool,
     ) -> Result<Cv, CircuitBuilderError> {
         if let Cv::Known(cv) = cv {
             let raw = block
@@ -302,7 +458,12 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
                 .map(Limb::Raw),
         );
         let input = self.native_blake3_wire(&input)?;
-        Ok(Cv::Wired(self.add_native_blake3_compress(&input)?))
+        if swapped_digest && flags & blake3_flags::ROOT != 0 {
+            let (limbs, swapped) = self.add_native_blake3_compress_with_swapped_digest(&input)?;
+            Ok(Cv::Wired(limbs, Some(swapped)))
+        } else {
+            Ok(Cv::Wired(self.add_native_blake3_compress(&input)?, None))
+        }
     }
 
     /// Circuit values of `limbs`, with raw limbs as constants.
@@ -323,6 +484,11 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
 const BLOCK_LIMBS: usize = BLAKE3_BLOCK_BYTES / 2;
 const CHUNK_LIMBS: usize = BLAKE3_CHUNK_BYTES / 2;
 
+/// A call outputs the chaining value, optionally followed by its swapped digest limbs.
+const fn output_count_is_valid(count: usize) -> bool {
+    count == NATIVE_BLAKE3_OUTPUT_LIMBS || count == 2 * NATIVE_BLAKE3_OUTPUT_LIMBS
+}
+
 /// A sixteen-coordinate limb: raw coordinates known while building, or a
 /// circuit value. Raw limbs become circuit constants only where a native
 /// compression call reads them.
@@ -333,11 +499,15 @@ enum Limb {
 }
 
 /// A BLAKE3 chaining value: words known while building, or the output limbs
-/// of a native compression call.
+/// of a native compression call, with its swapped digest limbs when the call
+/// outputs them.
 #[derive(Clone, Copy)]
 enum Cv {
     Known([u32; 8]),
-    Wired([ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS]),
+    Wired(
+        [ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS],
+        Option<[ExprId; NATIVE_BLAKE3_OUTPUT_LIMBS]>,
+    ),
 }
 
 /// The 16 low-first limbs of a chaining value.
@@ -347,7 +517,7 @@ fn cv_limbs(cv: Cv) -> [Limb; NATIVE_BLAKE3_OUTPUT_LIMBS] {
             let raw = words_to_limbs(&words);
             core::array::from_fn(|i| Limb::Raw(raw[i]))
         }
-        Cv::Wired(limbs) => limbs.map(Limb::Wired),
+        Cv::Wired(limbs, _) => limbs.map(Limb::Wired),
     }
 }
 
@@ -402,7 +572,7 @@ impl<F: BinaryCoordinateField> NpoCircuitPlugin<F> for NativeBlake3Plugin {
         }
         let mut ordered = output_exprs.to_vec();
         ordered.sort_unstable_by_key(|&(index, _)| index);
-        if ordered.len() != NATIVE_BLAKE3_OUTPUT_LIMBS
+        if !output_count_is_valid(ordered.len())
             || ordered
                 .iter()
                 .enumerate()
@@ -410,7 +580,7 @@ impl<F: BinaryCoordinateField> NpoCircuitPlugin<F> for NativeBlake3Plugin {
         {
             return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
                 op_id: data.op_id,
-                details: "native BLAKE3 outputs must be indexed 0..16 without gaps".into(),
+                details: "native BLAKE3 outputs must be indexed 0..16 or 0..32 without gaps".into(),
             });
         }
         let inputs = data
@@ -462,11 +632,11 @@ impl<F: BinaryCoordinateField> NonPrimitiveExecutor<F> for NativeBlake3Executor 
         if inputs.len() != 1
             || inputs[0].len() != BLAKE3_INPUT_LIMBS
             || outputs.len() != 1
-            || outputs[0].len() != NATIVE_BLAKE3_OUTPUT_LIMBS
+            || !output_count_is_valid(outputs[0].len())
         {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                 op: self.op.clone(),
-                expected: "one input group of 56 and one output group of 16 raw limbs".into(),
+                expected: "one input group of 56 raw limbs and an output group of 16 or 32".into(),
                 got: inputs.first().map_or(0, Vec::len),
             });
         }
@@ -485,8 +655,9 @@ impl<F: BinaryCoordinateField> NonPrimitiveExecutor<F> for NativeBlake3Executor 
         let words: [u32; BLAKE3_INPUT_WORDS] = limbs_to_words(&limbs)
             .try_into()
             .expect("56 limbs form 28 words");
-        let output = blake3_compress(&words);
-        for (raw, &id) in words_to_limbs(&output[..8]).into_iter().zip(&outputs[0]) {
+        let output = words_to_limbs(&blake3_compress(&words)[..8]);
+        let swapped: Vec<_> = output.iter().map(|raw| raw.swap_bytes()).collect();
+        for (raw, &id) in output.into_iter().chain(swapped).zip(&outputs[0]) {
             ctx.set_witness(
                 id,
                 F::from_raw_coordinates(raw.into()).expect("checked native limb width"),

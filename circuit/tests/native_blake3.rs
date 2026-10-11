@@ -321,3 +321,92 @@ fn hashing_requires_the_enabled_operation() {
         before.expression_nodes
     );
 }
+
+/// Native BLAKE3 calls whose outputs include the swapped digest limbs.
+fn swapped_digest_calls<F: BinaryCoordinateField>(circuit: &Circuit<F>) -> usize {
+    circuit
+        .ops
+        .iter()
+        .filter(|op| {
+            matches!(op, Op::NonPrimitiveOpWithExecutor { executor, outputs, .. }
+                if executor.op_type() == &NpoTypeId::native_blake3_compress()
+                    && outputs[0].len() == 32)
+        })
+        .count()
+}
+
+/// The digest limbs followed by the same limbs with their two bytes swapped.
+fn limbs_and_swapped(digest: &[u8; 32]) -> Vec<u16> {
+    let limbs = bytes_to_limbs(digest);
+    limbs
+        .iter()
+        .copied()
+        .chain(limbs.iter().map(|limb| limb.swap_bytes()))
+        .collect()
+}
+
+/// The swapped-digest hashes hash like the plain ones, with the same calls, and also return
+/// each digest limb with its bytes swapped. Only the root call exposes them; a message whose
+/// root is compressed while building has constant swapped limbs.
+fn swapped_digest_hashes<F: BinaryCoordinateField>() {
+    // One block, a chunk of two blocks, a tree of three chunks, and those with constant
+    // prefixes: a known first chunk under a wired parent root, a known first block under a
+    // wired last block, and a fully constant message.
+    for (len, constant) in [
+        (0, 0),
+        (1, 0),
+        (65, 0),
+        (2049, 0),
+        (2049, 1024),
+        (65, 64),
+        (100, 100),
+    ] {
+        let message = bytes_message(len);
+        let is_constant = |i: usize| i < constant;
+        let circuit = hash_circuit::<F>(
+            &message
+                .iter()
+                .map(|&byte| u16::from(byte))
+                .collect::<Vec<_>>(),
+            is_constant,
+            &limbs_and_swapped(&Blake3.hash_slice(&message)),
+            |builder, bytes| {
+                let (limbs, swapped) = builder
+                    .native_blake3_bytes_with_swapped_digest(bytes)
+                    .unwrap();
+                [limbs, swapped].concat()
+            },
+        );
+        let calls = byte_hash_calls::<F>(&message, is_constant);
+        assert_eq!(blake3_calls(&circuit), calls, "{len} bytes");
+        assert_eq!(swapped_digest_calls(&circuit), calls.min(1), "{len} bytes");
+    }
+    for (len, constant) in [(0, 0), (1, 0), (32, 0), (513, 0), (513, 512), (40, 40)] {
+        let words: Vec<u16> = (0..len).map(|i| (i * 3127 + 179) as u16).collect();
+        let digest = Blake3.hash_iter(words.iter().flat_map(|word| word.to_le_bytes()));
+        let is_constant = |i: usize| i < constant;
+        let circuit = hash_circuit::<F>(
+            &words,
+            is_constant,
+            &limbs_and_swapped(&digest),
+            |builder, words| {
+                let (limbs, swapped) = builder
+                    .native_blake3_words_with_swapped_digest(words)
+                    .unwrap();
+                [limbs, swapped].concat()
+            },
+        );
+        let plain = hash_circuit::<F>(&words, is_constant, &bytes_to_limbs(&digest), |b, w| {
+            b.native_blake3_words(w).unwrap().to_vec()
+        });
+        let calls = blake3_calls(&plain);
+        assert_eq!(blake3_calls(&circuit), calls, "{len} words");
+        assert_eq!(swapped_digest_calls(&circuit), calls.min(1), "{len} words");
+    }
+}
+
+#[test]
+fn native_hashes_return_the_byte_swapped_digest_limbs() {
+    swapped_digest_hashes::<BinaryField128>();
+    swapped_digest_hashes::<Poly64>();
+}

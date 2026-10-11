@@ -74,6 +74,44 @@ fn chaining_value_matches_the_reference_compression_in_both_bases() {
     matches_reference::<Poly64>();
 }
 
+/// A call that also outputs its swapped digest limbs gives the chaining value's limbs and then
+/// the same limbs with their two bytes swapped.
+fn swapped_digest_outputs<F: BinaryCoordinateField>() {
+    let mut builder = CircuitBuilder::<F>::new();
+    builder.enable_native_blake3_compress().unwrap();
+    let inputs: Vec<ExprId> = (0..BLAKE3_INPUT_LIMBS)
+        .map(|_| builder.public_input())
+        .collect();
+    let expected = builder.alloc_public_input_array::<32>("chaining value and swapped limbs");
+    let (limbs, swapped) = builder
+        .add_native_blake3_compress_with_swapped_digest(&inputs)
+        .unwrap();
+    for (actual, expected) in limbs.into_iter().chain(swapped).zip(expected) {
+        builder.connect(actual, expected);
+    }
+    let circuit = builder.build().unwrap();
+    for seed in 0..4 {
+        let input = pseudo_random_input(seed);
+        let output = words_to_limbs(&blake3_compress(&input)[..8]);
+        let swapped: Vec<u16> = output.iter().map(|limb| limb.swap_bytes()).collect();
+        let public: Vec<F> = raw(&words_to_limbs(&input))
+            .into_iter()
+            .chain(raw(&output))
+            .chain(raw(&swapped))
+            .collect();
+        run(&circuit, &public).unwrap();
+        let mut wrong = public;
+        *wrong.last_mut().unwrap() += F::ONE;
+        assert!(run(&circuit, &wrong).is_err());
+    }
+}
+
+#[test]
+fn swapped_digest_outputs_follow_the_chaining_value_in_both_bases() {
+    swapped_digest_outputs::<BinaryField128>();
+    swapped_digest_outputs::<Poly64>();
+}
+
 fn single_block_input(message: &[u8]) -> [u32; BLAKE3_INPUT_WORDS] {
     let mut block = [0u8; 64];
     block[..message.len()].copy_from_slice(message);
@@ -135,6 +173,13 @@ fn wrong_arity_is_rejected_before_any_state_changes() {
     for len in [BLAKE3_INPUT_LIMBS - 1, BLAKE3_INPUT_LIMBS + 1] {
         let err = builder
             .add_native_blake3_compress(&inputs[..len])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            CircuitBuilderError::NonPrimitiveOpArity { .. }
+        ));
+        let err = builder
+            .add_native_blake3_compress_with_swapped_digest(&inputs[..len])
             .unwrap_err();
         assert!(matches!(
             err,
