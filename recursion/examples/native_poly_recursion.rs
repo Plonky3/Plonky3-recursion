@@ -4,9 +4,9 @@
 //!     --example native_poly_recursion -- --layers 3
 //!
 //! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap
-//! height 4) keep every layer within the default limits. Layer 2 has 1.67M
-//! witnesses, 2,360 Keccak-f calls and 402,653,184 initial codeword cells. The
-//! recursive verifier levels off from layer 3: about 2.17M witnesses, 3,033
+//! height 4) keep every layer within the default limits. Layer 2 has 1.65M
+//! witnesses, 2,209 Keccak-f calls and 402,653,184 initial codeword cells. The
+//! recursive verifier levels off from layer 3: about 2.15M witnesses, 2,882
 //! Keccak-f calls and 671,088,640 initial codeword cells (5 GiB) per layer.
 //!
 //! Measured with the defaults on a 14-core Apple M-series machine with 48 GB
