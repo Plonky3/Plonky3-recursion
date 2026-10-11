@@ -83,6 +83,10 @@ impl Native {
         self.b.construction_usage().unwrap().expression_nodes
     }
 
+    fn connects(&self) -> usize {
+        self.b.construction_usage().unwrap().pending_connects
+    }
+
     fn build(self) -> (Circuit<F>, Vec<F>, Vec<F>) {
         (self.b.build().unwrap(), self.public, self.private)
     }
@@ -426,8 +430,13 @@ fn closing_weight_matches_released_and_prime_weights() {
 
 /// Node counts at the native recursion fixed point: 21 high coordinates, ten
 /// kept row variables. Bounds are 1.2 times the measured counts.
+///
+/// Column readings are sound only because every row's bits are checked: each
+/// bit is connected to its Boolean check and the row to its recomposition. A
+/// tensor's first column therefore adds at least 129 connections per row.
 #[test]
 fn node_counts_at_the_native_fixed_point() {
+    const CHECKED_ROW_CONNECTS: usize = 128 + 1;
     let mut sampler = Sampler(0x40de);
     let mut n = Native::new();
     let mut tensor = n.tensor(&sampler.fields(128));
@@ -439,13 +448,15 @@ fn node_counts_at_the_native_fixed_point() {
     let batch = n.inputs(&sampler.fields(ABSORBED));
     let alpha = n.input(sampler.field());
 
-    let start = n.nodes();
+    let (start, start_connects) = (n.nodes(), n.connects());
     tensor.evaluate_columns(&mut n.b, &low).unwrap();
     let columns_and_current = n.nodes() - start;
-    let start = n.nodes();
+    let column_connects = n.connects() - start_connects;
+    let (start, start_connects) = (n.nodes(), n.connects());
     carry.column(&mut n.b, 0).unwrap();
     last.column(&mut n.b, 127).unwrap();
     let carry_and_last = n.nodes() - start;
+    let carry_and_last_connects = n.connects() - start_connects;
     let start = n.nodes();
     tensor
         .successor_reading(&mut n.b, &low, &mut carry, &mut last)
@@ -457,12 +468,15 @@ fn node_counts_at_the_native_fixed_point() {
     println!(
         "native tensor nodes: columns + current reading {columns_and_current}, \
          successor reading {successor}, carry and last columns {carry_and_last}, \
-         closing weight (high 21, kept 10) {closing}"
+         closing weight (high 21, kept 10) {closing}; connections: columns \
+         {column_connects}, carry and last columns {carry_and_last_connects}"
     );
     assert!(columns_and_current <= 79_102);
     assert!(successor <= 306);
     assert!(carry_and_last <= 118_577);
     assert!(closing <= 48_879);
+    assert!(column_connects >= 128 * CHECKED_ROW_CONNECTS);
+    assert!(carry_and_last_connects >= 2 * 128 * CHECKED_ROW_CONNECTS);
 }
 
 #[test]
