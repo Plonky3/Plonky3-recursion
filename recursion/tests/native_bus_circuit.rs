@@ -397,9 +397,9 @@ fn keccak_input_cell<F: BinaryCoordinateField>(
 /// a gate output whose `out` is the previous call's output. A word with a
 /// seventeenth coordinate makes that lane wide: the fanout, gate and bridge
 /// rows accept it, the hash bus does not, and lifting the Keccak lane instead
-/// leaves a state cell outside {0, 1}.
-#[test]
-fn native_keccak_lanes_range_check_words_in_both_blocks() {
+/// leaves a state cell outside {0, 1}. `hash` binds the Keccak digest of
+/// 70 private words to the 16 public digest words.
+fn reject_wide_message_words(hash: impl FnOnce(&mut CircuitBuilder<F>, &[ExprId], &[ExprId])) {
     const WORDS: usize = 70;
     let words: Vec<u16> = (0..WORDS as u16)
         .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
@@ -408,15 +408,11 @@ fn native_keccak_lanes_range_check_words_in_both_blocks() {
     let hashed = Keccak256Hash.hash_iter(bytes.iter().copied());
     let encode = |word: u16| F::from_raw_coordinates(word.into()).unwrap();
 
-    // The host word hash that absorbs observed transcript words.
     let mut b = CircuitBuilder::<F>::new();
     b.enable_native_keccak_f1600().unwrap();
     let expected = b.alloc_public_input_array::<16>("digest");
     let message = b.alloc_private_inputs(WORDS, "message words");
-    let digest = NativeBinaryEncoding::hash_words(&mut b, ByteHash::Keccak256, &message).unwrap();
-    for (&limb, &expected) in digest.iter().zip(&expected) {
-        b.connect(limb, expected);
-    }
+    hash(&mut b, &message, &expected);
     let circuit = b.build().unwrap();
     let statement: Vec<F> = bytes_to_limbs(&hashed).into_iter().map(encode).collect();
     let private: Vec<F> = words.iter().map(|&word| encode(word)).collect();
@@ -512,6 +508,34 @@ fn native_keccak_lanes_range_check_words_in_both_blocks() {
         assert!(local.is_err(), "the lifted lane leaves a non-Boolean cell");
         rejects(traces);
     }
+}
+
+/// The host word hash that absorbs observed transcript words.
+#[test]
+fn native_keccak_lanes_range_check_words_in_both_blocks() {
+    reject_wide_message_words(|b, message, expected| {
+        let digest = NativeBinaryEncoding::hash_words(b, ByteHash::Keccak256, message).unwrap();
+        for (&limb, &expected) in digest.iter().zip(expected) {
+            b.connect(limb, expected);
+        }
+    });
+}
+
+/// The subtree gadget that hashes grouped coset leaves: one leaf of a
+/// one-row tree, whose digest is the only cap root.
+#[test]
+fn native_keccak_lanes_range_check_subtree_leaf_words_in_both_blocks() {
+    reject_wide_message_words(|b, message, expected| {
+        b.verify_byte_hash_mmcs_subtree_words_with_host::<NativeBinaryEncoding>(
+            ByteHash::Keccak256,
+            &[message.to_vec()],
+            1,
+            &[],
+            &[],
+            &[expected.to_vec()],
+        )
+        .unwrap();
+    });
 }
 
 /// A native WHIR leaf splits each opened value into `count` hinted words
