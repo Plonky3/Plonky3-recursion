@@ -48,6 +48,8 @@ mod native_poly_fraction;
 mod native_poly_product;
 #[path = "../native_poly_recursive_verifier.rs"]
 mod native_poly_recursive_verifier;
+#[path = "../native_poly_second_layer.rs"]
+mod native_poly_second_layer;
 #[path = "../native_poly_sumcheck.rs"]
 mod native_poly_sumcheck;
 #[path = "../native_poly_whir.rs"]
