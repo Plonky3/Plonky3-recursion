@@ -116,7 +116,8 @@ struct Args {
     /// `--pcs whir` and `dense` with `--pcs folding`, which supports only `dense`.
     #[arg(long, value_enum)]
     keccak_commitment: Option<KeccakCommitment>,
-    /// Log inverse rate of the packed Keccak commitment.
+    /// Log inverse rate of the packed Keccak commitment; ignored unless the Keccak commitment
+    /// is packed.
     #[arg(long, default_value_t = 3)]
     packed_log_inv_rate: usize,
     /// Log folding factor of the recursive output PCS (both WHIR and folding).
