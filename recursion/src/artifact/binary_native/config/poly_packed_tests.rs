@@ -151,28 +151,32 @@ fn point(log_height: usize, seed: u64) -> Point<E> {
     Point::new((0..log_height).map(|_| rng.random()).collect())
 }
 
-/// Multilinear evaluation of the bit column `column`, `shift` rows ahead, at `point`; the last row reads itself. Row bit `i` is the `i`-th point coordinate from the last.
-fn column_value(packed: &Packed, point: &Point<E>, column: usize, shift: usize) -> E {
-    let height = 1usize << packed.log_height;
-    (0..height)
-        .filter_map(|row| {
-            let source = (row + shift).min(height - 1);
-            let set = (packed.words[(source / 64) * NUM_KECCAK_BINARY_COLS + column]
-                >> (source % 64))
-                & 1
-                == 1;
-            set.then(|| {
-                point
-                    .as_slice()
-                    .iter()
-                    .rev()
-                    .enumerate()
-                    .fold(E::ONE, |weight, (i, &x)| {
-                        weight * if (row >> i) & 1 == 1 { x } else { E::ONE + x }
-                    })
-            })
+/// The equality weight of every row at `point`. Row bit `i` is the `i`-th point coordinate from
+/// the last.
+fn row_weights(point: &Point<E>) -> Vec<E> {
+    point
+        .as_slice()
+        .iter()
+        .rev()
+        .fold(vec![E::ONE], |weights, &x| {
+            // The rows below take the new bit clear, the rows above take it set.
+            let clear = weights.iter().map(|&weight| weight * (E::ONE + x));
+            let set = weights.iter().map(|&weight| weight * x);
+            clear.chain(set).collect()
         })
-        .fold(E::ZERO, |sum, term| sum + term)
+}
+
+/// Multilinear evaluation of the bit column `column`, `shift` rows ahead, under the row weights
+/// of a point; the last row reads itself.
+fn column_value(packed: &Packed, weights: &[E], column: usize, shift: usize) -> E {
+    let height = weights.len();
+    (0..height)
+        .filter(|&row| {
+            let source = (row + shift).min(height - 1);
+            (packed.words[(source / 64) * NUM_KECCAK_BINARY_COLS + column] >> (source % 64)) & 1
+                == 1
+        })
+        .fold(E::ZERO, |sum, row| sum + weights[row])
 }
 
 fn open(
@@ -217,15 +221,16 @@ fn poly_packed_keccak_opens_and_verifies() {
             (current.len(), next.len()),
             (NUM_KECCAK_BINARY_COLS, NUM_KECCAK_BINARY_COLS)
         );
+        let weights = row_weights(&point);
         for column in 0..NUM_KECCAK_BINARY_COLS {
             assert_eq!(
                 current[column],
-                column_value(&packed, &point, column, 0),
+                column_value(&packed, &weights, column, 0),
                 "column {column}"
             );
             assert_eq!(
                 next[column],
-                column_value(&packed, &point, column, 1),
+                column_value(&packed, &weights, column, 1),
                 "column {column}"
             );
         }
