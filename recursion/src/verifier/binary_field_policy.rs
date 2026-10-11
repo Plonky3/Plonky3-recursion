@@ -12,7 +12,10 @@ use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::{ExtensionField, Field};
 
 use crate::BinaryTower128Challenger;
-use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
+use crate::pcs::binary::{
+    BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan, RecursiveBinaryChallengeField,
+    RecursiveBinaryTowerField,
+};
 use crate::verifier::VerificationError;
 
 mod whir;
@@ -433,10 +436,12 @@ pub(crate) trait BinaryTowerPolicy<CF: Field + Eq + Hash>: BinaryProtocolPolicy<
         index_bits: &[ExprId],
         num_variables: usize,
     ) -> Result<alloc::vec::Vec<Self::ChallengeTarget>, CircuitBuilderError>;
-    fn from_checked_bits(
+    /// Draws the plan's nonzero challenges and the continuation after them.
+    fn sample_nonzero<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
-        value: &BinaryTower128Target,
-    ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
+        plan: &BinaryNonzeroChallengePlan<Self::Challenge>,
+        ch: BinaryTower128Challenger,
+    ) -> Result<BinaryNonzeroChallengeOutput<Self::ChallengeTarget>, VerificationError>;
 }
 fn check_word_width(width: usize) -> Result<(), VerificationError> {
     if width > 128 || !width.is_multiple_of(8) {
@@ -483,12 +488,16 @@ where
     ) -> Result<alloc::vec::Vec<BinaryTower128Target>, CircuitBuilderError> {
         crate::pcs::binary::binary_whir_query_point::<F, CF>(b, index_bits, num_variables)
     }
-    fn from_checked_bits(
+    fn sample_nonzero<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
-        value: &BinaryTower128Target,
-    ) -> Result<BinaryTower128Target, CircuitBuilderError> {
-        Self::constrain_challenge(b, value);
-        Ok(value.clone())
+        plan: &BinaryNonzeroChallengePlan<E>,
+        ch: BinaryTower128Challenger,
+    ) -> Result<BinaryNonzeroChallengeOutput, VerificationError> {
+        let output = plan.sample_with_host::<H, CF>(b, ch)?;
+        for value in &output.values {
+            Self::constrain_challenge(b, value);
+        }
+        Ok(output)
     }
 }
 impl<F: RecursiveBinaryTowerField> BinaryTowerPolicy<BinaryField128> for NativeTower128Relation<F>
@@ -550,11 +559,12 @@ where
             })
             .collect()
     }
-    fn from_checked_bits(
+    fn sample_nonzero<H: BinaryCircuitHost<BinaryField128>>(
         b: &mut CircuitBuilder<BinaryField128>,
-        value: &BinaryTower128Target,
-    ) -> Result<NativeTower128Target, CircuitBuilderError> {
-        b.native_tower128_from_bits(*value.bits())
+        plan: &BinaryNonzeroChallengePlan,
+        ch: BinaryTower128Challenger,
+    ) -> Result<BinaryNonzeroChallengeOutput<NativeTower128Target>, VerificationError> {
+        plan.sample_scalars_using::<Self, H>(b, ch)
     }
 }
 

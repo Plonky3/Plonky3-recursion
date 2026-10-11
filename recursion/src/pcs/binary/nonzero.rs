@@ -7,15 +7,17 @@ use core::marker::PhantomData;
 
 use p3_binary_field::BinaryField128;
 use p3_challenger::FieldChallenger;
-use p3_circuit::ops::BinaryTower128Target;
 use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 
 use super::RecursiveBinaryChallengeField;
 use super::whir_plan::invalid;
 use crate::challenger::RetainedDigest;
+use crate::verifier::binary_field_policy::BinaryProtocolPolicy;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
@@ -32,8 +34,8 @@ pub struct BinaryNonzeroChallengePlan<E = BinaryField128> {
 }
 
 #[derive(Debug)]
-pub struct BinaryNonzeroChallengeOutput {
-    pub values: Vec<BinaryTower128Target>,
+pub struct BinaryNonzeroChallengeOutput<T = BinaryTower128Target> {
+    pub values: Vec<T>,
     /// Only a nonempty next observation can resume the native transcript.
     pub continuation: BinaryQueryContinuation,
 }
@@ -146,6 +148,43 @@ impl<E: RecursiveBinaryChallengeField> BinaryNonzeroChallengePlan<E> {
             }
         }
         Err(invalid("binary nonzero challenge draw budget exhausted"))
+    }
+}
+
+impl BinaryNonzeroChallengePlan<BinaryField128> {
+    /// Selects native Tower128 draws as scalars. Each candidate is the
+    /// policy's draw, which packs drawn words without decomposing them, and a
+    /// hinted zero test replaces the bitwise one. The transcript, the selected
+    /// values and the continuation are those of [`Self::sample_with_host`].
+    pub(crate) fn sample_scalars_using<P, H>(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        mut ch: BinaryTower128Challenger,
+    ) -> Result<BinaryNonzeroChallengeOutput<NativeTower128Target>, VerificationError>
+    where
+        P: BinaryProtocolPolicy<
+                BinaryField128,
+                Challenge = BinaryField128,
+                ChallengeTarget = NativeTower128Target,
+            >,
+        H: BinaryCircuitHost<BinaryField128>,
+    {
+        let mut candidates = Vec::with_capacity(self.max_draws);
+        for _ in 0..self.max_draws {
+            let value = P::sample::<H>(b, &mut ch)?;
+            let (_, digest) = ch.retained_query_digest()?;
+            candidates.push(([value.as_expr()], digest));
+        }
+        let (hash, _) = ch.retained_query_digest()?;
+        let (selected, _, digest) =
+            select_nonzero_cells(b, self.count, self.max_draws, 0, &candidates)?;
+        Ok(BinaryNonzeroChallengeOutput {
+            values: selected
+                .into_iter()
+                .map(|[value]| b.native_tower128_from_expr(value))
+                .collect(),
+            continuation: BinaryQueryContinuation::from_digest(hash, digest),
+        })
     }
 }
 
@@ -405,6 +444,84 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
     Ok((selected, following, retained))
 }
 
+/// Selects bounded native draws by their carrier cells; a draw is zero when
+/// every cell is. Each draw's cells must represent it exactly, and callers
+/// rebuild the selected values from them. No draw is decomposed.
+///
+/// `zeros[t]` is one exactly when `t` of the draws so far were zero, for `t`
+/// up to the budget's slack `max_draws - count`, and every entry is zero once
+/// more were. A nonzero draw at `index` under `zeros[t]` is nonzero draw
+/// number `index - t`, so one product per entry both advances the count and
+/// marks the draw. The last requested nonzero draw must occur within the
+/// budget, which holds exactly when at most the slack draws before it were
+/// zero.
+pub(super) fn select_nonzero_cells<const W: usize, CF: BinaryCoordinateField>(
+    b: &mut CircuitBuilder<CF>,
+    count: usize,
+    max_draws: usize,
+    following_count: usize,
+    candidates: &[([ExprId; W], RetainedDigest)],
+) -> Result<NonzeroSelection<[ExprId; W]>, VerificationError> {
+    if W == 0
+        || count == 0
+        || count > max_draws
+        || max_draws.checked_add(following_count) != Some(candidates.len())
+    {
+        return Err(invalid("binary nonzero selection shape"));
+    }
+    let slack = max_draws - count;
+    b.check_construction_limits()?;
+    let one = b.define_const(CF::ONE);
+    let mut zeros = vec![ExprId::ZERO; slack + 1];
+    zeros[0] = one;
+    let mut selected = vec![[ExprId::ZERO; W]; count];
+    let mut following = vec![[ExprId::ZERO; W]; following_count];
+    let mut retained = None;
+    let mut completed = ExprId::ZERO;
+    for (index, (candidate, _)) in candidates[..max_draws].iter().enumerate() {
+        let mut zero = one;
+        for &cell in candidate {
+            let cell_zero = b.binary_is_zero(cell)?;
+            zero = b.mul(zero, cell_zero);
+        }
+        let top = slack.min(index);
+        let mut next = vec![ExprId::ZERO; slack + 1];
+        let mut skipped_below = ExprId::ZERO;
+        for (t, &state) in zeros[..=top].iter().enumerate() {
+            let skipped = b.mul(state, zero);
+            let accepted = b.sub(state, skipped);
+            next[t] = b.add(accepted, skipped_below);
+            skipped_below = skipped;
+            let number = index - t;
+            if number < count {
+                for (out, &cell) in selected[number].iter_mut().zip(candidate) {
+                    *out = b.mul_add(accepted, cell, *out);
+                }
+            }
+            if number + 1 == count {
+                completed = b.add(completed, accepted);
+                for (offset, output) in following.iter_mut().enumerate() {
+                    for (out, &cell) in output.iter_mut().zip(&candidates[index + offset + 1].0) {
+                        *out = b.mul_add(accepted, cell, *out);
+                    }
+                }
+                let digest = &candidates[index + following_count].1;
+                let sum = retained.unwrap_or_else(|| digest.zeroed(ExprId::ZERO));
+                retained = Some(digest.mul_add(b, accepted, &sum)?);
+            }
+            b.check_construction_limits()?;
+        }
+        if let Some(state) = next.get_mut(top + 1) {
+            *state = skipped_below;
+        }
+        zeros = next;
+    }
+    b.connect(completed, one);
+    b.check_construction_limits()?;
+    let retained = retained.expect("draw count - 1 completes the selection when no draw is zero");
+    Ok((selected, following, retained))
+}
+
 #[cfg(test)]
 mod tests {
     use p3_baby_bear::BabyBear;
@@ -454,6 +571,26 @@ mod tests {
             [BinaryField128::from_repr(7), BinaryField128::from_repr(11)]
         );
         assert_eq!(ch.position, 3);
+        // A zero between accepted draws is skipped; two zeros exceed the
+        // budget's slack of one even when nonzero draws follow.
+        for (draws, accepted) in [([7, 0, 11, 19], Some(3)), ([7, 0, 0, 11], None)] {
+            ch.draws = draws.into_iter().map(BinaryField128::from_repr).collect();
+            ch.position = 0;
+            let sampled = plan.sample_native::<BinaryField128, _>(&mut ch);
+            match accepted {
+                Some(position) => {
+                    assert_eq!(
+                        sampled.unwrap(),
+                        [BinaryField128::from_repr(7), BinaryField128::from_repr(11)]
+                    );
+                    assert_eq!(ch.position, position);
+                }
+                None => {
+                    assert!(sampled.is_err());
+                    assert_eq!(ch.position, 0);
+                }
+            }
+        }
     }
 
     #[test]
@@ -660,6 +797,130 @@ mod tests {
                     assert!(!run(&[0, 0, 7], &[7], &[7], 2));
                 }
             }
+        }
+    }
+
+    /// Scalar selection on the native carrier skips a zero draw at the first
+    /// position and between accepted draws, accepts exactly the slack of zero
+    /// draws, and has no witness once more zeros precede the last requested
+    /// value. A claimed value, tail value or completion digest that differs
+    /// from the selected one is rejected.
+    #[test]
+    fn native_cells_skip_zeros_up_to_the_slack_and_bind_the_selection() {
+        const A: u128 = 1 << 127;
+        const B: u128 = 0x8000_0000_0001_0000;
+        const C: u128 = 7;
+        const D: u128 = u128::MAX;
+        let (count, max_draws, tail) = (3, 5, 1);
+        let mut b = CircuitBuilder::<BinaryField128>::new();
+        let candidates: Vec<_> = (0..max_draws + tail)
+            .map(|_| {
+                let cell = b.public_input();
+                let digest = b.alloc_public_input_array::<16>("candidate digest");
+                ([cell], RetainedDigest::Words(digest))
+            })
+            .collect();
+        let (values, following, digest) =
+            select_nonzero_cells(&mut b, count, max_draws, tail, &candidates).unwrap();
+        for [cell] in values.into_iter().chain(following) {
+            let claimed = b.public_input();
+            b.connect(cell, claimed);
+        }
+        let RetainedDigest::Words(digest) = digest else {
+            panic!("word digests select a word digest")
+        };
+        for limb in digest {
+            let claimed = b.public_input();
+            b.connect(limb, claimed);
+        }
+        let circuit = b.build().unwrap();
+        // Digest limbs are nonzero and distinct; `None` claims a zero digest.
+        let run = |draws: [u128; 6], claimed: [u128; 4], digest_at: Option<usize>| {
+            let limb =
+                |index: usize, j: usize| BinaryField128::from_repr((16 * index + j + 1) as u128);
+            let mut public = Vec::new();
+            for (index, raw) in draws.into_iter().enumerate() {
+                public.push(BinaryField128::from_repr(raw));
+                public.extend((0..16).map(|j| limb(index, j)));
+            }
+            public.extend(claimed.map(BinaryField128::from_repr));
+            public.extend(
+                (0..16).map(|j| digest_at.map_or(BinaryField128::ZERO, |index| limb(index, j))),
+            );
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(&public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        assert!(run([0, A, B, C, D, 5], [A, B, C, D], Some(4)));
+        assert!(run([A, 0, B, C, D, 5], [A, B, C, D], Some(4)));
+        assert!(run([A, B, 0, 0, C, 0], [A, B, C, 0], Some(5)));
+        assert!(run([A, B, C, 0, 0, 0], [A, B, C, 0], Some(3)));
+        // Past the slack nothing is selected, and completion rejects even
+        // the empty selection.
+        assert!(!run([0, 0, 0, A, B, C], [0, 0, 0, 0], None));
+        assert!(!run([A, 0, 0, 0, B, C], [A, 0, 0, 0], None));
+        assert!(!run([0, 0, 0, A, B, C], [A, B, C, 0], Some(5)));
+        assert!(!run([0, A, B, C, D, 5], [A, B, D, D], Some(4)));
+        assert!(!run([0, A, B, C, D, 5], [A, B, C, 5], Some(4)));
+        assert!(!run([0, A, B, C, D, 5], [A, B, C, D], Some(3)));
+    }
+
+    /// Scalar selection draws the native transcript's nonzero values and
+    /// resumes it exactly after the next observation; a claimed value that
+    /// differs from any of those draws is rejected.
+    #[test]
+    fn native_scalars_match_the_native_transcript() {
+        use p3_binary_field::BinaryChallenger;
+        use p3_circuit::ops::ByteHash;
+        use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+        use p3_keccak::Keccak256Hash;
+
+        use crate::verifier::binary_field_policy::NativeTower128Relation;
+
+        type F = BinaryField128;
+        type H = NativeBinaryEncoding;
+        type P = NativeTower128Relation;
+        let initial = [129u8, 3, 251, 7];
+        let mut native = BinaryChallenger::<F, _>::from_hasher(initial.to_vec(), Keccak256Hash);
+        let plan = BinaryNonzeroChallengePlan::<F>::new(3, 5).unwrap();
+        let mut expected = plan.sample_native::<F, _>(&mut native).unwrap();
+        native.observe(F::from_repr(193));
+        expected.push(native.sample_algebra_element::<F>());
+
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let initial = initial.map(|byte| b.define_const(H::encode_u16(byte.into()).unwrap()));
+        let ch = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
+            &mut b,
+            ByteHash::Keccak256,
+            &initial,
+        )
+        .unwrap();
+        let output = plan.sample_scalars_using::<P, H>(&mut b, ch).unwrap();
+        let observed = b.native_tower128_constant(193);
+        let mut ch =
+            P::observe_after_queries::<H>(&mut b, output.continuation, &[observed]).unwrap();
+        let mut actual = output.values;
+        actual.push(P::sample::<H>(&mut b, &mut ch).unwrap());
+        for value in &actual {
+            let claimed = b.public_input();
+            b.connect(value.as_expr(), claimed);
+        }
+        let circuit = b.build().unwrap();
+        let runs = |public: &[F]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        assert!(runs(&expected));
+        for changed in 0..expected.len() {
+            let mut wrong = expected.clone();
+            wrong[changed] += F::from_repr(1 << 100);
+            assert!(!runs(&wrong), "changed draw {changed}");
         }
     }
 }

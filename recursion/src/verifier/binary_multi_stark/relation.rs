@@ -460,24 +460,19 @@ where
         } else {
             zero
         };
-        let output = self.tau.sample_with_host::<H, CF>(b, ch)?;
+        let output = P::sample_nonzero::<H>(b, &self.tau, ch)?;
         let reduction = self.sumcheck.verify_after_queries_using::<P, H, CF>(
             b,
             output.continuation,
             &initial,
             proof.sumcheck,
         )?;
-        let tau = output
-            .values
-            .iter()
-            .map(|value| P::from_checked_bits(b, value))
-            .collect::<Result<_, _>>()?;
         Ok(BinaryMultiStarkReduction {
             alpha,
             beta,
             lambda,
             bus_claims,
-            tau,
+            tau: output.values,
             point: reduction.point,
             claim: reduction.claim,
             indexed: None,
