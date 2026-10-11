@@ -50,6 +50,8 @@ mod native_poly_fraction;
 mod native_poly_product;
 #[path = "../native_poly_recursive_verifier.rs"]
 mod native_poly_recursive_verifier;
+#[path = "../native_poly_ring_switch.rs"]
+mod native_poly_ring_switch;
 #[path = "../native_poly_ring_tensor.rs"]
 mod native_poly_ring_tensor;
 #[path = "../native_poly_second_layer.rs"]
