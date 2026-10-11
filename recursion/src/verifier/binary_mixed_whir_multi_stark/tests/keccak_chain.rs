@@ -101,10 +101,10 @@ fn keccak_chain_imports_with_the_native_continuation() {
     mixed.assert_tampers_refused_by_import(&verifier);
 }
 
-/// The prime-field relation reads 3250 opened Keccak values and evaluates 1650 constraints,
-/// and its circuit grows past 8 GB before witness generation.
+/// The prime-field relation reads 3250 opened Keccak values and evaluates 1650 constraints.
+/// In debug its circuit passed 20 GB after 600 s without finishing.
 #[test]
-#[ignore = "builds a prime-field verifier of the bit-committed Keccak relation above 8 GB; run explicitly"]
+#[ignore = "builds a prime-field verifier of the bit-committed Keccak relation above 20 GB in debug; run explicitly"]
 fn keccak_chain_satisfies_the_prime_circuit() {
     let mixed = keccak_chain_proof();
     let verifier = mixed.verifier();

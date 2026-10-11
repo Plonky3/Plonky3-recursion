@@ -76,28 +76,47 @@ fn small_proof() -> Mixed {
     )
 }
 
-/// The smallest mixed relation whose openings both send Merkle siblings: no preprocessing, and
-/// a Boolean table read at one row only, so the ring switch sends one tensor. With fewer row
-/// variables the queries open every leaf of the packed codeword's tree.
-fn minimal_proof() -> Mixed {
-    const SQUARE_VARIABLES: usize = FOLDING;
-    let public = vec![vec![F::ONE + F::ONE], vec![], vec![F::ZERO]];
+const SQUARE_VARIABLES: usize = FOLDING;
+/// The row variables one field element absorbs.
+const BOOLEAN_VARIABLES: usize = 7;
+
+/// A first dense table, a Boolean table of `bit_variables` row variables read at one row only,
+/// so the ring switch sends one tensor, and a square table. Only a [`TestAir::Dense`] first
+/// table brings preprocessing.
+fn minimal_proof_with(first: TestAir, bit_variables: usize) -> Mixed {
+    let (first_public, first_rows, first_variables) = match first {
+        TestAir::Square => {
+            let public = vec![F::ONE + F::ONE];
+            let rows = square_rows(public[0], SQUARE_VARIABLES);
+            (public, rows, SQUARE_VARIABLES)
+        }
+        TestAir::Dense => {
+            let public = vec![F::ONE, F::ONE + F::ONE + F::ONE];
+            let rows = dense_rows(public[0], public[1]);
+            (public, rows, DENSE_VARIABLES)
+        }
+        TestAir::Bus(_) | TestAir::Bits { .. } => unreachable!("the first table is dense"),
+    };
+    let public = vec![first_public, vec![], vec![F::ZERO]];
     let tables = vec![
-        square_rows(public[0][0], SQUARE_VARIABLES),
-        bit_rows(BIT_VARIABLES),
+        first_rows,
+        bit_rows(bit_variables),
         square_rows(public[2][0], SQUARE_VARIABLES),
     ];
     Mixed::prove(
-        vec![
-            TestAir::Square,
-            TestAir::Bits { next: vec![] },
-            TestAir::Square,
-        ],
-        vec![SQUARE_VARIABLES, BIT_VARIABLES, SQUARE_VARIABLES],
+        vec![first, TestAir::Bits { next: vec![] }, TestAir::Square],
+        vec![first_variables, bit_variables, SQUARE_VARIABLES],
         public,
         BITS,
         tables,
     )
+}
+
+/// The smallest mixed relation whose openings both send Merkle siblings, without
+/// preprocessing. With fewer row variables the queries open every leaf of the packed
+/// codeword's tree.
+fn minimal_proof() -> Mixed {
+    minimal_proof_with(TestAir::Square, BIT_VARIABLES)
 }
 
 /// Offsets of the dense and the packed opening's witnesses within the private inputs.
@@ -215,10 +234,25 @@ fn minimal_mixed_proof_satisfies_the_prime_circuit_and_refuses_tampers() {
     assert_prime_circuit_accepts_and_refuses_tampers(&minimal_proof());
 }
 
-/// With preprocessing and the successor's carry and last tensors, the circuit grows past 8 GB
-/// while compiling.
+/// The preprocessing opening follows the packed one in the transcript, which the circuit's
+/// continuation pins: a circuit verifying them in the other order refuses the honest witness.
 #[test]
-#[ignore = "builds a prime-field mixed verifier with preprocessing and successor tensors above 8 GB; run explicitly"]
+fn preprocessing_after_the_packed_opening_satisfies_the_prime_circuit() {
+    let mixed = minimal_proof_with(TestAir::Dense, BOOLEAN_VARIABLES);
+    assert!(mixed.proof.preprocessed_opening.is_some());
+    let verifier = mixed.verifier();
+    let (_, private) = mixed.honest_private_values(&verifier);
+    let circuit = prime_circuit(&verifier);
+    assert!(accepts(&circuit, &private, &mixed.public_limbs()));
+}
+
+/// The only prime-circuit test of the packed opening's successor route. The successor's carry
+/// and last tensors nearly double a prime circuit: the minimal relation read one row ahead
+/// grows from 24.1M to 42.3M operations. This one has 46.5M: 11.4 to 12.5 GB and about 250 s
+/// in a debug build, and a 21.5 GB footprint with the circuit diagnostics of an all-features
+/// build, above hosted runner memory.
+#[test]
+#[ignore = "builds a prime-field mixed verifier with successor tensors: about 12 GB in debug, 21.5 GB with circuit diagnostics; run explicitly"]
 fn small_mixed_proof_satisfies_the_prime_circuit_and_refuses_tampers() {
     assert_prime_circuit_accepts_and_refuses_tampers(&small_proof());
 }
