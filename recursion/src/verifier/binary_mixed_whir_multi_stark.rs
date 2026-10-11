@@ -668,7 +668,8 @@ impl BinaryMixedWhirMultiStarkVerifier {
     }
 
     /// Checks the complete visible proof before bounded replay. Failure leaves the caller's
-    /// native transcript unchanged.
+    /// native transcript unchanged. Merkle paths are restored as witnesses and authenticated
+    /// only by the verifier circuit, so a successful import is no verification of the proof.
     ///
     /// `dense` and `packed` are the two parts' WHIR configurations on the shared tree `mmcs`.
     /// `preprocessed` is the dense preprocessing commitment's configuration and tree, present
