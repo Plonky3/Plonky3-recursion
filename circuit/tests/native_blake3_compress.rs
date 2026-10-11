@@ -1,7 +1,7 @@
 //! The native BLAKE3 compression operation executes exactly the reference compression
 //! over raw 16-bit binary-coordinate limbs.
 
-use p3_binary_field::{BinaryField128, Poly64};
+use p3_binary_field::{BinaryField8, BinaryField128, Poly64};
 use p3_blake3::Blake3;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{
@@ -19,7 +19,7 @@ fn raw<F: BinaryCoordinateField>(limbs: &[u16]) -> Vec<F> {
 }
 
 /// Builds a circuit with the compression's inputs and expected outputs as public inputs,
-/// and returns it with the number of output limbs checked.
+/// and connects the outputs to the expected values.
 fn compression_circuit<F: BinaryCoordinateField>() -> p3_circuit::Circuit<F> {
     let mut builder = CircuitBuilder::<F>::new();
     builder.enable_native_blake3_compress().unwrap();
@@ -144,6 +144,29 @@ fn wrong_arity_is_rejected_before_any_state_changes() {
     let after = builder.construction_usage().unwrap();
     assert_eq!(after.non_primitive_calls, before.non_primitive_calls);
     assert_eq!(after.non_primitive_slots, before.non_primitive_slots);
+}
+
+#[test]
+fn a_carrier_narrower_than_a_limb_is_rejected() {
+    let mut builder = CircuitBuilder::<BinaryField8>::new();
+    let err = builder.enable_native_blake3_compress().unwrap_err();
+    assert!(
+        matches!(
+            err,
+            CircuitBuilderError::InvalidDimension {
+                expected: 16,
+                actual: 8
+            }
+        ),
+        "{err:?}"
+    );
+    let inputs: Vec<ExprId> = (0..BLAKE3_INPUT_LIMBS)
+        .map(|_| builder.public_input())
+        .collect();
+    assert!(matches!(
+        builder.add_native_blake3_compress(&inputs).unwrap_err(),
+        CircuitBuilderError::InvalidDimension { .. }
+    ));
 }
 
 #[test]
