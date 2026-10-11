@@ -393,7 +393,10 @@ fn every_committed_class_is_bound() {
 /// Boolean first coordinate, which the released reduction skips, are refused
 /// by the import. Claims whose first coordinates are different bits share no
 /// prefix, and neither does a successor stepping every coordinate, so those
-/// are accepted with every round run.
+/// are accepted with every round run. A successor whose one selector
+/// coordinate is such a bit keeps it as its own prefix, which the released
+/// closing weighs by an equality gate and the native closing by its
+/// full-length weight; the two agree.
 #[test]
 fn shared_boolean_prefixes_are_refused() {
     let with_firsts = |variables: usize, firsts: &[E], seed: u64| {
@@ -422,9 +425,10 @@ fn shared_boolean_prefixes_are_refused() {
             "{specs:?}: {error}"
         );
     }
-    let accepted: [(&[BinaryRingClaimSpec], &[E]); 2] = [
+    let accepted: [(&[BinaryRingClaimSpec], &[E]); 3] = [
         (&[spec(true, None), spec(true, None)], &[E::ZERO, E::ONE]),
         (&[spec(true, Some(10))], &[E::ONE]),
+        (&[spec(true, Some(9)), spec(true, None)], &[E::ZERO, E::ONE]),
     ];
     for (specs, firsts) in accepted {
         let switched = Switched::at(10, specs, with_firsts(10, firsts, 0x4d), 0x4d);
@@ -432,6 +436,9 @@ fn shared_boolean_prefixes_are_refused() {
             switched.proof.sumcheck.polynomial_evaluations.len(),
             switched.high()
         );
+        for (claim, spec) in switched.proof.claims.iter().zip(specs) {
+            assert_eq!(claim.successor.is_some(), spec.next_rows.is_some());
+        }
         assert!(accepts(
             &switched.circuit(true),
             &switched.public(true),
