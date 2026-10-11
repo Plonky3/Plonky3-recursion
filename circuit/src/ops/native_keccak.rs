@@ -15,8 +15,8 @@ use p3_symmetric::Permutation;
 use crate::builder::{NonPrimitiveOperationData, NpoLoweringContext};
 use crate::ops::binary_native::BinaryCoordinateField;
 use crate::ops::keccak_perm::{
-    KECCAK_LANES, KECCAK_STATE_LIMBS, KECCAK256_RATE_BYTES, keccak_limbs_to_state,
-    keccak_state_to_limbs,
+    KECCAK_LANES, KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, KECCAK256_RATE_BYTES,
+    keccak_limbs_to_state, keccak_state_to_limbs,
 };
 use crate::ops::{ExecutionContext, NonPrimitiveExecutor, NpoConfig, NpoTypeId, Op};
 use crate::tables::TraceGeneratorFn;
@@ -41,6 +41,46 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         &mut self,
         state: &[ExprId],
     ) -> Result<[ExprId; KECCAK_STATE_LIMBS], CircuitBuilderError> {
+        let outputs = self.push_native_keccak_f1600(state, false)?;
+        Ok(outputs
+            .try_into()
+            .expect("requested 100 native Keccak outputs"))
+    }
+
+    /// Applies Keccak-f like [`Self::add_native_keccak_f1600`], and also
+    /// returns the first [`KECCAK256_DIGEST_LIMBS`] output limbs with their two
+    /// bytes swapped: swapped limb `m` has the raw coordinates of output limb
+    /// `m` with coordinates `0..8` and `8..16` exchanged. Both are outputs of
+    /// the same call. The native bus backend derives them from the same output
+    /// bits of its hash AIR, so they are range-constrained like every other
+    /// output limb; a backend without swapped digest columns refuses the call.
+    pub fn add_native_keccak_f1600_with_swapped_digest(
+        &mut self,
+        state: &[ExprId],
+    ) -> Result<
+        (
+            [ExprId; KECCAK_STATE_LIMBS],
+            [ExprId; KECCAK256_DIGEST_LIMBS],
+        ),
+        CircuitBuilderError,
+    > {
+        let outputs = self.push_native_keccak_f1600(state, true)?;
+        let (limbs, swapped) = outputs.split_at(KECCAK_STATE_LIMBS);
+        Ok((
+            limbs
+                .try_into()
+                .expect("requested 100 native Keccak outputs"),
+            swapped
+                .try_into()
+                .expect("requested 16 swapped digest limbs"),
+        ))
+    }
+
+    fn push_native_keccak_f1600(
+        &mut self,
+        state: &[ExprId],
+        swapped_digest: bool,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
         check_field::<F>()?;
         self.check_construction_limits()?;
         let op = NpoTypeId::native_keccak_f1600();
@@ -52,11 +92,15 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
                 got: state.len(),
             });
         }
+        let mut names = vec![Some("native_keccak_out"); KECCAK_STATE_LIMBS];
+        if swapped_digest {
+            names.extend([Some("native_keccak_swapped_digest"); KECCAK256_DIGEST_LIMBS]);
+        }
         let outputs = self
             .push_non_primitive_op_with_outputs(
                 op,
                 state.iter().map(|&limb| vec![limb]).collect(),
-                vec![Some("native_keccak_out"); KECCAK_STATE_LIMBS],
+                names,
                 None,
                 "native_keccak_f1600",
             )
@@ -65,9 +109,7 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             .collect::<Option<Vec<_>>>()
             .ok_or(CircuitBuilderError::MissingOutput)?;
         self.check_construction_limits()?;
-        Ok(outputs
-            .try_into()
-            .expect("requested 100 native Keccak outputs"))
+        Ok(outputs)
     }
 
     /// Keccak-256 of low-first raw sixteen-coordinate words.
@@ -84,6 +126,27 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         &mut self,
         words: &[ExprId],
     ) -> Result<[ExprId; 16], CircuitBuilderError> {
+        Ok(self.native_keccak256_words_sponge(words, false)?.0)
+    }
+
+    /// [`Self::native_keccak256_words`] with each digest limb also returned
+    /// with its two bytes swapped, as in
+    /// [`Self::add_native_keccak_f1600_with_swapped_digest`]. The swapped
+    /// limbs are outputs of the final Keccak-f call, or circuit constants
+    /// when the whole padded message is absorbed while building.
+    pub fn native_keccak256_words_with_swapped_digest(
+        &mut self,
+        words: &[ExprId],
+    ) -> Result<([ExprId; 16], [ExprId; 16]), CircuitBuilderError> {
+        let (digest, swapped) = self.native_keccak256_words_sponge(words, true)?;
+        Ok((digest, swapped.expect("a swapped digest was requested")))
+    }
+
+    fn native_keccak256_words_sponge(
+        &mut self,
+        words: &[ExprId],
+        swapped_digest: bool,
+    ) -> Result<([ExprId; 16], Option<[ExprId; 16]>), CircuitBuilderError> {
         check_field::<F>()?;
         self.check_construction_limits()?;
         self.ensure_op_enabled(&NpoTypeId::native_keccak_f1600())?;
@@ -113,13 +176,16 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             })
             .collect();
         let mut state = self.native_keccak_constant_state(&constant)?;
-        for block in &blocks[constant.len()..] {
+        let mut swapped = None;
+        let last = blocks.len() - 1;
+        for (index, block) in blocks.iter().enumerate().skip(constant.len()) {
             for (limb, &word) in state.iter_mut().zip(block) {
                 *limb = self.add(*limb, word);
             }
-            state = self.add_native_keccak_f1600(&state)?;
+            (state, swapped) =
+                self.native_keccak_permute(&state, swapped_digest && index == last)?;
         }
-        Ok(state[..16].try_into().expect("sixteen digest limbs"))
+        self.native_keccak_digest(&state, swapped_digest, swapped)
     }
 
     /// Keccak-256 of any fixed byte length, including odd lengths.
@@ -135,6 +201,35 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         &mut self,
         message: &[ExprId],
     ) -> Result<[ExprId; 32], CircuitBuilderError> {
+        let (limbs, _) = self.native_keccak256_bytes_sponge(message, false)?;
+        let mut digest = Vec::with_capacity(32);
+        for limb in &limbs {
+            let bits = self.binary_decompose_coordinates(*limb, 16)?;
+            digest.push(self.binary_recompose_coordinates(&bits[..8])?);
+            digest.push(self.binary_recompose_coordinates(&bits[8..])?);
+        }
+        Ok(digest
+            .try_into()
+            .expect("sixteen low-first limbs produce 32 bytes"))
+    }
+
+    /// The Keccak-256 digest of [`Self::native_keccak256_bytes`] as sixteen
+    /// low-first limbs, each also returned with its two bytes swapped, as in
+    /// [`Self::native_keccak256_words_with_swapped_digest`]. The digest is
+    /// not split into bytes.
+    pub fn native_keccak256_bytes_with_swapped_digest(
+        &mut self,
+        message: &[ExprId],
+    ) -> Result<([ExprId; 16], [ExprId; 16]), CircuitBuilderError> {
+        let (digest, swapped) = self.native_keccak256_bytes_sponge(message, true)?;
+        Ok((digest, swapped.expect("a swapped digest was requested")))
+    }
+
+    fn native_keccak256_bytes_sponge(
+        &mut self,
+        message: &[ExprId],
+        swapped_digest: bool,
+    ) -> Result<([ExprId; 16], Option<[ExprId; 16]>), CircuitBuilderError> {
         check_field::<F>()?;
         self.check_construction_limits()?;
         self.ensure_op_enabled(&NpoTypeId::native_keccak_f1600())?;
@@ -164,7 +259,9 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             })
             .collect();
         let mut state = self.native_keccak_constant_state(&constant)?;
-        for block in &blocks[constant.len()..] {
+        let mut swapped = None;
+        let last = blocks.len() - 1;
+        for (index, block) in blocks.iter().enumerate().skip(constant.len()) {
             for (i, bytes) in block.as_chunks::<2>().0.iter().enumerate() {
                 let mut bits = self.binary_decompose_coordinates(bytes[0], 8)?;
                 bits.extend(self.binary_decompose_coordinates(bytes[1], 8)?);
@@ -172,17 +269,50 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
                 state[i] = self.add(state[i], limb);
                 self.check_construction_limits()?;
             }
-            state = self.add_native_keccak_f1600(&state)?;
+            (state, swapped) =
+                self.native_keccak_permute(&state, swapped_digest && index == last)?;
         }
-        let mut digest = Vec::with_capacity(32);
-        for limb in &state[..16] {
-            let bits = self.binary_decompose_coordinates(*limb, 16)?;
-            digest.push(self.binary_recompose_coordinates(&bits[..8])?);
-            digest.push(self.binary_recompose_coordinates(&bits[8..])?);
+        self.native_keccak_digest(&state, swapped_digest, swapped)
+    }
+
+    /// One Keccak-f call, exposing the swapped digest limbs when `swapped_digest`.
+    fn native_keccak_permute(
+        &mut self,
+        state: &[ExprId; KECCAK_STATE_LIMBS],
+        swapped_digest: bool,
+    ) -> Result<([ExprId; KECCAK_STATE_LIMBS], Option<[ExprId; 16]>), CircuitBuilderError> {
+        if swapped_digest {
+            let (state, swapped) = self.add_native_keccak_f1600_with_swapped_digest(state)?;
+            Ok((state, Some(swapped)))
+        } else {
+            Ok((self.add_native_keccak_f1600(state)?, None))
         }
-        Ok(digest
-            .try_into()
-            .expect("sixteen low-first limbs produce 32 bytes"))
+    }
+
+    /// The digest limbs of a final sponge state. A requested swapped digest
+    /// is `swapped` when the final call exposed it, and otherwise the
+    /// constant state's swapped limbs.
+    fn native_keccak_digest(
+        &mut self,
+        state: &[ExprId; KECCAK_STATE_LIMBS],
+        swapped_digest: bool,
+        swapped: Option<[ExprId; 16]>,
+    ) -> Result<([ExprId; 16], Option<[ExprId; 16]>), CircuitBuilderError> {
+        let digest = state[..16].try_into().expect("sixteen digest limbs");
+        if !swapped_digest || swapped.is_some() {
+            return Ok((digest, swapped));
+        }
+        let mut constant = [ExprId::ZERO; 16];
+        for (swapped, &limb) in constant.iter_mut().zip(&digest) {
+            let raw = self
+                .constant_raw(limb, 16)
+                .expect("a sponge without calls has a constant digest");
+            *swapped = self.define_const(
+                F::from_raw_coordinates(raw.swap_bytes().into()).expect("checked limb width"),
+            );
+        }
+        self.check_construction_limits()?;
+        Ok((digest, Some(constant)))
     }
 
     /// The raw coordinates of a circuit constant below `2^bits`.
@@ -218,6 +348,11 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
 }
 
 const RATE_WORDS: usize = KECCAK256_RATE_BYTES / 2;
+
+/// A call outputs the permuted state, optionally followed by its swapped digest limbs.
+const fn output_count_is_valid(count: usize) -> bool {
+    count == KECCAK_STATE_LIMBS || count == KECCAK_STATE_LIMBS + KECCAK256_DIGEST_LIMBS
+}
 
 pub(super) const fn check_field<F: BinaryCoordinateField>() -> Result<(), CircuitBuilderError> {
     if F::COORDINATE_BITS < 16 {
@@ -260,7 +395,7 @@ impl<F: BinaryCoordinateField> NpoCircuitPlugin<F> for NativeKeccakPlugin {
         }
         let mut ordered = output_exprs.to_vec();
         ordered.sort_unstable_by_key(|&(index, _)| index);
-        if ordered.len() != KECCAK_STATE_LIMBS
+        if !output_count_is_valid(ordered.len())
             || ordered
                 .iter()
                 .enumerate()
@@ -268,7 +403,8 @@ impl<F: BinaryCoordinateField> NpoCircuitPlugin<F> for NativeKeccakPlugin {
         {
             return Err(CircuitBuilderError::MalformedNonPrimitiveOutputs {
                 op_id: data.op_id,
-                details: "native Keccak outputs must be indexed 0..100 without gaps".into(),
+                details: "native Keccak outputs must be indexed 0..100 or 0..116 without gaps"
+                    .into(),
             });
         }
         let inputs = data
@@ -320,11 +456,12 @@ impl<F: BinaryCoordinateField> NonPrimitiveExecutor<F> for NativeKeccakExecutor 
         if inputs.len() != 1
             || inputs[0].len() != KECCAK_STATE_LIMBS
             || outputs.len() != 1
-            || outputs[0].len() != KECCAK_STATE_LIMBS
+            || !output_count_is_valid(outputs[0].len())
         {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                 op: self.op.clone(),
-                expected: "one input and output group of 100 raw limbs".into(),
+                expected: "one input group of 100 raw limbs and an output group of 100 or 116"
+                    .into(),
                 got: inputs.first().map_or(0, Vec::len),
             });
         }
@@ -342,7 +479,11 @@ impl<F: BinaryCoordinateField> NonPrimitiveExecutor<F> for NativeKeccakExecutor 
         }
         let mut state = keccak_limbs_to_state(&limbs);
         KeccakF.permute_mut(&mut state);
-        for (raw, &id) in keccak_state_to_limbs(&state).into_iter().zip(&outputs[0]) {
+        let output = keccak_state_to_limbs(&state);
+        let swapped = output[..KECCAK256_DIGEST_LIMBS]
+            .iter()
+            .map(|raw| raw.swap_bytes());
+        for (raw, &id) in output.into_iter().chain(swapped).zip(&outputs[0]) {
             ctx.set_witness(
                 id,
                 F::from_raw_coordinates(raw as u128).expect("checked native limb width"),

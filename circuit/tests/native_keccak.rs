@@ -320,3 +320,102 @@ fn native_word_sponge_keeps_wide_constant_words_in_circuit() {
     runner.set_public_inputs(&[BinaryField128::ONE]).unwrap();
     assert!(runner.run().is_err());
 }
+
+/// Native Keccak-f calls whose outputs include the swapped digest limbs.
+fn swapped_digest_calls<F: BinaryCoordinateField>(circuit: &Circuit<F>) -> usize {
+    circuit
+        .ops
+        .iter()
+        .filter(|op| {
+            matches!(op, Op::NonPrimitiveOpWithExecutor { outputs, .. }
+                if outputs[0].len() == 116)
+        })
+        .count()
+}
+
+/// The digest limbs followed by the little-endian words of the digest bytes
+/// read from the end: the word drawn `k`-th is bytes `31 - 2k` and `30 - 2k`,
+/// which is digest limb `15 - k` with its two bytes swapped.
+fn limbs_and_swapped(digest: &[u8; 32]) -> Vec<u16> {
+    let mut units = bytes_to_limbs(digest).to_vec();
+    let mut swapped: Vec<u16> = digest
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    swapped.reverse();
+    units.extend(swapped);
+    units
+}
+
+/// The swapped-digest sponges hash like the plain ones and also return each
+/// digest limb with its bytes swapped. Only the final Keccak-f call exposes
+/// them; a fully constant message has constant swapped limbs and no call.
+fn swapped_digest_sponges<F: BinaryCoordinateField>() {
+    const RATE: usize = 136;
+    for constant in [0, 136, 137] {
+        for public in [0, 1, 135] {
+            let message: Vec<u8> = (0..constant + public)
+                .map(|i| (i * 53 + 29) as u8)
+                .collect();
+            let digest = Keccak256Hash.hash_iter(message.iter().copied());
+            let circuit = prefix_sponge::<F>(
+                &message
+                    .iter()
+                    .map(|&byte| u16::from(byte))
+                    .collect::<Vec<_>>(),
+                constant,
+                &limbs_and_swapped(&digest),
+                |builder, bytes| {
+                    let (limbs, swapped) = builder
+                        .native_keccak256_bytes_with_swapped_digest(bytes)
+                        .unwrap();
+                    [limbs, swapped].concat()
+                },
+            );
+            let calls = if public == 0 {
+                0
+            } else {
+                message.len() / RATE + 1 - constant / RATE
+            };
+            assert_eq!(keccak_calls(&circuit), calls, "{constant} + {public} bytes");
+            assert_eq!(swapped_digest_calls(&circuit), calls.min(1));
+        }
+    }
+    for constant in [0, 68, 69] {
+        for public in [0, 1, 67] {
+            let message: Vec<u16> = (0..constant + public)
+                .map(|i| (i * 2909 + 61) as u16)
+                .collect();
+            let digest =
+                Keccak256Hash.hash_iter(message.iter().flat_map(|word| word.to_le_bytes()));
+            let circuit = prefix_sponge::<F>(
+                &message,
+                constant,
+                &limbs_and_swapped(&digest),
+                |builder, words| {
+                    let (limbs, swapped) = builder
+                        .native_keccak256_words_with_swapped_digest(words)
+                        .unwrap();
+                    [limbs, swapped].concat()
+                },
+            );
+            let calls = if public == 0 {
+                0
+            } else {
+                2 * message.len() / RATE + 1 - 2 * constant / RATE
+            };
+            assert_eq!(keccak_calls(&circuit), calls, "{constant} + {public} words");
+            assert_eq!(swapped_digest_calls(&circuit), calls.min(1));
+        }
+    }
+}
+
+#[test]
+fn native_sponges_return_the_byte_swapped_digest_limbs() {
+    swapped_digest_sponges::<BinaryField128>();
+    swapped_digest_sponges::<Poly64>();
+}
