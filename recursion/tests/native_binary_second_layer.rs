@@ -21,7 +21,7 @@ use p3_recursion::artifact::{
     BinaryNativeWhirPcsParameters,
 };
 use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer};
-use p3_recursion::verifier::VerifierLimits;
+use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = BinaryField128;
@@ -185,6 +185,23 @@ fn second_native_layer_verifier_is_bounded_and_refuses_forged_proof_fields() {
             .zip(MAX_LOG_HEIGHTS)
             .all(|(&height, max)| height <= max)
     );
+    // Building the circuit refuses a nonzero draw budget below the tallest
+    // table's log height, as preparation does.
+    let required_draws = *bus.log_heights().iter().max().unwrap();
+    let short = NativeBinaryRecursionOptions {
+        max_tau_draws: required_draws - 1,
+        ..options()
+    };
+    let refused = PreparedNativeBinaryWhirLayer::verifier_circuit(
+        child,
+        &short,
+        &CIRCUIT,
+        Some(&CONSTRUCTION),
+    );
+    assert!(matches!(
+        refused,
+        Err(VerificationError::InvalidProofShape(message)) if message.contains("draw budget")
+    ));
 
     // The verifier allocates its private inputs only through the child input
     // shape and in this order, so a scratch allocation locates proof fields.

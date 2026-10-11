@@ -116,7 +116,8 @@ where
     }
 
     /// Builds the child verifier circuit and its product-bus relation as
-    /// preparation does, without the output codeword budget or key generation.
+    /// preparation does, under the same limits and nonzero draw budget, and
+    /// stops before the output codeword budget and key generation.
     /// `None` places no construction checkpoints, as in
     /// [`Self::from_native_authority`].
     pub fn verifier_circuit<A, L>(
@@ -184,6 +185,14 @@ where
             minimum_log_height,
             *circuit_limits,
         )?;
+        let required_draws = bus.log_heights().iter().copied().max().unwrap_or(0);
+        if options.max_tau_draws < required_draws {
+            return Err(VerificationError::InvalidProofShape(alloc::format!(
+                "native recursive nonzero draw budget {} is below the required {}",
+                options.max_tau_draws,
+                required_draws,
+            )));
+        }
         Ok((circuit, bus))
     }
 
@@ -208,14 +217,6 @@ where
         )?;
         let input_shape = authority.recursive_verifier().input_shape();
         let public_counts: Vec<_> = input_shape.public_value_counts().collect();
-        let required_draws = bus.log_heights().iter().copied().max().unwrap_or(0);
-        if options.max_tau_draws < required_draws {
-            return Err(VerificationError::InvalidProofShape(alloc::format!(
-                "native recursive nonzero draw budget {} is below the required {}",
-                options.max_tau_draws,
-                required_draws,
-            )));
-        }
         let main_cells = codeword_cells(bus.main_variables(), options.main.starting_log_inv_rate)?;
         let pp_cells = bus
             .preprocessed_variables()
