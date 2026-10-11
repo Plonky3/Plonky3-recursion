@@ -3,10 +3,11 @@
 //!
 //! The child is a real first-layer proof: its Keccak table opened through the column batch,
 //! the bit ring switch and the packed WHIR opening, every other table through a dense WHIR
-//! opening, under a Merkle cap and with grinding. Building the second layer and its witness
-//! takes seconds, while proving it takes gigabytes of codewords, so the default test bounds the
-//! circuit size, checks that witness generation refuses a forged packed opened value or a
-//! changed child statement, and that proving refuses a token of a foreign child authority.
+//! opening, over four-digest Merkle trees under a cap and with grinding. Building the second
+//! layer and its witness takes seconds, while proving it takes gigabytes of codewords, so the
+//! default test bounds the circuit size, checks that witness generation refuses a forged packed
+//! opened value or a changed child statement, and that proving refuses a token of a foreign
+//! child authority.
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField128, TowerLevel};
@@ -38,32 +39,34 @@ type H = NativeBinaryEncoding;
 /// A layer whose child is itself a mixed proof.
 type SecondLayer = PreparedNativeBinaryMixedWhirLayer<F, BinaryMixedWhirMultiStarkInputShape>;
 
-const CAP_HEIGHT: usize = 2;
+/// Four-digest output trees under a cap of one level: 4 roots.
+const ARITY: MerkleArity = MerkleArity::Four;
+const CAP_HEIGHT: usize = 1;
 /// Initial fold of every recursive commitment, and so the bus tables' minimum log height.
 const FOLD: usize = 4;
 
-/// About 12% above the measured second-layer construction: 604,536 expression nodes, 85,998
-/// pending connections, 7,650 non-primitive calls and 784,054 slots.
+/// About 12% above the measured second-layer construction: 473,322 expression nodes, 53,486
+/// pending connections, 7,425 non-primitive calls and 629,542 slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 678_000,
-    max_pending_connects: 96_400,
-    max_non_primitive_calls: 8_570,
-    max_non_primitive_slots: 879_000,
+    max_expression_nodes: 531_000,
+    max_pending_connects: 60_000,
+    max_non_primitive_calls: 8_320,
+    max_non_primitive_slots: 706_000,
 };
-/// About 12% above the measured 531,489 witnesses and 331,412 operations. The trace cells
+/// About 12% above the measured 433,012 witnesses and 252,717 operations. The trace cells
 /// follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 596_000,
-    max_operations: 372_000,
+    max_witnesses: 485_000,
+    max_operations: 284_000,
     max_trace_cells: 1 << 27,
 };
-/// About 12% above the measured 591,174 expression nodes of the child's mixed verifier.
-const MAX_VERIFIER_NODES: usize = 663_000;
-/// About 12% above the measured 1,407 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 1_580;
+/// About 12% above the measured 455,560 expression nodes of the child's mixed verifier.
+const MAX_VERIFIER_NODES: usize = 511_000;
+/// About 12% above the measured 1,182 native Keccak-f calls.
+const MAX_KECCAK_CALLS: usize = 1_330;
 /// Measured padded witness, gate, public, Keccak and bridge table heights. One more row of
 /// growth at a power-of-two boundary doubles that table.
-const MAX_LOG_HEIGHTS: [usize; 5] = [21, 19, 4, 16, 12];
+const MAX_LOG_HEIGHTS: [usize; 5] = [21, 18, 4, 15, 12];
 
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
@@ -103,7 +106,7 @@ const fn protocol() -> ProtocolParameters {
 
 /// A low WHIR security level that still meets the four-bit composed target, with four of its
 /// bits ground, for the dense and the packed commitment alike. The codeword budget covers the
-/// second layer's measured 52,428,800 initial cells.
+/// second layer's measured 42,991,616 initial cells.
 fn options(depth: usize) -> NativeBinaryMixedRecursionOptions {
     let recursive = ProtocolParameters {
         pow_bits: 4,
@@ -114,7 +117,7 @@ fn options(depth: usize) -> NativeBinaryMixedRecursionOptions {
         base: NativeBinaryRecursionOptions {
             main: recursive.clone(),
             preprocessed: recursive.clone(),
-            arity: MerkleArity::Two,
+            arity: ARITY,
             cap_height: CAP_HEIGHT,
             initial_bytes: format!("native-binary-mixed-layer-{depth}").into_bytes(),
             sumcheck_pow_bits: 0,

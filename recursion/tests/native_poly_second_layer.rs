@@ -2,10 +2,10 @@
 //!
 //! Its child is a real first-layer proof: a five-table product-bus circuit with
 //! the 1,625-column native Keccak table, opened by a multi-round Poly64 WHIR
-//! proof under a Merkle cap and with grinding. Building the verifier and its
-//! witness takes seconds, while proving it takes gigabytes of codewords, so
-//! this bounds the circuit size and checks that witness generation refuses
-//! forged proof fields.
+//! proof over four-digest Merkle trees under a cap and with grinding. Building
+//! the verifier and its witness takes seconds, while proving it takes gigabytes
+//! of codewords, so this bounds the circuit size and checks that witness
+//! generation refuses forged proof fields.
 
 use std::collections::HashMap;
 
@@ -29,26 +29,28 @@ use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = Poly64;
 
-const CAP_HEIGHT: usize = 2;
+/// Four-digest output trees under a cap of one level: 4 roots.
+const ARITY: MerkleArity = MerkleArity::Four;
+const CAP_HEIGHT: usize = 1;
 
-/// About 12% above the measured second-layer verifier: 1,295,017 expression
-/// nodes, 35,938 pending connections, 15,486 non-primitive calls and 873,660
+/// About 12% above the measured second-layer verifier: 964,573 expression
+/// nodes, 35,938 pending connections, 15,277 non-primitive calls and 790,060
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 1_451_000,
+    max_expression_nodes: 1_081_000,
     max_pending_connects: 40_300,
-    max_non_primitive_calls: 17_350,
-    max_non_primitive_slots: 979_000,
+    max_non_primitive_calls: 17_200,
+    max_non_primitive_slots: 885_000,
 };
-/// About 12% above the measured 1,257,905 witnesses and 1,007,334 operations.
+/// About 12% above the measured 927,670 witnesses and 704,928 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 1_409_000,
-    max_operations: 1_129_000,
+    max_witnesses: 1_039_000,
+    max_operations: 790_000,
     max_trace_cells: 1 << 28,
 };
-/// About 12% above the measured 1,800 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 2_020;
+/// About 12% above the measured 1,591 native Keccak-f calls.
+const MAX_KECCAK_CALLS: usize = 1_790;
 /// About 12% above the measured 53 calls of the first transcript refill,
 /// whose 148 constant leading blocks take none.
 const MAX_FIRST_REFILL_CALLS: usize = 60;
@@ -103,7 +105,7 @@ fn options() -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
         main: recursive.clone(),
         preprocessed: recursive,
-        arity: MerkleArity::Two,
+        arity: ARITY,
         cap_height: CAP_HEIGHT,
         initial_bytes: b"native-poly-second-layer-test".to_vec(),
         sumcheck_pow_bits: 0,
@@ -258,7 +260,7 @@ fn second_native_poly_layer_verifier_is_bounded_and_refuses_forged_proof_fields(
         .position(|batch| batch.current().len() == NUM_KECCAK_BINARY_COLS)
         .expect("the native Keccak table is opened");
     assert!(targets.opening.rounds.len() > 1);
-    assert_eq!(targets.commitment.len(), 1 << CAP_HEIGHT);
+    assert_eq!(Some(targets.commitment.len()), ARITY.cap_roots(CAP_HEIGHT));
 
     let public: Vec<F> = checked.public_values().iter().flatten().copied().collect();
     let private = checked
