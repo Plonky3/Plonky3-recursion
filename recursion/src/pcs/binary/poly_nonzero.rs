@@ -318,6 +318,7 @@ mod tests {
     use p3_baby_bear::BabyBear;
 
     use super::*;
+    use crate::challenger::RetainedDigest;
 
     #[test]
     fn forced_zeros_and_high_coefficients_select_the_actual_completion_digest() {
@@ -327,7 +328,8 @@ mod tests {
                 let limbs = b.alloc_private_input_array::<12>("polynomial candidate");
                 let value = b.binary_poly192_from_limbs::<BabyBear>(limbs).unwrap();
                 let bits = core::array::from_fn(|i| value.coefficients()[i / 64].bits()[i % 64]);
-                (bits, b.alloc_private_input_array::<32>("candidate digest"))
+                let digest = b.alloc_private_input_array::<32>("candidate digest");
+                (bits, RetainedDigest::Bytes(digest))
             })
             .collect::<Vec<_>>();
         let (selected, _, digest) =
@@ -343,6 +345,9 @@ mod tests {
                 }
             }
         }
+        let RetainedDigest::Bytes(digest) = digest else {
+            panic!("byte digests select a byte digest")
+        };
         for byte in digest {
             let expected = b.alloc_private_input("completion digest byte");
             let diff = b.sub(byte, expected);
@@ -392,7 +397,8 @@ mod tests {
                 let limbs = b.alloc_private_input_array::<12>("polynomial candidate");
                 let value = b.binary_poly192_from_limbs::<BabyBear>(limbs).unwrap();
                 let bits = core::array::from_fn(|i| value.coefficients()[i / 64].bits()[i % 64]);
-                (bits, b.alloc_private_input_array::<32>("candidate digest"))
+                let digest = b.alloc_private_input_array::<32>("candidate digest");
+                (bits, RetainedDigest::Bytes(digest))
             })
             .collect::<Vec<_>>();
         let (selected, following, digest) =
@@ -408,6 +414,9 @@ mod tests {
                 }
             }
         }
+        let RetainedDigest::Bytes(digest) = digest else {
+            panic!("byte digests select a byte digest")
+        };
         for byte in digest {
             let expected = b.alloc_private_input("completion digest byte");
             let diff = b.sub(byte, expected);

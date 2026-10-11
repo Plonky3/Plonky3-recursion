@@ -244,11 +244,12 @@ impl BinaryProtocolPolicy<Poly64> for NativePoly64Relation {
         b: &mut CircuitBuilder<Poly64>,
         ch: &mut BinaryTower128Challenger,
     ) -> Result<NativePoly192Target, VerificationError> {
-        // Each coefficient reads eight drawn bytes as one little-endian cell.
-        let bytes = ch.sample_bytes_with_host::<H, Poly64>(b, 24)?;
+        // Each coefficient reads eight drawn bytes as one little-endian cell,
+        // packed from four drawn words without decomposing them.
+        let words = ch.sample_words_with_host::<H, Poly64>(b, 12)?;
         let mut coefficients = [ExprId::ZERO; 3];
-        for (coefficient, bytes) in coefficients.iter_mut().zip(bytes.as_chunks::<8>().0) {
-            *coefficient = b.native_poly64_from_bytes(*bytes)?;
+        for (coefficient, words) in coefficients.iter_mut().zip(words.as_chunks::<4>().0) {
+            *coefficient = b.native_poly64_from_unchecked_words(*words)?;
         }
         Ok(b.native_poly192_from_coefficients(coefficients))
     }

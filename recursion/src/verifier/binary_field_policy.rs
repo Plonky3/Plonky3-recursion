@@ -369,9 +369,10 @@ where
         b: &mut CircuitBuilder<BinaryField128>,
         ch: &mut BinaryTower128Challenger,
     ) -> Result<NativeTower128Target, VerificationError> {
-        // A native draw reads sixteen digest bytes as one low-first scalar.
-        let bytes = ch.sample_bytes_with_host::<H, BinaryField128>(b, 16)?;
-        Ok(b.native_tower128_from_bytes(bytes.try_into().expect("sixteen sampled bytes"))?)
+        // A native draw reads sixteen digest bytes as one low-first scalar,
+        // packed from eight drawn words without decomposing them.
+        let words = ch.sample_words_with_host::<H, BinaryField128>(b, 8)?;
+        Ok(b.native_tower128_from_unchecked_words(words.try_into().expect("eight drawn words"))?)
     }
     fn assert_equal(
         b: &mut CircuitBuilder<BinaryField128>,
@@ -573,8 +574,7 @@ mod tests {
     type P = NativeTower128Relation;
     type Native = BinaryChallenger<BinaryField8, HashChallenger<u8, Keccak256Hash, 32>>;
 
-    /// Binds a native policy draw to the native transcript's next field
-    /// sample and checks that its coordinates are known for decompositions.
+    /// Binds a native policy draw to the native transcript's next field sample.
     fn draw(
         b: &mut CircuitBuilder<F>,
         ch: &mut BinaryTower128Challenger,
@@ -582,9 +582,6 @@ mod tests {
     ) -> (NativeTower128Target, u128) {
         let expected: F = native.sample();
         let actual = P::sample::<H>(b, ch).unwrap();
-        let before = b.construction_usage().unwrap();
-        b.native_tower128_to_bits(&actual).unwrap();
-        assert_eq!(b.construction_usage().unwrap(), before);
         let constant = b.native_tower128_constant(expected.to_repr());
         P::assert_equal(b, &actual, &constant);
         (actual, expected.to_repr())
@@ -666,11 +663,48 @@ mod tests {
         }
     }
 
+    /// A native field draw packs eight whole swapped digest limbs with seven
+    /// fused multiply-adds: a second draw from one refill adds exactly seven
+    /// expression nodes and no hint, decomposition, connection or hash call.
+    /// Both draws equal the native transcript's samples.
+    #[test]
+    fn native_tower_draws_pack_swapped_digest_limbs() {
+        let raw = 0x0f1e_2d3c_4b5a_6978_8796_a5b4_c3d2_e1f0u128;
+        let mut native = Native::from_hasher(alloc::vec::Vec::new(), Keccak256Hash);
+        native.observe_slice(&raw.to_le_bytes().map(BinaryField8::from_repr));
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let observed = b.public_input();
+        let observed = b.native_tower128_from_expr(observed);
+        let mut ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        P::observe::<H>(&mut b, &mut ch, &[observed]).unwrap();
+        draw(&mut b, &mut ch, &mut native);
+        let expected: F = native.sample();
+        let before = b.construction_usage().unwrap();
+        let actual = P::sample::<H>(&mut b, &mut ch).unwrap();
+        let after = b.construction_usage().unwrap();
+        assert_eq!(after.expression_nodes, before.expression_nodes + 7);
+        assert_eq!(after.pending_connects, before.pending_connects);
+        assert_eq!(after.non_primitive_calls, before.non_primitive_calls);
+        let constant = b.native_tower128_constant(expected.to_repr());
+        P::assert_equal(&mut b, &actual, &constant);
+        let circuit = b.build().unwrap();
+        let runs = |value: u128| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(&[F::from_repr(value)])
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        assert!(runs(raw));
+        assert!(!runs(raw ^ 1 << 100));
+    }
+
     /// Native field draws from a challenger merged under a private one-hot
-    /// selector read merged output bytes, whose coordinates are unknown, and
-    /// equal the chosen branch's native transcript: entirely from merged bytes,
-    /// across the refill, and after observing both draws through their
-    /// recorded coordinates. The other branch's transcript is rejected.
+    /// selector read merged output words and a merged odd byte, and equal the
+    /// chosen branch's native transcript: entirely from merged output, across
+    /// the refill, and after observing both draws. The other branch's
+    /// transcript is rejected.
     #[test]
     fn native_tower_draws_from_merged_branches_match_the_native_transcript() {
         let values: [u128; 2] = [

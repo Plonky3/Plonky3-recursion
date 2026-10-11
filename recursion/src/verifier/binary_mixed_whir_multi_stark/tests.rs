@@ -7,6 +7,7 @@ mod forged_limb;
 mod forged_swapped;
 mod keccak_chain;
 mod small;
+mod transcript;
 
 use alloc::boxed::Box;
 use alloc::vec;

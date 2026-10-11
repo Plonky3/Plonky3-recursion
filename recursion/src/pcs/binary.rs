@@ -405,7 +405,7 @@ where
     });
 
     let mut seen = alloc::vec![zero; count];
-    let mut retained = [zero; 32];
+    let mut retained = None;
     let mut stop_total = zero;
     for _ in 0..max_draws {
         // Native uniform-bit sampling consumes eight bytes even for bits=0.
@@ -444,9 +444,8 @@ where
         circuit.assert_bool(stop);
         stop_total = circuit.add(stop_total, stop);
         let (_, digest) = challenger.retained_query_digest()?;
-        for (selected, byte) in retained.iter_mut().zip(digest) {
-            *selected = circuit.mul_add(stop, byte, *selected);
-        }
+        let selected = retained.unwrap_or_else(|| digest.zeroed(zero));
+        retained = Some(digest.mul_add(circuit, stop, &selected)?);
         circuit.check_construction_limits()?;
     }
     for present in seen {
@@ -454,6 +453,7 @@ where
     }
     circuit.connect(stop_total, one);
     let (hash, _) = challenger.retained_query_digest()?;
+    let retained = retained.expect("at least one candidate draw");
     Ok(BinaryQueryContinuation::from_digest(hash, retained))
 }
 

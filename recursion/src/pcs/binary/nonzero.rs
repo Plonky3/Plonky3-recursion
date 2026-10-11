@@ -15,10 +15,11 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 
 use super::RecursiveBinaryChallengeField;
 use super::whir_plan::invalid;
+use crate::challenger::RetainedDigest;
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
-type NonzeroSelection<T> = (Vec<T>, Vec<T>, [ExprId; 32]);
+type NonzeroSelection<T> = (Vec<T>, Vec<T>, RetainedDigest);
 
 /// Verifier-owned count and draw budget for a rejection-sampled nonzero point.
 /// The field identity pins the native sample width and Wiedemann coordinates.
@@ -258,7 +259,7 @@ impl<E: RecursiveBinaryChallengeField> BinaryNonzeroChallengeTailPlan<E> {
     }
 }
 
-type Candidate = (BinaryTower128Target, [ExprId; 32]);
+type Candidate = (BinaryTower128Target, RetainedDigest);
 
 fn sample_words<E, H, EF>(
     b: &mut CircuitBuilder<EF>,
@@ -272,12 +273,9 @@ where
 {
     let mut candidates = Vec::with_capacity(count);
     for _ in 0..count {
-        let bytes = ch.sample_bytes_with_host::<H, EF>(b, E::RAW_BITS / 8)?;
+        let drawn = ch.sample_byte_bits_with_host::<H, EF>(b, E::RAW_BITS / 8)?;
         let mut bits = [ExprId::ZERO; 128];
-        for (i, byte) in bytes.into_iter().enumerate() {
-            let byte_bits = H::decompose_word(b, byte, 8)?;
-            bits[8 * i..8 * i + 8].copy_from_slice(&byte_bits);
-        }
+        bits[..drawn.len()].copy_from_slice(&drawn);
         let value = b.binary128_from_bits(bits)?;
         let (_, digest) = ch.retained_query_digest()?;
         candidates.push((value, digest));
@@ -292,8 +290,8 @@ fn select_nonzero<EF: p3_field::Field + Eq + Hash>(
     b: &mut CircuitBuilder<EF>,
     count: usize,
     bits: usize,
-    candidates: &[(BinaryTower128Target, [ExprId; 32])],
-) -> Result<(Vec<BinaryTower128Target>, [ExprId; 32]), VerificationError> {
+    candidates: &[Candidate],
+) -> Result<(Vec<BinaryTower128Target>, RetainedDigest), VerificationError> {
     let (values, _, digest) =
         select_nonzero_with_tail(b, count, bits, candidates.len(), 0, candidates)?;
     Ok((values, digest))
@@ -343,7 +341,7 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
     bits: usize,
     max_draws: usize,
     following_count: usize,
-    candidates: &[([ExprId; W], [ExprId; 32])],
+    candidates: &[([ExprId; W], RetainedDigest)],
 ) -> Result<NonzeroSelection<[ExprId; W]>, VerificationError> {
     if count == 0
         || count > max_draws
@@ -365,7 +363,7 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
     states[0] = one;
     let mut selected = vec![[ExprId::ZERO; W]; count];
     let mut following = vec![[ExprId::ZERO; W]; following_count];
-    let mut retained = [ExprId::ZERO; 32];
+    let mut retained = None;
     for (index, (candidate, _)) in candidates[..max_draws].iter().enumerate() {
         let factors: Vec<_> = candidate[..bits]
             .iter()
@@ -387,9 +385,8 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
             }
             if j + 1 == count {
                 let digest = &candidates[index + following_count].1;
-                for (out, &byte) in retained.iter_mut().zip(digest) {
-                    *out = b.mul_add(take, byte, *out);
-                }
+                let sum = retained.unwrap_or_else(|| digest.zeroed(ExprId::ZERO));
+                retained = Some(digest.mul_add(b, take, &sum)?);
                 for (offset, output) in following.iter_mut().enumerate() {
                     for (out, &bit) in output.iter_mut().zip(&candidates[index + offset + 1].0) {
                         *out = b.mul_add(take, bit, *out);
@@ -404,6 +401,7 @@ pub(super) fn select_nonzero_words<const W: usize, EF: p3_field::Field + Eq + Ha
     let incomplete = b.sub(states[count], one);
     b.assert_zero(incomplete);
     b.check_construction_limits()?;
+    let retained = retained.expect("the first candidate already selects a completion digest");
     Ok((selected, following, retained))
 }
 
@@ -466,9 +464,12 @@ mod tests {
             let limbs = b.alloc_private_input_array::<8>("candidate");
             let value = b.binary128_from_limbs::<BabyBear>(limbs).unwrap();
             let digest = b.alloc_private_input_array::<32>("digest");
-            candidates.push((value, digest));
+            candidates.push((value, RetainedDigest::Bytes(digest)));
         }
         let (values, digest) = select_nonzero(&mut b, 2, 128, &candidates).unwrap();
+        let RetainedDigest::Bytes(digest) = digest else {
+            panic!("byte digests select a byte digest")
+        };
         for value in &values {
             let expected = b.alloc_private_input_array::<8>("expected nonzero");
             let expected = b.binary128_from_limbs::<BabyBear>(expected).unwrap();
@@ -558,10 +559,13 @@ mod tests {
                 let digest = core::array::from_fn(|byte| {
                     b.define_const(H::encode_u16(128 + 16 * index + byte as u16).unwrap())
                 });
-                candidates.push((value, digest));
+                candidates.push((value, RetainedDigest::Bytes(digest)));
             }
             let (values, following, digest) =
                 select_nonzero_with_tail(&mut b, 2, width, 4, 2, &candidates).unwrap();
+            let RetainedDigest::Bytes(digest) = digest else {
+                panic!("byte digests select a byte digest")
+            };
             for (actual, raw) in values.iter().chain(&following).zip([7, 11, 0, 19]) {
                 let expected = b.binary128_constant(raw).unwrap();
                 crate::pcs::binary::assert_equal(&mut b, actual, &expected);
@@ -599,11 +603,14 @@ mod tests {
                     let limbs = b.alloc_private_input_array::<8>("candidate");
                     let value = b.binary128_from_limbs::<BabyBear>(limbs).unwrap();
                     let digest = b.alloc_private_input_array::<32>("digest");
-                    candidates.push((value, digest));
+                    candidates.push((value, RetainedDigest::Bytes(digest)));
                 }
                 let (values, following, digest) =
                     select_nonzero_with_tail(&mut b, count, bits, max_draws, tail, &candidates)
                         .unwrap();
+                let RetainedDigest::Bytes(digest) = digest else {
+                    panic!("byte digests select a byte digest")
+                };
                 for actual in values.iter().chain(&following) {
                     let limbs = b.alloc_private_input_array::<8>("expected value");
                     let expected = b.binary128_from_limbs::<BabyBear>(limbs).unwrap();
@@ -674,7 +681,7 @@ mod construction_tests {
             })
             .unwrap();
         let bits = b.alloc_private_input_array::<128>("candidate bits");
-        let candidates = vec![(bits, [ExprId::ZERO; 32]); 3];
+        let candidates = vec![(bits, RetainedDigest::Bytes([ExprId::ZERO; 32])); 3];
         assert!(matches!(
             select_nonzero_words(&mut b, 2, 128, 3, 0, &candidates),
             Err(VerificationError::CircuitBuilder(
