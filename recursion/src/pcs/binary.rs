@@ -80,6 +80,7 @@ mod ring_input;
 mod ring_native;
 mod tensor;
 mod tensor_native;
+mod tensor_native_poly;
 mod trace;
 mod trace_native;
 mod trace_plan;
@@ -155,6 +156,9 @@ pub use ring_native::{
 };
 pub use tensor::{BinaryTowerTensorTarget, binary_tensor_closing_weight};
 pub use tensor_native::{NativeBitTensorTarget, binary128_trace_dual_basis, closing_weight_native};
+pub use tensor_native_poly::{
+    NativePolyBitTensorTarget, closing_weight_native_poly, poly64_trace_dual_basis,
+};
 pub use trace::{
     BinaryBooleanTraceInputShape, BinaryBooleanTraceProofTargets, BinaryBooleanTraceVerifier,
     NativeBinaryBooleanTraceInput,
