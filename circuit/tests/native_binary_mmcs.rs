@@ -8,7 +8,9 @@ use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::Mmcs;
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_test_utils::binary_field_params::keccak;
+use p3_merkle_tree::MerkleTreeMmcs;
+use p3_symmetric::{CompressionFunctionFromHasher, CryptographicHasher, SerializingHasher};
+use p3_test_utils::binary_field_params::{blake3, keccak};
 
 /// Word rows have an even byte width and are given as low-first sixteen-bit
 /// words.
@@ -141,19 +143,25 @@ fn check<F: BinaryCoordinateField>(
 }
 
 /// Opens the `2^arity` rows of the aligned subtree at `upper` in a native tree
-/// and checks that the subtree gadget alone binds every leaf, their order,
-/// the upper index bits, every sibling above the subtree and the cap root.
-/// Word leaves are four-byte rows given as two low-first sixteen-bit words.
-fn check_subtree<F: BinaryCoordinateField>(
+/// of `hash`, whose p3 hasher is `hasher`, and checks that the subtree gadget
+/// alone binds every leaf, their order, the upper index bits, every sibling
+/// above the subtree and the cap root. Word leaves are four-byte rows given
+/// as two low-first sixteen-bit words.
+fn check_subtree<F, Hs>(
+    hash: ByteHash,
+    hasher: Hs,
     log_height: usize,
     arity: usize,
     cap_height: usize,
     upper: usize,
     words: bool,
-) {
-    let mmcs = keccak::LevelMmcs::<BinaryField8>::new(
-        keccak::FieldHash::new(keccak::byte_hash()),
-        keccak::Compress::new(keccak::byte_hash()),
+) where
+    F: BinaryCoordinateField,
+    Hs: CryptographicHasher<u8, [u8; 32]> + Copy + Sync,
+{
+    let mmcs = MerkleTreeMmcs::<BinaryField8, u8, _, _, 2, 32>::new(
+        SerializingHasher::new(hasher),
+        CompressionFunctionFromHasher::<_, 2, 32>::new(hasher),
         cap_height,
     );
     let row_bytes = if words { 4 } else { 3 };
@@ -172,7 +180,11 @@ fn check_subtree<F: BinaryCoordinateField>(
     let upper_bits = log_height - arity;
     let depth = upper_bits - cap_height;
     let mut b = CircuitBuilder::<F>::new();
-    b.enable_native_keccak_f1600().unwrap();
+    match hash {
+        ByteHash::Keccak256 => b.enable_native_keccak_f1600(),
+        ByteHash::Blake3 => b.enable_native_blake3_compress(),
+    }
+    .unwrap();
     let mut inputs = |count| (0..count).map(|_| b.public_input()).collect::<Vec<_>>();
     let leaves: Vec<_> = (0..size).map(|_| inputs(leaf_inputs)).collect();
     let bits = inputs(upper_bits);
@@ -180,7 +192,7 @@ fn check_subtree<F: BinaryCoordinateField>(
     let cap: Vec<_> = (0..1 << cap_height).map(|_| inputs(16)).collect();
     if words {
         b.verify_byte_hash_mmcs_subtree_words_with_host::<NativeBinaryEncoding>(
-            ByteHash::Keccak256,
+            hash,
             &leaves,
             1 << log_height,
             &bits,
@@ -189,7 +201,7 @@ fn check_subtree<F: BinaryCoordinateField>(
         )
     } else {
         b.verify_byte_hash_mmcs_subtree_bytes_with_host::<NativeBinaryEncoding>(
-            ByteHash::Keccak256,
+            hash,
             &leaves,
             1 << log_height,
             &bits,
@@ -258,14 +270,34 @@ fn check_subtree<F: BinaryCoordinateField>(
     }
 }
 
+/// Subtrees as `(log_height, arity, cap_height, upper)`.
+const SUBTREES: [(usize, usize, usize, usize); 4] =
+    [(5, 2, 1, 5), (4, 1, 0, 6), (3, 3, 0, 0), (4, 2, 2, 3)];
+
 #[test]
 fn native_subtree_binds_every_leaf_its_order_and_the_upper_path() {
-    for (log_height, arity, cap_height, upper) in
-        [(5, 2, 1, 5), (4, 1, 0, 6), (3, 3, 0, 0), (4, 2, 2, 3)]
-    {
+    let (hash, hasher) = (ByteHash::Keccak256, keccak::byte_hash());
+    for (log_height, arity, cap_height, upper) in SUBTREES {
         for words in [false, true] {
-            check_subtree::<BinaryField128>(log_height, arity, cap_height, upper, words);
-            check_subtree::<Poly64>(log_height, arity, cap_height, upper, words);
+            check_subtree::<BinaryField128, _>(
+                hash, hasher, log_height, arity, cap_height, upper, words,
+            );
+            check_subtree::<Poly64, _>(hash, hasher, log_height, arity, cap_height, upper, words);
+        }
+    }
+}
+
+/// Under Blake3 every leaf word and sibling word is a direct block input of a
+/// native Blake3 compression.
+#[test]
+fn native_blake3_subtree_binds_every_leaf_its_order_and_the_upper_path() {
+    let (hash, hasher) = (ByteHash::Blake3, blake3::byte_hash());
+    for (log_height, arity, cap_height, upper) in SUBTREES {
+        for words in [false, true] {
+            check_subtree::<BinaryField128, _>(
+                hash, hasher, log_height, arity, cap_height, upper, words,
+            );
+            check_subtree::<Poly64, _>(hash, hasher, log_height, arity, cap_height, upper, words);
         }
     }
 }

@@ -70,7 +70,7 @@ fn check<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(mut b: CircuitBuilder<F>
     );
 }
 
-/// A four-digest node is Keccak-256 of the 128 concatenated digest bytes and a
+/// A four-digest node is `hash` of the 128 concatenated digest bytes and a
 /// two-digest node is the pairwise compression.
 fn check_compress_n<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
     mut b: CircuitBuilder<F>,

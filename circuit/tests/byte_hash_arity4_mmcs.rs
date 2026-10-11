@@ -1,5 +1,6 @@
-//! Arity-4 byte-hash Merkle trees: the circuit's level schedule and openings
-//! match p3's `MerkleTreeMmcs` under the native binary and prime hosts.
+//! Arity-2 and arity-4 byte-hash Merkle trees: the circuit's level schedule
+//! and openings match p3's `MerkleTreeMmcs` under the native binary and prime
+//! hosts.
 
 use core::hash::Hash;
 
@@ -244,13 +245,14 @@ fn matrices(heights: &[usize], words: bool) -> Vec<RowMajorMatrix<BinaryField8>>
         .collect()
 }
 
-/// Opens `index` of a p3 arity-4 tree over matrices of `heights` and checks
+/// Opens `index` of a p3 arity-`N` tree over matrices of `heights` and checks
 /// that the gadget accepts exactly that opening. Every opened row, sibling,
 /// sibling order within a group, index bit and the selected cap root is
 /// bound, while the other cap roots are not read. Every sibling word is an
 /// input word of one node hash, which bounds it to sixteen bits as a native
-/// Keccak lane or through the prime host's word decomposition, so a sibling
-/// word widened past sixteen bits is rejected with no range check of its own.
+/// hash block input (a Keccak lane or a Blake3 block word) or through the
+/// prime host's word decomposition, so a sibling word widened past sixteen
+/// bits is rejected with no range check of its own.
 fn check_opening<F, H, Hs, const N: usize>(
     carrier: &Carrier<F, Hs>,
     heights: &[usize],
@@ -411,9 +413,10 @@ fn check_opening<F, H, Hs, const N: usize>(
     }
 }
 
-/// Single matrices of `2^k` rows for odd and even `k` under caps of up to two
-/// levels, whose odd top groups pad two digests to four; then mixed heights
-/// with injections, pairwise bridges and a tallest height of seven rows.
+/// Single matrices of `2^k` rows for odd and even `k`, under caps of up to two
+/// levels at arity four, whose odd top groups pad two digests to four, and of
+/// up to four levels at arity two; then mixed heights with injections,
+/// pairwise bridges and a tallest height of seven rows.
 fn check_openings<F, H, Hs, const N: usize>(carrier: &Carrier<F, Hs>)
 where
     F: Field + Eq + Hash,
@@ -426,8 +429,12 @@ where
             let mut indices = vec![0, 5 % height, 10 % height, height - 1];
             indices.sort_unstable();
             indices.dedup();
-            let levels = if N == 4 { k.div_ceil(2) } else { k };
-            for cap_height in 0..=levels.min(2) {
+            let max_cap = if N == 4 {
+                k.div_ceil(2).min(2)
+            } else {
+                k.min(4)
+            };
+            for cap_height in 0..=max_cap {
                 for &index in &indices {
                     check_opening::<F, H, Hs, N>(carrier, &[height], cap_height, index, words);
                 }
