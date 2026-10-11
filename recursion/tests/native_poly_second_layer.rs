@@ -7,11 +7,13 @@
 //! this bounds the circuit size and checks that witness generation refuses
 //! forged proof fields.
 
+use std::collections::HashMap;
+
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::Poly64;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::{ByteHash, NpoTypeId};
-use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, CircuitError, ExprId, Op};
+use p3_circuit::ops::{ByteHash, KECCAK256_RATE_BYTES, NpoTypeId};
+use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, CircuitError, ExprId, Op, WitnessId};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_field::PrimeCharacteristicRing;
 use p3_keccak_air::NUM_KECCAK_BINARY_COLS;
@@ -46,6 +48,9 @@ const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
 };
 /// About 12% above the measured 1,867 native Keccak-f calls.
 const MAX_KECCAK_CALLS: usize = 2_100;
+/// About 12% above the measured 53 calls of the first transcript refill,
+/// whose 148 constant leading blocks take none.
+const MAX_FIRST_REFILL_CALLS: usize = 60;
 /// Measured padded witness, gate, public, Keccak and bridge table heights.
 /// One more row of growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [23, 21, 4, 16, 12];
@@ -163,14 +168,22 @@ fn second_native_poly_layer_verifier_is_bounded_and_refuses_forged_proof_fields(
         Some(&CONSTRUCTION),
     )
     .unwrap();
-    let keccak_calls = circuit
+    let calls: Vec<_> = circuit
         .ops
         .iter()
-        .filter(|op| {
-            matches!(op, Op::NonPrimitiveOpWithExecutor { executor, .. }
-                if executor.op_type() == &NpoTypeId::native_keccak_f1600())
+        .filter_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor {
+                executor,
+                inputs,
+                outputs,
+                ..
+            } if executor.op_type() == &NpoTypeId::native_keccak_f1600() => {
+                Some((&inputs[0], &outputs[0]))
+            }
+            _ => None,
         })
-        .count();
+        .collect();
+    let keccak_calls = calls.len();
     eprintln!(
         "second native Poly64 layer: {} witnesses, {} operations, {keccak_calls} Keccak-f calls, log heights {:?}",
         circuit.witness_count,
@@ -178,6 +191,26 @@ fn second_native_poly_layer_verifier_is_bounded_and_refuses_forged_proof_fields(
         bus.log_heights()
     );
     assert!(keccak_calls <= MAX_KECCAK_CALLS);
+    // The first transcript refill starts from the sponge state of its constant
+    // leading blocks, held as constant capacity limbs, and each of its later
+    // calls continues from the previous call's capacity output.
+    let constants: HashMap<WitnessId, F> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match *op {
+            Op::Const { out, val } => Some((out, val)),
+            _ => None,
+        })
+        .collect();
+    let capacity = KECCAK256_RATE_BYTES / 2;
+    let start = &calls[0].0[capacity..];
+    assert!(start.iter().all(|id| constants.contains_key(id)));
+    assert!(start.iter().any(|id| constants[id] != F::ZERO));
+    let refill = 1 + calls
+        .windows(2)
+        .take_while(|pair| pair[1].0[capacity..] == pair[0].1[capacity..])
+        .count();
+    assert!(refill <= MAX_FIRST_REFILL_CALLS);
     assert_eq!(bus.log_heights().len(), MAX_LOG_HEIGHTS.len());
     assert!(
         bus.log_heights()
