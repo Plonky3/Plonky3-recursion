@@ -3,6 +3,7 @@
 use core::hash::Hash;
 
 use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::tables::Traces;
 
 use super::statement::ClosedStatement;
 use super::*;
@@ -162,39 +163,7 @@ where
         params: ProveNextLayerParams,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
-        if D != <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION {
-            return Err(invalid("binary prepared circuit extension degree mismatch"));
-        }
-        let mut usage = binary.usage();
-        usage.check(limits)?;
-        usage.add_metadata_entries(limits, initial_bytes.len())?;
-        let shape = binary.shape();
-        let counts: Vec<_> = R::public_counts(&shape);
-        let layout = SL::with_limits(&counts, limits)?;
-        usage.add_metadata_entries(limits, layout.schema().base_len())?;
-        let mut b = CircuitBuilder::<SC::Challenge>::new();
-        // Main PCS, preprocessing PCS and transcript hashes are independently
-        // configured. Register both closed byte-hash implementations.
-        b.enable_keccak_f1600::<Val<SC>>();
-        b.enable_blake3_compress::<Val<SC>>();
-        let (public, original_limbs) = layout.allocate_public::<Val<SC>, SC::Challenge>(&mut b)?;
-        let targets = R::allocate_targets::<Val<SC>, SC::Challenge>(&shape, &mut b)?;
-        let initial = initial_bytes
-            .iter()
-            .map(|&byte| b.define_const(SC::Challenge::from_u8(byte)))
-            .collect::<Vec<_>>();
-        let ch = BinaryTower128Challenger::with_initial_bytes::<Val<SC>, SC::Challenge>(
-            &mut b, hash, &initial,
-        )?;
-        binary.verify_circuit::<Val<SC>, SC::Challenge>(&mut b, ch, &public, &targets)?;
-        // SAFETY: These are the exact original limb IDs used above to build
-        // each AIR public value consumed by the complete binary verifier.
-        // The layout fixes their instance/value/limb order and Base encoding.
-        unsafe {
-            VerifiedStatementTargets::new_unchecked(&b, layout.schema().clone(), original_limbs)
-        }?
-        .install::<Val<SC>>(&mut b)?;
-        let circuit = b.build()?;
+        let (shape, layout, circuit) = Self::circuit(&binary, hash, initial_bytes, limits)?;
         let mut preprocessors: Vec<Box<dyn NpoPreprocessor<Val<SC>>>> = vec![
             Box::new(KeccakF1600Preprocessor),
             Box::new(Blake3CompressPreprocessor),
@@ -236,6 +205,49 @@ where
         })
     }
 
+    /// The binary verifier's complete prime-field circuit, with the statement layout's limbs
+    /// installed as its verified statement, before any prover is prepared for it.
+    pub(super) fn circuit(
+        binary: &R,
+        hash: ByteHash,
+        initial_bytes: &[u8],
+        limits: &VerifierLimits,
+    ) -> Result<(S, SL, Circuit<SC::Challenge>), VerificationError> {
+        if D != <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION {
+            return Err(invalid("binary prepared circuit extension degree mismatch"));
+        }
+        let mut usage = binary.usage();
+        usage.check(limits)?;
+        usage.add_metadata_entries(limits, initial_bytes.len())?;
+        let shape = binary.shape();
+        let counts: Vec<_> = R::public_counts(&shape);
+        let layout = SL::with_limits(&counts, limits)?;
+        usage.add_metadata_entries(limits, layout.schema().base_len())?;
+        let mut b = CircuitBuilder::<SC::Challenge>::new();
+        // Main PCS, preprocessing PCS and transcript hashes are independently
+        // configured. Register both closed byte-hash implementations.
+        b.enable_keccak_f1600::<Val<SC>>();
+        b.enable_blake3_compress::<Val<SC>>();
+        let (public, original_limbs) = layout.allocate_public::<Val<SC>, SC::Challenge>(&mut b)?;
+        let targets = R::allocate_targets::<Val<SC>, SC::Challenge>(&shape, &mut b)?;
+        let initial = initial_bytes
+            .iter()
+            .map(|&byte| b.define_const(SC::Challenge::from_u8(byte)))
+            .collect::<Vec<_>>();
+        let ch = BinaryTower128Challenger::with_initial_bytes::<Val<SC>, SC::Challenge>(
+            &mut b, hash, &initial,
+        )?;
+        binary.verify_circuit::<Val<SC>, SC::Challenge>(&mut b, ch, &public, &targets)?;
+        // SAFETY: These are the exact original limb IDs used above to build
+        // each AIR public value consumed by the complete binary verifier.
+        // The layout fixes their instance/value/limb order and Base encoding.
+        unsafe {
+            VerifiedStatementTargets::new_unchecked(&b, layout.schema().clone(), original_limbs)
+        }?
+        .install::<Val<SC>>(&mut b)?;
+        Ok((shape, layout, b.build()?))
+    }
+
     pub(super) fn prove(
         &self,
         input: &R::Input,
@@ -244,17 +256,27 @@ where
     where
         p3_batch_stark::BatchProof<SC>: ProvingMaybeSend,
     {
-        let public: Vec<_> = self
-            .layout
+        let traces = Self::run(&self.circuit, &self.layout, &self.shape, input, public)?;
+        self.prepared.prove(&traces)
+    }
+
+    /// Witness generation of a [`Self::circuit`] for one binary statement and native input.
+    pub(super) fn run(
+        circuit: &Circuit<SC::Challenge>,
+        layout: &SL,
+        shape: &S,
+        input: &R::Input,
+        public: &[Vec<F>],
+    ) -> Result<Traces<SC::Challenge>, VerificationError> {
+        let public: Vec<_> = layout
             .pack::<Val<SC>>(public)?
             .into_iter()
             .map(SC::Challenge::from)
             .collect();
-        let private = R::private_values::<SC::Challenge>(input, &self.shape)?;
-        let mut runner = self.circuit.runner();
+        let private = R::private_values::<SC::Challenge>(input, shape)?;
+        let mut runner = circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;
-        let traces = runner.run()?;
-        self.prepared.prove(&traces)
+        Ok(runner.run()?)
     }
 }
