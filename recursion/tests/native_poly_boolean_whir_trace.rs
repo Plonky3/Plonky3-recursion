@@ -370,6 +370,43 @@ impl<M: ByteDigestMmcs<F> + Clone> Opened<M> {
             );
         }
     }
+
+    /// A verifier over `arity` and `cap_height`, a tree other than this opening's, refuses the
+    /// import as a configuration mismatch and leaves the transcript where the commitment left
+    /// it.
+    fn check_foreign_tree(&self, arity: MerkleArity, cap_height: usize) {
+        let foreign = BinaryPolyBooleanWhirTraceVerifier::with_limits(
+            &self.config,
+            self.case.protocol(),
+            ByteHash::Keccak256,
+            arity,
+            cap_height,
+            &VerifierLimits::default(),
+        )
+        .unwrap();
+        let mut entry = challenger();
+        self.pcs.observe_commitment(&self.commitment, &mut entry);
+        let mut untouched = entry.clone();
+        let error = foreign
+            .import_native(
+                &self.config,
+                &self.mmcs,
+                &self.commitment,
+                &self.points,
+                &self.proof,
+                &mut entry,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("configuration shape mismatch"),
+            "{arity:?} cap {cap_height}: {error}"
+        );
+        assert_eq!(
+            entry.sample_algebra_element::<E>(),
+            untouched.sample_algebra_element::<E>()
+        );
+    }
 }
 
 fn public_value(b: &mut CircuitBuilder<F>) -> NativePoly192Target {
@@ -547,39 +584,22 @@ fn node_counts_at_the_keccak_shape() {
     );
 }
 
-/// A verifier of the other tree arity refuses the import before the transcript moves.
+/// A verifier of the other tree arity, in either direction, or of another cap height, higher
+/// or lower, refuses the import at its configuration check before the transcript moves. The
+/// arity cases use single-root caps, so the cap's root count cannot tell the trees apart.
 #[test]
-fn a_foreign_tree_arity_is_refused_at_import() {
-    let case = Case::new(8, 3, true, 1).with_cap(1);
-    let opened = Opened::new(case, MerkleArity::Four, quad_mmcs(case.cap_height), 0xa4);
-    let pairwise = BinaryPolyBooleanWhirTraceVerifier::new(
-        &opened.config,
-        case.protocol(),
-        ByteHash::Keccak256,
-        case.cap_height,
-    )
-    .unwrap();
-    let mut entry = challenger();
-    opened
-        .pcs
-        .observe_commitment(&opened.commitment, &mut entry);
-    let mut untouched = entry.clone();
-    assert!(
-        pairwise
-            .import_native(
-                &opened.config,
-                &opened.mmcs,
-                &opened.commitment,
-                &opened.points,
-                &opened.proof,
-                &mut entry,
-            )
-            .is_err()
-    );
-    assert_eq!(
-        entry.sample_algebra_element::<E>(),
-        untouched.sample_algebra_element::<E>()
-    );
+fn a_foreign_tree_is_refused_at_import() {
+    let case = Case::new(8, 3, true, 1);
+    let pair = Opened::new(case, MerkleArity::Two, pair_mmcs(0), 0xa2);
+    let quad = Opened::new(case, MerkleArity::Four, quad_mmcs(0), 0xa4);
+    let capped = case.with_cap(1);
+    let quad_capped = Opened::new(capped, MerkleArity::Four, quad_mmcs(1), 0xa41);
+    pair.check_foreign_tree(MerkleArity::Four, 0);
+    quad.check_foreign_tree(MerkleArity::Two, 0);
+    pair.check_foreign_tree(MerkleArity::Two, 1);
+    quad_capped.check_foreign_tree(MerkleArity::Four, 0);
+    // Four roots on both sides: a pairwise cap two levels high.
+    quad_capped.check_foreign_tree(MerkleArity::Two, 2);
 }
 
 /// Every committed class of the native witness is bound: changing an opened value, a tensor,
