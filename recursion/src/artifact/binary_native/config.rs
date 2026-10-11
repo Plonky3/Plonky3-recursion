@@ -12,6 +12,8 @@ pub(super) use poly_whir::NativePolyWhirPcs;
 pub use poly_whir::{
     BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
 };
+#[cfg(test)]
+mod poly_packed_tests;
 mod transcript;
 mod whir;
 use alloc::vec::Vec;
