@@ -1,7 +1,7 @@
 //! Turns a resource-limit failure of a native recursion layer into a message that names the
-//! command-line flag that raises the limit, or lowers the demand when the field or domain
-//! bounds it. The value is what the layer needs when the count is a total, else a starting
-//! point, because construction and verifier checks stop at the first count over the limit.
+//! command-line flag that raises the limit or lowers the demand, when one exists. The value is
+//! what the layer needs when the count is a total, else a starting point, because construction
+//! and verifier checks stop at the first count over the limit.
 
 use std::error::Error;
 use std::fmt;
@@ -11,7 +11,7 @@ use p3_circuit_prover::direct::DirectCircuitError;
 use p3_circuit_prover::native_bus::NativeBusCircuitError;
 use p3_recursion::verifier::VerificationError;
 
-/// A limit failure of one layer with the flag that raises it. The original error is the cause.
+/// A limit failure of one layer with its remedy. The original error is the cause.
 struct LimitHint {
     message: String,
     source: VerificationError,
@@ -94,7 +94,7 @@ fn circuit_knob(component: &str) -> Knob {
     }
 }
 
-/// A value above both `limit` doubled and the next power of two over `reached`.
+/// The larger of `limit` doubled and the next power of two above `reached`.
 fn bumped(reached: usize, limit: usize) -> usize {
     let power = reached
         .saturating_add(1)
@@ -188,8 +188,8 @@ fn message(stage: &str, error: &VerificationError) -> Option<String> {
     }
 }
 
-/// Wraps `error` of `stage` (for example `layer 2`) with the flag to raise when it is a limit
-/// failure; any other error is returned unchanged.
+/// Wraps `error` of `stage` (for example `layer 2`) with its remedy when it is a limit failure;
+/// any other error is returned unchanged.
 fn explain(stage: impl fmt::Display, error: VerificationError) -> Box<dyn Error> {
     match message(&stage.to_string(), &error) {
         Some(message) => Box::new(LimitHint {
