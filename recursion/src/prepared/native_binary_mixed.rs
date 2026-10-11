@@ -9,9 +9,7 @@ use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_binary_pcs::{ChallengeField, FoldAlphabet};
 use p3_circuit::ops::ByteHash;
-use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
-use p3_circuit::ops::binary_host::BinaryCircuitHost;
-use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
+use p3_circuit::{Circuit, CircuitConstructionLimits};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::native_bus::{
     KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir, NativeBusTrace,
@@ -22,8 +20,9 @@ use p3_multi_stark::folder::VerifierAir;
 use p3_sumcheck::layout::Table;
 use p3_whir::{ProtocolParameters, WhirDomain};
 
-use super::native_binary::{NativeBinaryRecursionOptions, codeword_cells, first_fold};
-use crate::BinaryTower128Challenger;
+use super::native_binary::{
+    NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer, codeword_cells,
+};
 use crate::artifact::{
     BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirConfig,
     BinaryNativeMixedWhirPcsParameters, BinaryNativeMixedWhirProver, BinaryNativeVerifierSpec,
@@ -34,7 +33,6 @@ use crate::pcs::binary::RecursiveBinaryWhirTowerField;
 use crate::verifier::{BinaryWhirMultiStarkInputShape, VerificationError};
 
 type F = BinaryField128;
-type H = NativeBinaryEncoding;
 type OutputAir = NativeBusCircuitAir<F>;
 /// A complete native recursive proof whose Keccak table is committed as packed bits.
 pub type NativeBinaryMixedRecursiveProof = MultiStarkProof<BinaryNativeMixedWhirConfig>;
@@ -128,67 +126,15 @@ where
             base: options,
             packed,
         } = options;
-        let minimum_log_height = first_fold(&options.main)?;
-        if first_fold(&options.preprocessed)? != minimum_log_height {
-            return Err(VerificationError::InvalidProofShape(
-                "native recursive main and preprocessing initial folds differ".into(),
-            ));
-        }
-        let verifier = authority.recursive_verifier();
-        <H as BinaryCircuitHost<F>>::check_hash(authority.transcript_hash())?;
-        verifier.check_native_circuit_support()?;
-        let input_shape = verifier.input_shape();
-        let public_counts: Vec<_> = input_shape.public_value_counts().collect();
-        let mut builder = match construction_limits {
-            Some(limits) => CircuitBuilder::<F>::with_construction_limits(limits)?,
-            None => CircuitBuilder::<F>::new(),
-        };
-        builder.enable_native_keccak_f1600()?;
-        let public: Vec<Vec<_>> = public_counts
-            .iter()
-            .map(|&count| {
-                (0..count)
-                    .map(|_| {
-                        let value = builder.public_input();
-                        builder.check_construction_limits()?;
-                        Ok(builder.native_tower128_from_expr(value))
-                    })
-                    .collect::<Result<_, VerificationError>>()
-            })
-            .collect::<Result<_, VerificationError>>()?;
-        let proof = input_shape.allocate_native_targets(&mut builder)?;
-        let initial: Vec<_> = authority
-            .initial_bytes()
-            .iter()
-            .map(|&byte| {
-                let value = builder.define_const(H::encode_u16(u16::from(byte))?);
-                builder.check_construction_limits()?;
-                Ok::<_, VerificationError>(value)
-            })
-            .collect::<Result<_, _>>()?;
-        let challenger = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
-            &mut builder,
-            authority.transcript_hash(),
-            &initial,
-        )?;
-        verifier.verify_native(&mut builder, challenger, &public, &proof)?;
-        builder.check_construction_limits()?;
-        let circuit = builder.build()?;
-        let bus = NativeBusCircuit::with_options(
-            &circuit,
-            "recursion",
-            minimum_log_height,
-            *circuit_limits,
+        let (circuit, bus) = PreparedNativeBinaryWhirLayer::<Base>::verifier_circuit_with_keccak(
+            authority,
+            &options,
+            circuit_limits,
+            construction_limits.as_ref(),
             KeccakCommitment::Bits,
         )?;
-        let required_draws = bus.log_heights().iter().copied().max().unwrap_or(0);
-        if options.max_tau_draws < required_draws {
-            return Err(VerificationError::InvalidProofShape(alloc::format!(
-                "native recursive nonzero draw budget {} is below the required {}",
-                options.max_tau_draws,
-                required_draws,
-            )));
-        }
+        let input_shape = authority.recursive_verifier().input_shape();
+        let public_counts: Vec<_> = input_shape.public_value_counts().collect();
         let (keccak_table, bit_variables) = bus
             .keccak_table_index()
             .zip(bus.packed_bit_variables())

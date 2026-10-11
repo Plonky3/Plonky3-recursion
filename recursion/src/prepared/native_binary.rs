@@ -12,7 +12,7 @@ use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncodi
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
 use p3_circuit_prover::direct::DirectCircuitLimits;
-use p3_circuit_prover::native_bus::{NativeBusCircuit, NativeBusCircuitAir};
+use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir};
 use p3_field::{ExtensionField, PackedValue};
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::folder::VerifierAir;
@@ -133,6 +133,30 @@ where
         A: VerifierAir<Base, F>,
         L: BinaryNativeWhirLayout<Base>,
     {
+        Self::verifier_circuit_with_keccak(
+            authority,
+            options,
+            circuit_limits,
+            construction_limits,
+            KeccakCommitment::Dense,
+        )
+    }
+
+    /// As [`Self::verifier_circuit`], committing the output Keccak table as `keccak`.
+    pub(super) fn verifier_circuit_with_keccak<A, L>(
+        authority: &BinaryNativeWhirAuthority<Base, A, L>,
+        options: &NativeBinaryRecursionOptions,
+        circuit_limits: &DirectCircuitLimits,
+        construction_limits: Option<&CircuitConstructionLimits>,
+        keccak: KeccakCommitment,
+    ) -> Result<(Circuit<F>, NativeBusCircuit<F>), VerificationError>
+    where
+        Base: EncodableLevel + FoldAlphabet<F> + PackedValue<Value = Base> + Ord,
+        F: ChallengeField<Base>,
+        BinaryWhirDomain<Base>: WhirDomain<Base, F>,
+        A: VerifierAir<Base, F>,
+        L: BinaryNativeWhirLayout<Base>,
+    {
         let minimum_log_height = first_fold(&options.main)?;
         if first_fold(&options.preprocessed)? != minimum_log_height {
             return Err(VerificationError::InvalidProofShape(
@@ -179,11 +203,12 @@ where
         verifier.verify_native(&mut builder, challenger, &public, &proof)?;
         builder.check_construction_limits()?;
         let circuit = builder.build()?;
-        let bus = NativeBusCircuit::with_min_log_height_and_limits(
+        let bus = NativeBusCircuit::with_options(
             &circuit,
             "recursion",
             minimum_log_height,
             *circuit_limits,
+            keccak,
         )?;
         let required_draws = bus.log_heights().iter().copied().max().unwrap_or(0);
         if options.max_tau_draws < required_draws {
