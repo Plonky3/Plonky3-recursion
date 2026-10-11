@@ -30,30 +30,30 @@ type F = Poly64;
 
 const CAP_HEIGHT: usize = 2;
 
-/// About 12% above the measured second-layer verifier: 1,425,015 expression
-/// nodes, 55,058 pending connections, 15,918 non-primitive calls and 907,116
+/// About 12% above the measured second-layer verifier: 1,295,017 expression
+/// nodes, 35,938 pending connections, 15,486 non-primitive calls and 873,660
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 1_597_000,
-    max_pending_connects: 61_700,
-    max_non_primitive_calls: 17_830,
-    max_non_primitive_slots: 1_016_000,
+    max_expression_nodes: 1_451_000,
+    max_pending_connects: 40_300,
+    max_non_primitive_calls: 17_350,
+    max_non_primitive_slots: 979_000,
 };
-/// About 12% above the measured 1,376,727 witnesses and 1,124,034 operations.
+/// About 12% above the measured 1,257,905 witnesses and 1,007,334 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 1_542_000,
-    max_operations: 1_259_000,
+    max_witnesses: 1_409_000,
+    max_operations: 1_129_000,
     max_trace_cells: 1 << 28,
 };
-/// About 12% above the measured 1,844 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 2_070;
+/// About 12% above the measured 1,800 native Keccak-f calls.
+const MAX_KECCAK_CALLS: usize = 2_020;
 /// About 12% above the measured 53 calls of the first transcript refill,
 /// whose 148 constant leading blocks take none.
 const MAX_FIRST_REFILL_CALLS: usize = 60;
 /// Measured padded witness, gate, public, Keccak and bridge table heights.
 /// One more row of growth at a power-of-two boundary doubles that table.
-const MAX_LOG_HEIGHTS: [usize; 5] = [22, 21, 4, 16, 12];
+const MAX_LOG_HEIGHTS: [usize; 5] = [22, 20, 4, 16, 12];
 
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
