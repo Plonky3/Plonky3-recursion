@@ -40,7 +40,7 @@ impl Error for LimitHint {
 enum Knob {
     /// A flag that sets the limit itself.
     Raise(&'static str),
-    /// A flag that lowers the demand, because the limit follows from the field or the domain.
+    /// A flag that lowers the demand, because the field bounds the limit.
     Lower(&'static str),
     /// A `VerifierLimits` field that the example does not expose as a flag.
     Field(&'static str),
@@ -54,8 +54,9 @@ fn verifier_knob(component: &str) -> Knob {
             Knob::Raise("--max-pcs-codeword-cells")
         }
         "rounds" => Knob::Raise("--max-verifier-rounds"),
-        "binary WHIR native grinding bits" => Knob::Lower("--pow-bits"),
-        "binary WHIR cap height" => Knob::Lower("--cap-height"),
+        "binary native WHIR grinding bits" | "binary native grinding bits" => {
+            Knob::Lower("--pow-bits")
+        }
         "instances" => Knob::Field("max_instances"),
         "scalar elements" => Knob::Field("max_total_scalar_elements"),
         "metadata entries" => Knob::Field("max_metadata_entries"),
@@ -66,7 +67,7 @@ fn verifier_knob(component: &str) -> Knob {
         }
         "cap roots" => Knob::Field("max_cap_roots"),
         "final polynomial evaluations" => Knob::Field("max_final_poly_evaluations"),
-        "binary WHIR domain bits" => Knob::Field("max_log_domain_or_degree"),
+        "binary native WHIR domain bits" => Knob::Field("max_log_domain_or_degree"),
         _ => Knob::Fixed,
     }
 }
@@ -121,7 +122,7 @@ fn requirement(
             bumped(actual, limit)
         ),
         Knob::Lower(flag) => {
-            format!("the field or domain bounds it; lower {flag}")
+            format!("the field bounds it; lower {flag}")
         }
         Knob::Field(field) => {
             format!("it is VerifierLimits::{field}, which no flag of this example sets")
@@ -208,8 +209,11 @@ pub fn at_layer(depth: usize) -> impl Fn(VerificationError) -> Box<dyn Error> {
 mod tests {
     use p3_binary_field::Poly64;
     use p3_circuit::CircuitBuilder;
+    use p3_circuit::ops::ByteHash;
     use p3_circuit_prover::direct::DirectCircuitLimits;
     use p3_circuit_prover::native_bus::NativeBusCircuit;
+    use p3_recursion::artifact::BinaryNativePolyWhirPcsParameters;
+    use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
     use super::*;
 
@@ -293,10 +297,18 @@ mod tests {
 
     #[test]
     fn field_bounded_components_point_at_the_demand() {
-        let grinding = text(&verifier("binary WHIR native grinding bits"));
-        assert!(grinding.contains("lower --pow-bits"), "{grinding}");
-        let cap = text(&verifier("binary WHIR cap height"));
-        assert!(cap.contains("lower --cap-height"), "{cap}");
+        for component in [
+            "binary native WHIR grinding bits",
+            "binary native grinding bits",
+        ] {
+            let grinding = text(&verifier(component));
+            assert!(grinding.contains("lower --pow-bits"), "{grinding}");
+        }
+        let domain = text(&verifier("binary native WHIR domain bits"));
+        assert!(
+            domain.contains("VerifierLimits::max_log_domain_or_degree"),
+            "{domain}"
+        );
     }
 
     #[test]
@@ -364,6 +376,39 @@ mod tests {
                 .expect("a limit failure");
             let message = text(&VerificationError::NativeBusCircuit(error));
             assert!(message.contains(flag), "{message}");
+        }
+    }
+
+    #[test]
+    fn upstream_whir_strings_still_map_to_their_knobs() {
+        let protocol = |security_level, pow_bits| ProtocolParameters {
+            security_level,
+            pow_bits,
+            round_log_inv_rates: vec![],
+            folding_factor: FoldingFactor::Constant(4),
+            soundness_type: SecurityAssumption::JohnsonBound,
+            starting_log_inv_rate: 1,
+        };
+        // 60 grinding bits exceed the 56 the Poly64 challenger supports; 40 variables at rate 1
+        // exceed the default 32 domain bits.
+        for (num_variables, parameters, expected) in [
+            (8, protocol(100, 60), "lower --pow-bits"),
+            (
+                40,
+                protocol(32, 24),
+                "VerifierLimits::max_log_domain_or_degree",
+            ),
+        ] {
+            let error = BinaryNativePolyWhirPcsParameters::new(
+                num_variables,
+                parameters,
+                ByteHash::Keccak256,
+                0,
+            )
+            .err()
+            .expect("a limit failure");
+            let message = text(&error);
+            assert!(message.contains(expected), "{message}");
         }
     }
 }
