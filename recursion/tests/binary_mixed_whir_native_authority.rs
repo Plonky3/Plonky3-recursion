@@ -13,7 +13,7 @@ use p3_circuit_prover::native_bus::{
 use p3_commit::Mmcs;
 use p3_keccak::KeccakF;
 use p3_merkle_tree::PrunedMerklePaths;
-use p3_multi_stark::MultiStarkProof;
+use p3_multi_stark::{MultiStarkProof, MultiStarkSecurityReport};
 use p3_recursion::artifact::{
     ArtifactError, BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirConfig,
     BinaryNativeMixedWhirPcsParameters, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
@@ -363,6 +363,58 @@ fn identity_binds_the_packed_table_rate_and_preprocessing() {
         Err(VerificationError::InvalidProofShape(message)) if message
             == "binary native AIR declares bit columns its commitment does not store as bits"
     ));
+}
+
+/// The security report an authority exposes is the one its setup enforced: a target at the
+/// report's whole composed bits is accepted and the next bit is refused. Both main openings and
+/// the preprocessing opening are terms of the mixed report; the dense report has one main
+/// opening.
+#[test]
+fn setup_enforces_the_security_report_it_exposes() {
+    let (circuit, _) = keccak_chain();
+    let bits = native_bus(&circuit, KeccakCommitment::Bits);
+    let keccak = bits.keccak_table_index().unwrap();
+    let mixed = |security_bits| {
+        let mut spec = mixed_spec(&bits, keccak, RATES);
+        spec.security_bits = security_bits;
+        mixed_setup(bits.airs().to_vec(), bits.log_heights().to_vec(), spec)
+    };
+    let report = mixed(1).unwrap().security_report().clone();
+    let openings = |report: &MultiStarkSecurityReport| {
+        report
+            .terms()
+            .iter()
+            .filter(|term| term.label == "whir-opening")
+            .count()
+    };
+    assert_eq!(openings(&report), 3);
+    let floor = report.security_bits().unwrap().floor() as usize;
+    assert!(floor >= 16, "composed security {floor} bits");
+    assert_eq!(
+        mixed(floor).unwrap().security_report().terms(),
+        report.terms()
+    );
+    assert!(matches!(
+        mixed(floor + 1),
+        Err(VerificationError::InvalidProofShape(message))
+            if message.starts_with("binary native statement security target is not met")
+    ));
+
+    let dense = native_bus(&circuit, KeccakCommitment::Dense);
+    let dense_spec = spec(
+        whir(dense.main_variables(), 1),
+        whir(dense.preprocessed_variables().unwrap(), 1),
+    );
+    let authority = BinaryNativeWhirAuthority::<F, _>::setup(
+        dense.airs().to_vec(),
+        dense.log_heights().to_vec(),
+        dense_spec,
+        &limits(),
+    )
+    .map(|(_, authority)| authority)
+    .unwrap();
+    assert_eq!(openings(authority.security_report()), 2);
+    assert!(authority.security_report().security_bits().unwrap() >= 16.0);
 }
 
 #[test]

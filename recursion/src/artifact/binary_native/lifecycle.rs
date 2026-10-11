@@ -32,6 +32,8 @@ where
     pub(super) spec: BinaryNativeVerifierSpec<K::Parameters>,
     pub(super) identity: Arc<[u8]>,
     pub(super) limits: ArtifactLimits,
+    /// The statement's composed security, checked against `spec.security_bits` at setup.
+    pub(super) security: MultiStarkSecurityReport,
     base: NativeMmcs<F>,
     round: NativeMmcs<E>,
     preprocessed: Option<(NativeMmcs<F>, NativeMmcs<E>)>,
@@ -137,8 +139,8 @@ where
             .map(|((air, &height), public)| VerifierInstance::new(air, &verifying, height, public))
             .collect(),
     );
-    p3_multi_stark::security_report(&config, &instances)
-        .and_then(|report| report.require_security(spec.security_bits))
+    let security = p3_multi_stark::security_report(&config, &instances)
+        .and_then(|report| report.require_security(spec.security_bits).map(|()| report))
         .map_err(|error| {
             VerificationError::InvalidProofShape(alloc::format!(
                 "binary native statement security target is not met: {error}",
@@ -156,6 +158,7 @@ where
         spec,
         identity: Arc::from(identity),
         limits,
+        security,
         base,
         round,
         preprocessed,

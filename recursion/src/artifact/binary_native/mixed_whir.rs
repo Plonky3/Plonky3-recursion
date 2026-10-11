@@ -89,6 +89,11 @@ impl<A: VerifierAir<E, E>> BinaryNativeMixedWhirAuthority<A> {
     pub fn artifact_limits(&self) -> &ArtifactLimits {
         &self.state.limits
     }
+    /// Every assessed security term of the trusted statement, as setup checked it against the
+    /// spec's `security_bits`.
+    pub fn security_report(&self) -> &MultiStarkSecurityReport {
+        &self.state.security
+    }
     pub fn recursive_verifier(&self) -> &BinaryMixedWhirMultiStarkVerifier {
         &self.state.binary.verifier
     }

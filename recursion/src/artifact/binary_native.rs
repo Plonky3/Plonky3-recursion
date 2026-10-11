@@ -64,7 +64,7 @@ use p3_field::{ExtensionField, PackedValue};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleCap;
 use p3_multi_stark::folder::{ProverAir, VerifierAir};
-use p3_multi_stark::{MultiStarkProof, ProvingKey};
+use p3_multi_stark::{MultiStarkProof, MultiStarkSecurityReport, ProvingKey};
 pub use whir::{BinaryNativeWhirAuthority, BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof};
 
 use super::wire::{Writer, encode_framed};
