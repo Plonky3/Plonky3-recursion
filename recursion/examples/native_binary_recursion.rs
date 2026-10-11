@@ -30,8 +30,7 @@
 //! `--max-pcs-codeword-cells 1073741824`.
 //!
 //! `--pcs folding` takes the same security level and grinding bits. Its coset
-//! leaves default to cap height 1, and its second layer needs more than the
-//! default `--max-pcs-codeword-cells`; the limit error states how many.
+//! leaves default to cap height 1.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits
 //! count field cells or graph entries, not bytes.
@@ -112,9 +111,11 @@ struct Args {
     /// Maximum combined trace, preprocessing, and temporary field cells.
     #[arg(long, default_value_t = 1 << 28)]
     max_trace_cells: usize,
-    /// Maximum combined initial main and preprocessing codeword cells.
-    #[arg(long, default_value_t = 1 << 29)]
-    max_pcs_codeword_cells: usize,
+    /// Maximum combined initial main and preprocessing codeword cells. Defaults to
+    /// 2^29 for WHIR at `--log-inv-rate 1`, doubled for each further rate bit and for
+    /// `--pcs folding`, since each multiplies every committed codeword.
+    #[arg(long)]
+    max_pcs_codeword_cells: Option<usize>,
     /// Maximum aggregate verifier rounds in each recursive output authority.
     #[arg(long, default_value_t = 256)]
     max_verifier_rounds: usize,
@@ -131,6 +132,16 @@ struct Args {
     pow_bits: usize,
 }
 impl Args {
+    /// `--max-pcs-codeword-cells`, or the default for the selected commitment and rate.
+    fn max_pcs_codeword_cells(&self) -> usize {
+        self.max_pcs_codeword_cells.unwrap_or_else(|| {
+            let folding = u32::from(self.pcs == Pcs::Folding);
+            let rate = u32::try_from(self.log_inv_rate.saturating_sub(1)).unwrap_or(u32::MAX);
+            1usize
+                .checked_shl(29u32.saturating_add(rate).saturating_add(folding))
+                .unwrap_or(usize::MAX)
+        })
+    }
     /// `--cap-height`, or the default for the selected commitment and leaves.
     fn cap_height(&self) -> usize {
         self.cap_height
@@ -192,7 +203,7 @@ fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
         security_bits: 4,
-        max_pcs_codeword_cells: args.max_pcs_codeword_cells,
+        max_pcs_codeword_cells: args.max_pcs_codeword_cells(),
         artifact_limits: ArtifactLimits {
             verifier: VerifierLimits {
                 max_rounds: args.max_verifier_rounds,
@@ -235,7 +246,7 @@ fn folding_options(depth: usize, args: &Args) -> NativeBinaryFoldingRecursionOpt
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
         security_bits: 4,
-        max_pcs_codeword_cells: args.max_pcs_codeword_cells,
+        max_pcs_codeword_cells: args.max_pcs_codeword_cells(),
         artifact_limits: ArtifactLimits {
             verifier: VerifierLimits {
                 max_rounds: args.max_verifier_rounds,
