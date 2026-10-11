@@ -967,3 +967,6 @@ impl BinaryPolyWhirMultiStarkVerifier {
         Ok(continuation)
     }
 }
+
+#[cfg(test)]
+mod tests;
