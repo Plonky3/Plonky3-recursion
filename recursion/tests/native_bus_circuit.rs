@@ -1793,6 +1793,97 @@ fn sparse_poly_coordinate_proof_rejects_non_boolean_hints() {
     );
 }
 
+/// `bit * k + addend` for a public Boolean `bit`: the gate table checks the bit in the row of
+/// the product, which reads `k` from preprocessing. A prover may claim a non-Boolean bit that
+/// satisfies the product, or the product with another constant; each leaves only that row
+/// unsatisfied, and the proof is refused.
+fn check_fused_constant_product<F: BinaryCoordinateField>(
+    setup: impl Fn(&NativeBusCircuit<F>, Vec<Vec<F>>) -> Accepts<F>,
+) {
+    let constant = F::from_raw_coordinates(0x8912).unwrap();
+    let addend = F::from_raw_coordinates(0x5a5a).unwrap();
+    let mut b = CircuitBuilder::<F>::new();
+    let [bit, addend_input, expected] = b.alloc_public_input_array::<3>("bit, addend, product");
+    b.assert_bool(bit);
+    let k = b.define_const(constant);
+    let out = b.mul_add(bit, k, addend_input);
+    b.connect(out, expected);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "fused-product").unwrap();
+    let gate = prepared
+        .airs()
+        .iter()
+        .position(|air| air.width() == 5)
+        .unwrap();
+    let pp = prepared.airs()[gate].preprocessed_trace().unwrap();
+    let rows = pp.values.as_chunks::<14>().0;
+    // Selector 3 is the Boolean gate and selector 7 the checked product with a constant.
+    assert!(rows.iter().all(|row| row[9] == F::ZERO));
+    let fused: Vec<_> = rows.iter().filter(|row| row[13] == F::ONE).collect();
+    assert_eq!(fused.len(), 1);
+    assert_eq!(fused[0][5], constant);
+
+    let statement = [F::ONE, addend, constant + addend];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest: Vec<_> = (0..circuit.witness_count)
+        .map(|i| *witness.get_value(WitnessId(i)).unwrap())
+        .collect();
+    let honest_traces = prepared.traces(&witness).unwrap();
+    assert!(setup(
+        &prepared,
+        prepared.public_values(&statement).unwrap()
+    )(honest_traces.clone()));
+    let accepts = |forged: &[F], statement: [F; 3]| {
+        let mut traces = honest_traces.clone();
+        patch_witness_cells(prepared.airs(), &mut traces, &honest, forged);
+        let values = prepared.public_values(&statement).unwrap();
+        for (trace, public) in traces.iter_mut().zip(&values) {
+            if !public.is_empty() {
+                for row in trace.values.chunks_mut(trace.width) {
+                    row.copy_from_slice(public);
+                }
+            }
+        }
+        let failed: Vec<_> = prepared
+            .airs()
+            .iter()
+            .zip(&traces)
+            .zip(&values)
+            .filter_map(|((air, trace), public)| {
+                catch_unwind(AssertUnwindSafe(|| check_constraints(air, trace, public)))
+                    .is_err()
+                    .then_some(air.width())
+            })
+            .collect();
+        assert_eq!(failed, [5], "only the gate AIR should reject");
+        setup(&prepared, values)(traces)
+    };
+
+    let two = F::from_raw_coordinates(2).unwrap();
+    let non_boolean = [two, addend, two * constant + addend];
+    assert!(!accepts(
+        &replay(&circuit, &honest, &non_boolean, &[]),
+        non_boolean
+    ));
+
+    let other_constant = [F::ONE, addend, constant + F::ONE + addend];
+    let mut forged = honest.clone();
+    forged[circuit.public_rows[2].0 as usize] = other_constant[2];
+    assert!(!accepts(&forged, other_constant));
+}
+
+#[test]
+fn fused_tower_constant_products_refuse_non_boolean_bits_and_other_constants() {
+    check_fused_constant_product(tower_accepts);
+}
+
+#[test]
+fn fused_poly_constant_products_refuse_non_boolean_bits_and_other_constants() {
+    check_fused_constant_product(poly64_accepts);
+}
+
 fn limb_value<F: BinaryCoordinateField>(limb: u16) -> F {
     F::from_raw_coordinates(limb.into()).unwrap()
 }

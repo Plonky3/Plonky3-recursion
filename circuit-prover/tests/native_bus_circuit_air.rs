@@ -159,6 +159,91 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
     );
 }
 
+/// A bit decomposition multiplies every bit after the first by a constant weight. The gate
+/// table reads each weight from preprocessing and checks the bit in that product's row, so
+/// four bits cost one Boolean gate and three fused gates, each reading three witnesses.
+#[test]
+fn constant_products_check_their_multiplicands_in_one_row() {
+    let mut b = CircuitBuilder::<F>::new();
+    let expected = b.public_input();
+    let bits = b.alloc_private_input_array::<4>("bits");
+    let sum = b.binary_recompose_coordinates(&bits).unwrap();
+    b.connect(sum, expected);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "fused").unwrap();
+    let statement = [F::from_raw_coordinates(0b1101).unwrap()];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    runner
+        .set_private_inputs(&[F::ONE, F::ZERO, F::ONE, F::ONE])
+        .unwrap();
+    let traces = prepared
+        .traces(&runner.run().unwrap().witness_trace)
+        .unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let rows = gate_pp.values.as_chunks::<14>().0;
+    let selected = |selector: usize| -> Vec<usize> {
+        (0..rows.len())
+            .filter(|&row| rows[row][6 + selector] == F::ONE)
+            .collect()
+    };
+    // The first bit's weight is one, so it is added rather than multiplied and keeps its check.
+    assert_eq!(selected(3).len(), 1);
+    assert!(selected(4).is_empty() && selected(6).is_empty());
+    let fused = selected(7);
+    let weights: Vec<_> = fused.iter().map(|&row| rows[row][5]).collect();
+    assert_eq!(
+        weights,
+        [2, 4, 8].map(|w| F::from_raw_coordinates(w).unwrap())
+    );
+    for &row in &fused {
+        assert_eq!([rows[row][1], rows[row][3]], [F::ZERO; 2]);
+    }
+    let fanout = prepared.airs()[0].preprocessed_trace().unwrap();
+    let reads = fanout
+        .values
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|row| row[1] == F::ONE)
+        .count();
+    let gate_reads: usize = rows
+        .iter()
+        .map(|row| {
+            row[6..14]
+                .iter()
+                .zip([1, 3, 3, 2, 4, 5, 3, 3])
+                .filter_map(|(&selector, count)| (selector == F::ONE).then_some(count))
+                .sum::<usize>()
+        })
+        .sum();
+    assert_eq!(reads, statement.len() + gate_reads);
+
+    let rejects = |forge: &dyn Fn(&mut [F], F)| {
+        // A row whose bit is one, so that every constant gives a different product.
+        let row = *fused
+            .iter()
+            .find(|&&row| traces[1].values[5 * row] == F::ONE)
+            .unwrap();
+        let mut forged = traces[1].clone();
+        forge(&mut forged.values[5 * row..5 * (row + 1)], rows[row][5]);
+        std::panic::catch_unwind(|| check_constraints(&prepared.airs()[1], &forged, &[])).is_err()
+    };
+    let two = F::from_raw_coordinates(2).unwrap();
+    assert!(rejects(&|cells, weight| {
+        cells[0] = two;
+        cells[4] = two * weight + cells[2];
+    }));
+    assert!(rejects(&|cells, weight| {
+        cells[4] = cells[0] * (weight + F::ONE) + cells[2];
+    }));
+}
+
 #[test]
 fn bus_labels_fit_independently_of_fanout_row_positions() {
     let mut b = CircuitBuilder::<BinaryField8>::new();
