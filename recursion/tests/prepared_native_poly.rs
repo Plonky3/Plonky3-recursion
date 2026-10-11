@@ -33,11 +33,12 @@ fn recursive_protocol() -> ProtocolParameters {
         ..protocol()
     }
 }
-fn options() -> NativeBinaryRecursionOptions {
+/// Output commitments of `arity` trees.
+fn options(arity: MerkleArity) -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
         main: recursive_protocol(),
         preprocessed: recursive_protocol(),
-        arity: MerkleArity::Two,
+        arity,
         cap_height: 0,
         initial_bytes: b"native-recursion-layer-v1".to_vec(),
         sumcheck_pow_bits: 0,
@@ -58,6 +59,18 @@ fn options() -> NativeBinaryRecursionOptions {
 #[test]
 #[ignore = "proves a full native Poly64/Poly192 verifier; run explicitly"]
 fn native_poly_layer_proves_and_binds_the_original_statement() {
+    prove_native_poly_layer(MerkleArity::Two);
+}
+
+/// The child and the layer's outputs commit with four-digest trees.
+#[test]
+#[ignore = "proves a full native Poly64/Poly192 verifier; run explicitly"]
+fn four_digest_trees_carry_through_a_native_poly_layer() {
+    prove_native_poly_layer(MerkleArity::Four);
+}
+
+/// The child and the layer's outputs commit with `arity` trees.
+fn prove_native_poly_layer(arity: MerkleArity) {
     let [input, factor, constant] = [0xfedcba9876543210, 0x8123456789abcdef, 0x8912].map(F::new);
     let mut builder = CircuitBuilder::<F>::new();
     let a = builder.public_input();
@@ -70,8 +83,15 @@ fn native_poly_layer_proves_and_binds_the_original_statement() {
     let air = DirectCircuitAir::new(&circuit).unwrap();
     let variables = 1 + air.width().next_power_of_two().ilog2() as usize;
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativePolyWhirPcsParameters::new(variables, protocol(), ByteHash::Keccak256, 0)
-            .unwrap(),
+        main: BinaryNativePolyWhirPcsParameters::with_limits(
+            variables,
+            protocol(),
+            ByteHash::Keccak256,
+            arity,
+            0,
+            &VerifierLimits::default(),
+        )
+        .unwrap(),
         preprocessed: None,
         transcript_hash: ByteHash::Keccak256,
         initial_bytes: b"native-recursion-child-v1".to_vec(),
@@ -112,7 +132,7 @@ fn native_poly_layer_proves_and_binds_the_original_statement() {
     };
     let layer = PreparedNativeBinaryPolyWhirLayer::from_native_authority_with_construction_limits(
         &authority,
-        options(),
+        options(arity),
         &limits,
         &CircuitConstructionLimits {
             max_expression_nodes: 1 << 22,
@@ -194,7 +214,7 @@ fn authority(hash: ByteHash) -> BinaryNativePolyWhirAuthority<ConstantAir> {
     .1
 }
 fn limit_options() -> NativeBinaryRecursionOptions {
-    let mut options = options();
+    let mut options = options(MerkleArity::Two);
     options.max_pcs_codeword_cells = 0;
     options
 }

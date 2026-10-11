@@ -16,6 +16,7 @@ use p3_recursion::backend::fri::FriRecursionBackend;
 use p3_recursion::builtin_config::{
     BabyBearD4Poseidon2BinaryConfig, FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary,
 };
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::prepared::PreparedBinaryWhirMultiStarkLayer;
 use p3_recursion::{BatchOnly, Poseidon2Config, ProveNextLayerParams, TrustedPreparedLayer};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -40,12 +41,14 @@ impl<AB: AirBuilder<F = F>> Air<AB> for ConstantAir {
         b.assert_eq(b.main().current_slice()[0], b.public_values()[0]);
     }
 }
+/// A native child whose commitment opens `arity` trees.
 fn spec(
     prefix: Vec<u8>,
     hash: ByteHash,
+    arity: MerkleArity,
 ) -> BinaryNativeVerifierSpec<BinaryNativeWhirPcsParameters<F>> {
     BinaryNativeVerifierSpec {
-        main: BinaryNativeWhirPcsParameters::new(
+        main: BinaryNativeWhirPcsParameters::with_limits(
             3,
             ProtocolParameters {
                 starting_log_inv_rate: 2,
@@ -56,7 +59,9 @@ fn spec(
                 pow_bits: 0,
             },
             hash,
+            arity,
             0,
+            &ArtifactLimits::default().verifier,
         )
         .unwrap(),
         preprocessed: None,
@@ -95,7 +100,7 @@ fn canonical(values: &[BabyBear]) -> Vec<u8> {
 
 fn checked_whir_chain(hash: ByteHash) {
     let limits = ArtifactLimits::default();
-    let native_spec = spec(vec![7, 19, 13], hash);
+    let native_spec = spec(vec![7, 19, 13], hash, MerkleArity::Two);
     let (prover, authority) = BinaryNativeWhirAuthority::<F, _>::setup_with_artifact_limits(
         vec![ConstantAir],
         vec![3],
@@ -172,7 +177,7 @@ fn checked_whir_chain(hash: ByteHash) {
     let (foreign_prover, foreign) = BinaryNativeWhirAuthority::<F, _>::setup_with_artifact_limits(
         vec![ConstantAir],
         vec![3],
-        spec(vec![7, 19, 13, 0], hash),
+        spec(vec![7, 19, 13, 0], hash, MerkleArity::Two),
         limits,
     )
     .unwrap();
@@ -266,4 +271,40 @@ fn checked_whir_chain(hash: ByteHash) {
 #[test]
 fn checked_whir_native_bytes_survive_two_portable_recursion_layers() {
     checked_whir_chain(ByteHash::Blake3);
+}
+
+/// The prime-field layer verifies a native child whose commitment opens four-digest trees,
+/// and refuses the token of the same statement under pairwise trees.
+#[test]
+fn prime_layer_wraps_a_native_child_of_four_digest_trees() {
+    let limits = ArtifactLimits::default();
+    let value = F::ONE;
+    let public = vec![vec![value]];
+    // The child's authority and the checked token of its proof of `public`.
+    let checked = |arity| {
+        let (prover, authority) = BinaryNativeWhirAuthority::<F, _>::setup_with_artifact_limits(
+            vec![ConstantAir],
+            vec![3],
+            spec(vec![7, 19, 13], ByteHash::Keccak256, arity),
+            limits,
+        )
+        .unwrap();
+        let proof = prover
+            .prove(&public, vec![RowMajorMatrix::new(vec![value; 8], 1)])
+            .unwrap();
+        let token = authority.verify_native(&proof, &public).unwrap();
+        (authority, token)
+    };
+    let (authority, token) = checked(MerkleArity::Four);
+    let layer = PreparedBinaryWhirMultiStarkLayer::<F, C, 4>::from_native_authority(
+        &authority,
+        config(&limits),
+        ProveNextLayerParams::default(),
+    )
+    .unwrap();
+    let output = layer.prove_verified(&token).unwrap();
+    let statement = layer.statement_layout().pack::<BabyBear>(&public).unwrap();
+    layer.verifier().verify(&output.0, &statement).unwrap();
+    let (_, pairwise) = checked(MerkleArity::Two);
+    assert!(layer.prove_verified(&pairwise).is_err());
 }

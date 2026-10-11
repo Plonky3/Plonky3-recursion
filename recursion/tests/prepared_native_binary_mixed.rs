@@ -38,12 +38,13 @@ const fn protocol(security_level: usize, folding: usize) -> ProtocolParameters {
     }
 }
 
-fn options() -> NativeBinaryMixedRecursionOptions {
+/// Output commitments of `arity` trees.
+fn options(arity: MerkleArity) -> NativeBinaryMixedRecursionOptions {
     NativeBinaryMixedRecursionOptions {
         base: NativeBinaryRecursionOptions {
             main: protocol(32, 4),
             preprocessed: protocol(32, 4),
-            arity: MerkleArity::Two,
+            arity,
             cap_height: 0,
             initial_bytes: b"native-mixed-recursion-layer-v1".to_vec(),
             sumcheck_pow_bits: 0,
@@ -83,7 +84,8 @@ struct Fixture {
     layer: PreparedNativeBinaryMixedWhirLayer,
 }
 
-fn prepare() -> Fixture {
+/// A layer over a dense child; the child and the layer's outputs commit with `arity` trees.
+fn prepare(arity: MerkleArity) -> Fixture {
     let [input, factor, constant] = [0xfedcba9876543210, 0x8123456789abcdef, 0x8912]
         .map(|raw| F::from_raw_coordinates(raw).unwrap());
     let mut builder = CircuitBuilder::<F>::new();
@@ -97,11 +99,13 @@ fn prepare() -> Fixture {
     let air = DirectCircuitAir::new(&circuit).unwrap();
     let variables = 1 + air.width().next_power_of_two().ilog2() as usize;
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativeWhirPcsParameters::<F>::new(
+        main: BinaryNativeWhirPcsParameters::<F>::with_limits(
             variables,
             protocol(8, 1),
             ByteHash::Keccak256,
+            arity,
             0,
+            &VerifierLimits::default(),
         )
         .unwrap(),
         preprocessed: None,
@@ -144,7 +148,7 @@ fn prepare() -> Fixture {
     };
     let layer = PreparedNativeBinaryMixedWhirLayer::from_native_authority_with_construction_limits(
         &authority,
-        options(),
+        options(arity),
         &limits,
         &CircuitConstructionLimits {
             max_expression_nodes: 1 << 22,
@@ -178,7 +182,7 @@ fn tampered_child_fails_mixed_layer_witness_generation() {
         private,
         layer,
         ..
-    } = prepare();
+    } = prepare(MerkleArity::Two);
     assert!(matches!(
         layer.prove_verified(&foreign),
         Err(VerificationError::PreparedInputMismatch { .. })
@@ -199,12 +203,25 @@ fn tampered_child_fails_mixed_layer_witness_generation() {
 #[test]
 #[ignore = "proves a full native binary verifier with a packed Keccak table; run explicitly"]
 fn mixed_output_layer_proves_and_binds_the_original_statement() {
+    prove_mixed_output_layer(MerkleArity::Two);
+}
+
+/// The dense child and both parts of the mixed layer's output commit with four-digest trees.
+#[test]
+#[ignore = "proves a full native binary verifier with a packed Keccak table; run explicitly"]
+fn four_digest_trees_carry_through_a_mixed_layer() {
+    prove_mixed_output_layer(MerkleArity::Four);
+}
+
+/// Proves the mixed layer over a child of `arity` trees, its output committed with `arity`
+/// trees, and checks the output against the child's statement.
+fn prove_mixed_output_layer(arity: MerkleArity) {
     let Fixture {
         public,
         checked,
         layer,
         ..
-    } = prepare();
+    } = prepare(arity);
     let outer = layer.prove_verified(&checked).unwrap();
     assert!(outer.opening.packed.is_some());
     let token = layer.verify(&outer, &public).unwrap();
@@ -234,7 +251,7 @@ fn mixed_output_layer_token_is_wrapped_by_the_prime_layer() {
         checked,
         layer,
         ..
-    } = prepare();
+    } = prepare(MerkleArity::Two);
     let outer = layer.prove_verified(&checked).unwrap();
     let token = layer.verify(&outer, &public).unwrap();
     let authority = layer.authority().clone();

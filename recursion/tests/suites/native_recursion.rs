@@ -1,3 +1,5 @@
+#[path = "../native_arity4_round_trips.rs"]
+mod native_arity4_round_trips;
 #[path = "../native_binary_air.rs"]
 mod native_binary_air;
 #[path = "../native_binary_boolean_whir_trace.rs"]

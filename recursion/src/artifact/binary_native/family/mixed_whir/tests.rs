@@ -161,7 +161,16 @@ fn mixed_parameters_refuse_parts_on_other_trees() {
         0,
     )
     .unwrap();
-    for packed in [other_cap, other_hash] {
+    let other_arity = BinaryNativeWhirPcsParameters::with_limits(
+        bits - ABSORBED_VARIABLES,
+        whir(bits - ABSORBED_VARIABLES).config.params().clone(),
+        HASH,
+        MerkleArity::Four,
+        0,
+        &VerifierLimits::default(),
+    )
+    .unwrap();
+    for packed in [other_cap, other_hash, other_arity] {
         assert!(
             BinaryNativeMixedWhirPcsParameters::with_packed_table(
                 whir(DENSE_VARIABLES),

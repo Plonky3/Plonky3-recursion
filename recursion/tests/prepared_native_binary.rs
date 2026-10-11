@@ -34,11 +34,12 @@ fn recursive_protocol() -> ProtocolParameters {
         ..protocol()
     }
 }
-fn options() -> NativeBinaryRecursionOptions {
+/// Output commitments of `arity` trees.
+fn options(arity: MerkleArity) -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
         main: recursive_protocol(),
         preprocessed: recursive_protocol(),
-        arity: MerkleArity::Two,
+        arity,
         cap_height: 0,
         initial_bytes: b"native-recursion-layer-v1".to_vec(),
         sumcheck_pow_bits: 0,
@@ -59,16 +60,25 @@ fn options() -> NativeBinaryRecursionOptions {
 #[test]
 #[ignore = "proves a full native binary verifier; run explicitly"]
 fn native_layer_proves_and_binds_the_original_statement() {
-    prove_native_layer::<F>();
+    prove_native_layer::<F>(MerkleArity::Two);
 }
 
 #[test]
 #[ignore = "proves a complete Tower32 child verifier over Tower128; run explicitly"]
 fn tower32_child_is_proved_over_tower128() {
-    prove_native_layer::<BinaryField32>();
+    prove_native_layer::<BinaryField32>(MerkleArity::Two);
 }
 
-fn prove_native_layer<B>()
+/// The child and the layer's outputs commit with four-digest trees; the layer verifies the
+/// child's openings at that arity and its own output is a native input at that arity.
+#[test]
+#[ignore = "proves a full native binary verifier; run explicitly"]
+fn four_digest_trees_carry_through_a_native_layer() {
+    prove_native_layer::<F>(MerkleArity::Four);
+}
+
+/// The child and the layer's outputs commit with `arity` trees.
+fn prove_native_layer<B>(arity: MerkleArity)
 where
     B: RecursiveBinaryWhirTowerField
         + BinaryCoordinateField
@@ -92,11 +102,13 @@ where
     let air = DirectCircuitAir::new(&circuit).unwrap();
     let variables = 1 + air.width().next_power_of_two().ilog2() as usize;
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativeWhirPcsParameters::<B>::new(
+        main: BinaryNativeWhirPcsParameters::<B>::with_limits(
             variables,
             protocol(),
             ByteHash::Keccak256,
+            arity,
             0,
+            &VerifierLimits::default(),
         )
         .unwrap(),
         preprocessed: None,
@@ -139,7 +151,7 @@ where
     };
     let layer = PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
         &authority,
-        options(),
+        options(arity),
         &limits,
         &CircuitConstructionLimits {
             max_expression_nodes: 1 << 22,
