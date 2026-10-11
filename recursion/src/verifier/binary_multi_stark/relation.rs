@@ -467,6 +467,9 @@ where
             &initial,
             proof.sumcheck,
         )?;
+        for value in &output.values {
+            P::constrain_challenge(b, value);
+        }
         Ok(BinaryMultiStarkReduction {
             alpha,
             beta,

@@ -437,6 +437,8 @@ pub(crate) trait BinaryTowerPolicy<CF: Field + Eq + Hash>: BinaryProtocolPolicy<
         num_variables: usize,
     ) -> Result<alloc::vec::Vec<Self::ChallengeTarget>, CircuitBuilderError>;
     /// Draws the plan's nonzero challenges and the continuation after them.
+    ///
+    /// The caller constrains each challenge with `constrain_challenge`.
     fn sample_nonzero<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
         plan: &BinaryNonzeroChallengePlan<Self::Challenge>,
@@ -493,11 +495,7 @@ where
         plan: &BinaryNonzeroChallengePlan<E>,
         ch: BinaryTower128Challenger,
     ) -> Result<BinaryNonzeroChallengeOutput, VerificationError> {
-        let output = plan.sample_with_host::<H, CF>(b, ch)?;
-        for value in &output.values {
-            Self::constrain_challenge(b, value);
-        }
-        Ok(output)
+        plan.sample_with_host::<H, CF>(b, ch)
     }
 }
 impl<F: RecursiveBinaryTowerField> BinaryTowerPolicy<BinaryField128> for NativeTower128Relation<F>
