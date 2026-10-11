@@ -1,39 +1,50 @@
-//! Native Tower128 proving followed by native Tower128 recursion. `--pcs
-//! folding|whir` selects the polynomial commitment of the source proof and of
-//! every recursion layer. With `--pcs folding`, `--leaves coset|symbol`
-//! selects whether each Merkle leaf is one fold coset or one codeword symbol.
+//! Native Tower128 proving followed by native Tower128 recursion. `--pcs whir|folding`
+//! selects the polynomial commitment of the source proof and of every recursion layer. Under
+//! WHIR, `--keccak-commitment packed|dense` selects how every layer commits its Keccak table:
+//! as packed bits, 128 per field element, beside a dense commitment of every other table, or
+//! as field elements like every other table. With `--pcs folding`, which commits every table
+//! densely, `--leaves coset|symbol` selects whether each Merkle leaf is one fold coset or one
+//! codeword symbol.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
-//!     --example native_binary_recursion -- --layers 2
+//!     --example native_binary_recursion -- --layers 3
 //!
-//! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap
-//! height 4) keep every layer within the default limits. The recursive verifier
-//! levels off from layer 4: about 983k witnesses, 2,595 Keccak-f calls and
-//! 335,544,320 initial codeword cells (5 GiB) per layer.
+//! The defaults (WHIR with packed Keccak tables at log inverse rate 3 and every other table at
+//! rate 1, PCS security level 32 with 24 grinding bits, Merkle cap height 4) keep every layer
+//! within the default limits. Packed layers level off from layer 3 at about 1.18M witnesses and
+//! 109,051,904 initial codeword cells; dense ones from layer 4 at about 983k witnesses and
+//! 335,544,320 cells.
 //!
-//! Measured with the defaults on a 14-core Apple M-series machine with 48 GB
-//! (fastest observed time of the last layer; peak memory footprint and maximum
-//! resident set of the whole run):
+//! Measured on a 14-core Apple M-series machine with 48 GB, another build sometimes running
+//! (fastest observed time of the last layer; maximum resident set and peak memory footprint of
+//! the whole run):
 //!
-//! | --layers | last layer | footprint | resident |
-//! |----------|------------|-----------|----------|
-//! | 1        | 1.6 s      | 0.3 GB    | 0.3 GB   |
-//! | 2        | 35 s       | 11.6 GB   | 13.8 GB  |
-//! | 3        | 45 s       | 13.4 GB   | 17.8 GB  |
-//! | 4        | 45 s       | 13.5 GB   | 19.6 GB  |
+//! | Keccak | --layers | witnesses | codeword cells | last layer | resident | footprint |
+//! |--------|----------|-----------|----------------|------------|----------|-----------|
+//! | packed | 1        | 19,828    | 1,703,936      | 0.8 s      | 0.15 GB  | 0.15 GB   |
+//! | packed | 2        | 894,772   | 109,051,904    | 10.6 s     | 6.1 GB   | 5.8 GB    |
+//! | packed | 3        | 1,175,552 | 109,051,904    | 10.6 s     | 6.5 GB   | 6.0 GB    |
+//! | packed | 4        | 1,175,612 | 109,051,904    | 11.7 s     | 6.6 GB   | 6.1 GB    |
+//! | dense  | 1        | 19,828    | 5,242,880      | 0.7 s      | 0.29 GB  | 0.28 GB   |
+//! | dense  | 2        | 751,391   | 301,989,888    | 12.3 s     | 12.9 GB  | 11.1 GB   |
+//! | dense  | 3        | 961,986   | 335,544,320    | 13.3 s     | 16.7 GB  | 12.4 GB   |
+//! | dense  | 4        | 983,427   | 335,544,320    | 13.6 s     | 18.4 GB  | 12.4 GB   |
 //!
-//! Other jobs on the machine slowed layer 1 by up to 4.5x and later layers by
-//! up to 1.8x. Grinding takes most of layer 1 and 1.5-6 s of each later layer.
-//! With `--pow-bits 20`, layer 2 takes 40-46 s (15.5 GB resident) but layer 3
-//! needs 603,979,776 codeword cells. With `--cap-height 0 --pow-bits 0`, layer
-//! 2 takes 95 s (24 GB resident) and needs
-//! `--max-pcs-codeword-cells 1073741824`.
+//! At PCS security level 100 (`--pcs-security-level 100 --log-inv-rate 2
+//! --max-verifier-rounds 512`, packed rate 3, 24 grinding bits), packed layer 2 takes 33 s with
+//! 1,759,232 witnesses and 369,098,752 codeword cells (20.0 GB resident), and layer 3 34 s with
+//! 2,731,836 witnesses and 436,207,616 cells (20.7 GB resident for the run). A dense layer 2
+//! there needs 2,281,701,376 codeword cells, 36.5 GB of field elements.
 //!
-//! `--pcs folding` takes the same security level and grinding bits. Its coset
-//! leaves default to cap height 1.
+//! `--pcs folding` takes the same security level and grinding bits. Its coset leaves default to
+//! cap height 1.
 //!
-//! Requests four bits of composed security and uses non-hiding proofs. Limits
-//! count field cells or graph entries, not bytes.
+//! Each layer prints the security report of its output statement. Without
+//! `--security-target`, every output requires four bits of composed security; the defaults
+//! give about 29. The binary-bus term caps the composed security whatever the PCS level: at
+//! level 100 a packed layer 2 composes 85.2 bits and a dense layer 1 94.9, so
+//! `--security-target 100` is refused at these settings. Proofs are non-hiding. Limits count
+//! field cells or graph entries, not bytes.
 
 use std::error::Error;
 use std::time::Instant;
@@ -101,8 +112,8 @@ struct Args {
     /// smallest coset-leaf tree has `2^log_inv_rate` leaves.
     #[arg(long, value_enum, default_value_t = Leaves::Coset)]
     leaves: Leaves,
-    /// Commitment of every recursion layer's Keccak table. Defaults to `dense`; `packed`
-    /// requires `--pcs whir`.
+    /// Commitment of every recursion layer's Keccak table. Defaults to `packed` with
+    /// `--pcs whir` and `dense` with `--pcs folding`, which supports only `dense`.
     #[arg(long, value_enum)]
     keccak_commitment: Option<KeccakCommitment>,
     /// Log inverse rate of the packed Keccak commitment.
@@ -172,7 +183,10 @@ impl Args {
     }
     /// `--keccak-commitment`, or the default for the selected commitment.
     fn keccak_commitment(&self) -> KeccakCommitment {
-        self.keccak_commitment.unwrap_or(KeccakCommitment::Dense)
+        self.keccak_commitment.unwrap_or(match self.pcs {
+            Pcs::Whir => KeccakCommitment::Packed,
+            Pcs::Folding => KeccakCommitment::Dense,
+        })
     }
     /// `--cap-height`, or the default for the selected commitment and leaves.
     fn cap_height(&self) -> usize {
