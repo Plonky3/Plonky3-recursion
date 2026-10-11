@@ -196,13 +196,23 @@ fn open(
     (cap, point, protocol, proof)
 }
 
+/// Two calls fill exactly one element's rows, so the next row is read inside that element and the
+/// reduction sends no carry or last; more calls outrun it and send both.
 #[test]
 fn poly_packed_keccak_opens_and_verifies() {
-    for calls in [3, 6] {
+    for calls in [2, 3, 6] {
         let packed = packed_keccak(calls);
         let bits = COLUMN_VARIABLES + packed.log_height;
         let pcs = pcs(bits);
         let (cap, point, protocol, proof) = open(&pcs, &packed);
+        assert_eq!(
+            proof.opening.reduction.claims[0].successor.is_some(),
+            packed.log_height > ABSORBED_VARIABLES,
+            "{calls} calls"
+        );
+        if calls == 2 {
+            assert_eq!(packed.log_height, ABSORBED_VARIABLES);
+        }
 
         let mut verifier = challenger();
         pcs.observe_commitment(&cap, &mut verifier);
