@@ -171,9 +171,10 @@ impl BinaryMixedWhirMultiStarkVerifier {
             indexed: None,
         };
         self.relation.check_targets(public, &common)?;
-        let (dense_cap, packed_cap) = self.split_cap(&proof.commitment)?;
+        let (dense_cap, packed_cap) = self.split.split_cap(&proof.commitment)?;
         let zero = b.native_tower128_constant(0);
-        let (dense_points, packed_points) = self.split(&self.relation.zero_points(false, zero))?;
+        let (dense_points, packed_points) =
+            self.split.split(&self.relation.zero_points(false, zero))?;
         self.dense
             .check_targets(dense_cap, &dense_points, &proof.dense)?;
         self.packed
@@ -212,7 +213,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
                 b, ch, public, &common,
             )?;
         self.relation.set_unindexed_points(&mut reduction);
-        let (dense_points, packed_points) = self.split(&reduction.main_points)?;
+        let (dense_points, packed_points) = self.split.split(&reduction.main_points)?;
         let (dense_evals, ch) = self.dense.verify_at_native(
             b,
             reduction.challenger.clone(),
@@ -223,7 +224,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
         let (packed_evals, mut continuation) =
             self.packed
                 .verify_at_native(b, ch, packed_cap, &packed_points, &proof.packed)?;
-        let main_evals = self.merge(dense_evals, packed_evals)?;
+        let main_evals = self.split.merge(dense_evals, packed_evals)?;
         let mut preprocessed_evals = None;
         if let (Some(verifier), Some(cap), Some(proof)) = (
             &self.preprocessed,

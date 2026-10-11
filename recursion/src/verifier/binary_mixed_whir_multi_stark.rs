@@ -325,8 +325,7 @@ impl NativeBinaryMixedWhirMultiStarkInput {
 pub struct BinaryMixedWhirMultiStarkVerifier {
     input: BinaryMixedWhirMultiStarkInputShape,
     relation: BinaryMultiStarkRelation<F, F>,
-    /// Whether each main opening batch, in protocol order, belongs to the packed table.
-    packed_batches: Vec<bool>,
+    split: MixedSplit,
     dense: BinaryWhirVerifier<F>,
     packed: BinaryBooleanWhirTraceVerifier,
     preprocessed: Option<BinaryWhirVerifier<F>>,
@@ -493,10 +492,6 @@ impl BinaryMixedWhirMultiStarkVerifier {
             ));
         }
         let (dense_protocol, packed_protocol) = split_protocol(&main_protocol, packed_table)?;
-        let packed_batches = main_protocol
-            .iter_openings()
-            .map(|(table, _)| table == packed_table)
-            .collect();
         let mut usage = relation.usage;
         let order = SuffixProver::<F, F>::variable_order();
         let dense = BinaryWhirVerifier::<F>::with_limits(
@@ -565,7 +560,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
         Ok(Self {
             input,
             relation,
-            packed_batches,
+            split: MixedSplit::new(&main_protocol, packed_table, dense.cap_roots()),
             dense,
             packed,
             preprocessed,
@@ -588,61 +583,6 @@ impl BinaryMixedWhirMultiStarkVerifier {
         self.usage.add_metadata_entries(limits, entries)
     }
 
-    /// Splits per-batch items of the main protocol into the dense and the packed opening's,
-    /// each in protocol order.
-    fn split<T: Clone>(&self, items: &[T]) -> Result<(Vec<T>, Vec<T>), VerificationError> {
-        if items.len() != self.packed_batches.len() {
-            return Err(invalid(
-                "binary mixed WHIR MultiStark opening count mismatch",
-            ));
-        }
-        let (mut dense, mut packed) = (Vec::new(), Vec::new());
-        for (item, &is_packed) in items.iter().zip(&self.packed_batches) {
-            if is_packed {
-                packed.push(item.clone());
-            } else {
-                dense.push(item.clone());
-            }
-        }
-        Ok((dense, packed))
-    }
-
-    /// Puts both openings' per-batch items back into protocol order.
-    fn merge<T>(&self, dense: Vec<T>, packed: Vec<T>) -> Result<Vec<T>, VerificationError> {
-        let (mut dense, mut packed) = (dense.into_iter(), packed.into_iter());
-        let merged = self
-            .packed_batches
-            .iter()
-            .map(|&is_packed| {
-                if is_packed {
-                    packed.next()
-                } else {
-                    dense.next()
-                }
-            })
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| {
-                invalid("binary mixed WHIR MultiStark opening returned too few batches")
-            })?;
-        if dense.next().is_some() || packed.next().is_some() {
-            return Err(invalid(
-                "binary mixed WHIR MultiStark opening returned too many batches",
-            ));
-        }
-        Ok(merged)
-    }
-
-    /// The dense half and the packed half of a cap, one part's cap roots each.
-    fn split_cap<'a, T>(&self, cap: &'a [T]) -> Result<(&'a [T], &'a [T]), VerificationError> {
-        let roots = self.input.cap_roots;
-        if cap.len() != 2 * roots {
-            return Err(invalid(
-                "binary mixed WHIR MultiStark cap does not hold one cap per part",
-            ));
-        }
-        Ok(cap.split_at(roots))
-    }
-
     /// Checks all AIR obligations and authenticates their committed openings.
     /// Public targets are the caller's actual statement, in instance order.
     /// Returns the exact ordinary challenger after the fixed stratified query schedule.
@@ -663,10 +603,11 @@ impl BinaryMixedWhirMultiStarkVerifier {
             indexed: proof.indexed.as_ref(),
         };
         self.relation.check_targets(public, &common)?;
-        let (dense_cap, packed_cap) = self.split_cap(&proof.commitment)?;
+        let (dense_cap, packed_cap) = self.split.split_cap(&proof.commitment)?;
         let zero = b.binary128_constant(0)?;
-        let (dense_points, packed_points) =
-            self.split(&self.relation.zero_points(false, zero.clone()))?;
+        let (dense_points, packed_points) = self
+            .split
+            .split(&self.relation.zero_points(false, zero.clone()))?;
         self.dense
             .check_targets(dense_cap, &dense_points, &proof.dense)?;
         self.packed
@@ -696,7 +637,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
         self.packed
             .observe_commitment::<BF, EF>(b, &mut ch, packed_cap)?;
         let reduction = self.relation.reduce::<BF, EF>(b, ch, public, &common)?;
-        let (dense_points, packed_points) = self.split(&reduction.main_points)?;
+        let (dense_points, packed_points) = self.split.split(&reduction.main_points)?;
         let (dense_evals, ch) = self.dense.verify_at::<BF, EF>(
             b,
             reduction.challenger.clone(),
@@ -707,7 +648,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
         let (packed_evals, mut continuation) =
             self.packed
                 .verify_at::<BF, EF>(b, ch, packed_cap, &packed_points, &proof.packed)?;
-        let main_evals = self.merge(dense_evals, packed_evals)?;
+        let main_evals = self.split.merge(dense_evals, packed_evals)?;
         let mut preprocessed_evals = None;
         if let (Some(verifier), Some(cap), Some(proof)) = (
             &self.preprocessed,
@@ -768,7 +709,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
             + Clone,
     {
         self.relation.check_native(public, proof)?;
-        let (dense_cap, packed_cap) = self.split_cap(proof.commitment.roots())?;
+        let (dense_cap, packed_cap) = self.split.split_cap(proof.commitment.roots())?;
         let (dense_cap, packed_cap) = (
             MerkleCap::<F, _>::new(dense_cap.to_vec()),
             MerkleCap::<F, _>::new(packed_cap.to_vec()),
@@ -782,7 +723,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
             .into_iter()
             .map(Point::new)
             .collect();
-        let (dense_points, packed_points) = self.split(&points)?;
+        let (dense_points, packed_points) = self.split.split(&points)?;
         let mut usage = InputResourceUsage::default();
         self.dense.check_native_with_usage(
             dense,
@@ -841,7 +782,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
         layout::observe_commitment::<F, _, _>(&mut staged, dense_cap.clone());
         layout::observe_commitment::<F, _, _>(&mut staged, packed_cap.clone());
         let reduction = self.relation.reduce_native(public, proof, &mut staged)?;
-        let (dense_points, packed_points) = self.split(&reduction.main_points)?;
+        let (dense_points, packed_points) = self.split.split(&reduction.main_points)?;
         let dense_opening = self.dense.import_native(
             dense,
             mmcs,
@@ -887,12 +828,99 @@ impl BinaryMixedWhirMultiStarkVerifier {
     }
 }
 
+/// How a mixed commitment's main opening divides between its parts: each batch, in protocol
+/// order, goes to the dense opening or to the packed opening of the bit-committed table, and
+/// the cap holds the dense part's roots, then the packed part's, `cap_roots` of each.
+#[derive(Clone, Debug)]
+pub(super) struct MixedSplit {
+    /// Whether each main opening batch, in protocol order, belongs to the packed table.
+    packed_batches: Vec<bool>,
+    cap_roots: usize,
+}
+
+impl MixedSplit {
+    pub(super) fn new(protocol: &OpeningProtocol, packed_table: usize, cap_roots: usize) -> Self {
+        Self {
+            packed_batches: protocol
+                .iter_openings()
+                .map(|(table, _)| table == packed_table)
+                .collect(),
+            cap_roots,
+        }
+    }
+
+    /// Splits per-batch items of the main protocol into the dense and the packed opening's,
+    /// each in protocol order.
+    pub(super) fn split<T: Clone>(
+        &self,
+        items: &[T],
+    ) -> Result<(Vec<T>, Vec<T>), VerificationError> {
+        if items.len() != self.packed_batches.len() {
+            return Err(invalid(
+                "binary mixed WHIR MultiStark opening count mismatch",
+            ));
+        }
+        let (mut dense, mut packed) = (Vec::new(), Vec::new());
+        for (item, &is_packed) in items.iter().zip(&self.packed_batches) {
+            if is_packed {
+                packed.push(item.clone());
+            } else {
+                dense.push(item.clone());
+            }
+        }
+        Ok((dense, packed))
+    }
+
+    /// Puts both openings' per-batch items back into protocol order.
+    pub(super) fn merge<T>(
+        &self,
+        dense: Vec<T>,
+        packed: Vec<T>,
+    ) -> Result<Vec<T>, VerificationError> {
+        let (mut dense, mut packed) = (dense.into_iter(), packed.into_iter());
+        let merged = self
+            .packed_batches
+            .iter()
+            .map(|&is_packed| {
+                if is_packed {
+                    packed.next()
+                } else {
+                    dense.next()
+                }
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| {
+                invalid("binary mixed WHIR MultiStark opening returned too few batches")
+            })?;
+        if dense.next().is_some() || packed.next().is_some() {
+            return Err(invalid(
+                "binary mixed WHIR MultiStark opening returned too many batches",
+            ));
+        }
+        Ok(merged)
+    }
+
+    /// The dense half and the packed half of a cap, one part's cap roots each.
+    pub(super) fn split_cap<'a, T>(
+        &self,
+        cap: &'a [T],
+    ) -> Result<(&'a [T], &'a [T]), VerificationError> {
+        let roots = self.cap_roots;
+        if cap.len() != 2 * roots {
+            return Err(invalid(
+                "binary mixed WHIR MultiStark cap does not hold one cap per part",
+            ));
+        }
+        Ok(cap.split_at(roots))
+    }
+}
+
 /// Splits a main protocol into the dense tables, in order, and the bit-committed table alone.
 ///
 /// The bit-committed table must be opened in exactly one batch, every column at the current
 /// row and every column or none one row ahead, which is the batch the column batching of the
 /// packed opening reads.
-fn split_protocol(
+pub(super) fn split_protocol(
     protocol: &OpeningProtocol,
     packed_table: usize,
 ) -> Result<(OpeningProtocol, OpeningProtocol), VerificationError> {
