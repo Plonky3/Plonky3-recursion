@@ -284,9 +284,10 @@ where
 
 /// Draws the same challenges as [`sample_nonzero_bits`] on the native Poly64
 /// carrier. Each candidate is the policy's draw, whose three coefficient
-/// cells pack drawn words without decomposing them, and a hinted zero test
-/// per coefficient replaces the bitwise one. The transcript, the selected
-/// values and the continuation are unchanged.
+/// cells pack drawn words without decomposing them, and each coefficient is
+/// tested with a hinted zero test instead of being decomposed. The
+/// transcript, the selected values and the continuation are those of
+/// [`sample_nonzero_bits`].
 pub(crate) fn sample_nonzero_cells<H: BinaryCircuitHost<Poly64>>(
     b: &mut CircuitBuilder<Poly64>,
     mut ch: BinaryTower128Challenger,

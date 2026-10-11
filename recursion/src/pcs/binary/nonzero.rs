@@ -153,9 +153,10 @@ impl<E: RecursiveBinaryChallengeField> BinaryNonzeroChallengePlan<E> {
 
 impl BinaryNonzeroChallengePlan<BinaryField128> {
     /// Selects native Tower128 draws as scalars. Each candidate is the
-    /// policy's draw, which packs drawn words without decomposing them, and a
-    /// hinted zero test replaces the bitwise one. The transcript, the selected
-    /// values and the continuation are those of [`Self::sample_with_host`].
+    /// policy's draw, which packs drawn words without decomposing them, and is
+    /// tested with a hinted zero test instead of being decomposed. The
+    /// transcript, the selected values and the continuation are those of
+    /// [`Self::sample_with_host`].
     pub(crate) fn sample_scalars_using<P, H>(
         &self,
         b: &mut CircuitBuilder<BinaryField128>,
