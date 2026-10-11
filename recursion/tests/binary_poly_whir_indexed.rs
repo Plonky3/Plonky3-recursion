@@ -16,6 +16,7 @@ use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, prove, setup, verify,
 };
 use p3_recursion::BinaryTower128Challenger;
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::verifier::{BinaryPolyWhirMultiStarkVerifier, VerifierLimits};
 use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table, Witness};
 use p3_test_utils::binary_field_params::{blake3, keccak};
@@ -176,6 +177,7 @@ macro_rules! check {
             &config,
             L::variable_order(),
             $hash,
+            MerkleArity::Two,
             0,
             0,
             8,

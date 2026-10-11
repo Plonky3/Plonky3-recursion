@@ -11,7 +11,8 @@ use p3_field::PrimeCharacteristicRing;
 use p3_multilinear_util::point::Point;
 use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::pcs::binary::{
-    BinaryBooleanWhirVerifier, BinaryRingClaimSpec, verify_binary_query_indices_with_continuation,
+    BinaryBooleanWhirVerifier, BinaryRingClaimSpec, MerkleArity,
+    verify_binary_query_indices_with_continuation,
 };
 use p3_sumcheck::layout::SuffixProver;
 use p3_test_utils::binary_field_params::{blake3, keccak};
@@ -507,12 +508,20 @@ fn combined_resource_limit_accounts_for_both_the_ring_and_whir() {
         protocol,
         VariableOrder::Suffix,
         ByteHash::Keccak256,
+        MerkleArity::Two,
         0,
         &limits,
     )
     .unwrap();
     assert!(matches!(
-        BinaryBooleanWhirVerifier::with_limits(&config, specs, ByteHash::Keccak256, 0, &limits),
+        BinaryBooleanWhirVerifier::with_limits(
+            &config,
+            specs,
+            ByteHash::Keccak256,
+            MerkleArity::Two,
+            0,
+            &limits
+        ),
         Err(VerificationError::ResourceLimitExceeded {
             component: "scalar elements",
             ..

@@ -12,11 +12,14 @@ use p3_circuit::{Circuit, CircuitBuilder};
 use p3_commit::MultilinearPcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::point::Point;
 use p3_recursion::BinaryTower128Challenger;
-use p3_recursion::pcs::binary::BinaryWhirVerifier;
+use p3_recursion::pcs::binary::{BinaryWhirVerifier, MerkleArity};
+use p3_recursion::verifier::VerifierLimits;
 use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
+use p3_symmetric::CompressionFunctionFromHasher;
 use p3_test_utils::binary_field_params::keccak;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
 
@@ -64,6 +67,19 @@ macro_rules! check {
         $pow:expr,
         $folding:expr,
         $security:expr
+    ) => {
+        check!($base, $layout, $protocol, $cap_height, $pow, $folding, $security, Two, 2)
+    };
+    (
+        $base:ty,
+        $layout:ident,
+        $protocol:expr,
+        $cap_height:expr,
+        $pow:expr,
+        $folding:expr,
+        $security:expr,
+        $arity:ident,
+        $digests:literal
     ) => {{
         type Ch = keccak::LevelChallenger<$base>;
         type L = $layout<$base, F>;
@@ -83,18 +99,28 @@ macro_rules! check {
             &domain,
         )
         .unwrap();
-        let mmcs = keccak::LevelMmcs::<$base>::new(
+        let arity = MerkleArity::$arity;
+        let mmcs = MerkleTreeMmcs::<
+            $base,
+            u8,
+            keccak::FieldHash,
+            CompressionFunctionFromHasher<keccak::ByteHash, $digests, 32>,
+            $digests,
+            32,
+        >::new(
             keccak::FieldHash::new(keccak::byte_hash()),
-            keccak::Compress::new(keccak::byte_hash()),
+            CompressionFunctionFromHasher::new(keccak::byte_hash()),
             $cap_height,
         );
         let pcs = WhirProver::<F, $base, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
-        let recursive = BinaryWhirVerifier::<$base>::new(
+        let recursive = BinaryWhirVerifier::<$base>::with_limits(
             &config,
             protocol.clone(),
             L::variable_order(),
             ByteHash::Keccak256,
+            arity,
             $cap_height,
+            &VerifierLimits::default(),
         )
         .unwrap();
         let shape = recursive.input_shape();
@@ -145,6 +171,28 @@ macro_rules! check {
             .unwrap();
         let next = native_ch.sample_algebra_element::<F>();
         assert_eq!(next, entry.sample_algebra_element::<F>());
+        // A verifier of the other arity refuses the tree, when its cap fits.
+        let other_arity = match arity {
+            MerkleArity::Two => MerkleArity::Four,
+            MerkleArity::Four => MerkleArity::Two,
+        };
+        if let Ok(foreign) = BinaryWhirVerifier::<$base>::with_limits(
+            &config,
+            protocol.clone(),
+            L::variable_order(),
+            ByteHash::Keccak256,
+            other_arity,
+            $cap_height,
+            &VerifierLimits::default(),
+        ) {
+            let mut unchanged = make();
+            pcs.observe_commitment(&commitment, &mut unchanged);
+            assert!(
+                foreign
+                    .import_native(&config, &mmcs, &commitment, &points, &native, &mut unchanged)
+                    .is_err()
+            );
+        }
         // Restoration happens after transcript replay; failures must roll back.
         for oversized in [false, true] {
             let mut malformed = native.clone();
@@ -161,7 +209,7 @@ macro_rules! check {
         }
         let mut b = CircuitBuilder::<F>::new();
         b.enable_native_keccak_f1600().unwrap();
-        let cap: Vec<_> = (0..1usize << $cap_height)
+        let cap: Vec<_> = (0..arity.cap_roots($cap_height).unwrap())
             .map(|_| {
                 b.alloc_public_input_array::<16>("expected WHIR commitment")
                     .to_vec()
@@ -215,7 +263,7 @@ macro_rules! check {
         assert!(run(&circuit, &public, &private));
         for index in [
             0,
-            (1usize << $cap_height) * 16,
+            arity.cap_roots($cap_height).unwrap() * 16,
             public.len() - 2,
             public.len() - 1,
         ] {
@@ -250,7 +298,7 @@ macro_rules! check {
             wrong[index] += F::ONE;
             assert!(!run(&circuit, &public, &wrong));
         }
-        let other = BinaryWhirVerifier::<$base>::new(
+        let other = BinaryWhirVerifier::<$base>::with_limits(
             &config,
             protocol,
             if L::variable_order() == p3_sumcheck::strategy::VariableOrder::Prefix {
@@ -259,7 +307,9 @@ macro_rules! check {
                 p3_sumcheck::strategy::VariableOrder::Prefix
             },
             ByteHash::Keccak256,
+            arity,
             $cap_height,
+            &VerifierLimits::default(),
         )
         .unwrap();
         assert!(
@@ -318,6 +368,27 @@ fn native_sixteen_value_rows_authenticate_as_word_leaves() {
     assert!(tower128.witness_count <= 55_000);
     let (tower32, _) = check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
     assert!(tower32.witness_count <= 47_000);
+}
+
+/// Four-digest nodes open each query along half as many levels, three siblings
+/// a level. Folding two variables at a time from a ten-bit domain leaves trees
+/// of even and odd heights, whose top level pads two children with default
+/// digests; a one-level cap holds four roots.
+#[test]
+fn native_arity_four_trees_bind_every_query_at_even_and_odd_heights() {
+    check!(F, SuffixProver, protocol(9, 1, true), 0, 2, 2, 8, Four, 4);
+    check!(F, PrefixProver, protocol(9, 1, false), 1, 0, 2, 8, Four, 4);
+    check!(
+        BinaryField32,
+        SuffixProver,
+        protocol(9, 2, true),
+        1,
+        1,
+        4,
+        8,
+        Four,
+        4
+    );
 }
 
 /// Grinding twelve of sixteen security bits puts more than eight bits on

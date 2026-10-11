@@ -41,7 +41,7 @@ impl BinaryMixedWhirMultiStarkInputShape {
         if self.relation.indexed.is_some() {
             return Err(indexed_unsupported());
         }
-        let commitment = (0..2usize << self.cap_height)
+        let commitment = (0..2 * self.cap_roots)
             .map(|_| {
                 let digest = b
                     .alloc_private_input_array::<16>("native mixed WHIR MultiStark commitment")

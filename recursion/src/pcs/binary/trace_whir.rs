@@ -19,7 +19,7 @@ use super::trace_routing::{TraceEntry, TraceRouting};
 use super::whir_plan::invalid;
 use super::{
     BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
-    ByteDigestMmcs, NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
+    ByteDigestMmcs, MerkleArity, NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
 };
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -180,6 +180,7 @@ impl NativeBinaryBooleanWhirTraceInput {
 }
 
 impl BinaryBooleanWhirTraceVerifier {
+    /// [`Self::with_limits`] for pairwise trees under the default limits.
     pub fn new<C>(
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
         protocol: OpeningProtocol,
@@ -193,15 +194,19 @@ impl BinaryBooleanWhirTraceVerifier {
             config,
             protocol,
             hash,
+            MerkleArity::Two,
             cap_height,
             &VerifierLimits::default(),
         )
     }
 
+    /// Plans the routed bit openings over a tree whose nodes compress `arity`
+    /// digests and whose cap replaces its top `cap_height` levels.
     pub fn with_limits<C>(
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
         protocol: OpeningProtocol,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError>
@@ -218,6 +223,7 @@ impl BinaryBooleanWhirTraceVerifier {
             config,
             plan.specs.clone(),
             hash,
+            arity,
             cap_height,
             limits,
         )?;
@@ -232,6 +238,11 @@ impl BinaryBooleanWhirTraceVerifier {
 
     pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
+    }
+
+    /// The roots of the packed opening's cap.
+    pub(crate) const fn cap_roots(&self) -> usize {
+        self.child.cap_roots()
     }
 
     pub fn input_shape(&self) -> BinaryBooleanWhirTraceInputShape {

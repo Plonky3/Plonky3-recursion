@@ -16,7 +16,7 @@ use p3_whir::WhirConfig;
 
 use super::verifier::{observe_cap_with_host, observe_seed_with_host};
 use super::whir_plan::WhirPlan;
-use super::{BinaryWhirProofTargets, RecursiveBinaryWhirTowerField};
+use super::{BinaryWhirProofTargets, MerkleArity, RecursiveBinaryWhirTowerField};
 use crate::BinaryTower128Challenger;
 use crate::verifier::binary_field_policy::{
     BinaryTowerPolicy, BinaryWhirPolicy, NativeTower128Relation, TowerRelation,
@@ -25,7 +25,7 @@ use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
 /// Verifier-owned native domain, schedule, separators and finite input bounds.
 /// Supports the released Tower32→Tower128 and Tower128→Tower128 additive
-/// families with ordinary binary-arity byte Merkle trees. The caller binds
+/// families with byte Merkle trees whose nodes compress two or four digests. The caller binds
 /// the commitment and prescribed opening points to its statement.
 #[derive(Clone, Debug)]
 pub struct BinaryWhirVerifier<F = BinaryField128> {
@@ -41,6 +41,10 @@ where
     pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.plan.usage
     }
+    /// The roots of every commitment's cap.
+    pub(crate) const fn cap_roots(&self) -> usize {
+        self.plan.cap_roots
+    }
     pub(crate) fn check_host<H, CF>(&self) -> Result<(), VerificationError>
     where
         CF: Field + Eq + Hash,
@@ -49,6 +53,7 @@ where
         H::check_hash(self.plan.hash)?;
         Ok(())
     }
+    /// [`Self::with_limits`] for pairwise trees under the default limits.
     pub fn new<Ch>(
         config: &WhirConfig<BinaryField128, F, Ch>,
         protocol: OpeningProtocol,
@@ -64,16 +69,20 @@ where
             protocol,
             order,
             hash,
+            MerkleArity::Two,
             cap_height,
             &VerifierLimits::default(),
         )
     }
 
+    /// Plans the openings of trees whose nodes compress `arity` digests and
+    /// whose caps replace their top `cap_height` levels.
     pub fn with_limits<Ch>(
         config: &WhirConfig<BinaryField128, F, Ch>,
         protocol: OpeningProtocol,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError>
@@ -81,7 +90,7 @@ where
         Ch: FieldChallenger<F> + GrindingChallenger<Witness = F>,
     {
         Ok(Self {
-            plan: WhirPlan::new(config, protocol, order, hash, cap_height, limits)?,
+            plan: WhirPlan::new(config, protocol, order, hash, arity, cap_height, limits)?,
         })
     }
 
@@ -155,7 +164,7 @@ where
         super::whir_kernel::verify_using::<P, H, CF>(&self.plan, b, ch, cap, points, proof)
     }
     fn check_cap(&self, cap: &[Vec<ExprId>]) -> Result<(), VerificationError> {
-        super::whir_kernel::check_cap(self.plan.cap_height, cap)
+        super::whir_kernel::check_cap(self.plan.cap_roots, cap)
     }
     pub(crate) fn check_targets<T, B>(
         &self,

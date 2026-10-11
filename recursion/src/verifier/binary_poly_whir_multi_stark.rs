@@ -34,7 +34,7 @@ use super::{BinaryPolyAirConstraintPlan, InputResourceUsage, VerificationError, 
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{
     BinaryPolyGenericSumcheckProofTargets, BinaryPolyWhirInputShape, BinaryPolyWhirProofTargets,
-    BinaryPolyWhirVerifier, ByteDigestMmcs, NativeBinaryPolyGenericSumcheckInput,
+    BinaryPolyWhirVerifier, ByteDigestMmcs, MerkleArity, NativeBinaryPolyGenericSumcheckInput,
     NativeBinaryPolyWhirInput,
 };
 /// Proof-independent input shape including the trusted AIR program.
@@ -43,7 +43,7 @@ pub struct BinaryPolyWhirMultiStarkInputShape {
     relation: alloc::sync::Arc<PolyMultiStarkRelationShape>,
     opening: BinaryPolyWhirInputShape,
     preprocessed: Option<WhirPreprocessedInputShape>,
-    cap_height: usize,
+    cap_roots: usize,
 }
 
 /// Trusted preprocessing authority, supplied independently of every proof.
@@ -54,6 +54,7 @@ pub struct BinaryPolyWhirMultiStarkPreprocessing<PC> {
     pub config: WhirConfig<Poly192, Poly64, PC>,
     pub order: VariableOrder,
     pub hash: ByteHash,
+    pub arity: MerkleArity,
     pub cap_height: usize,
     pub commitment: MerkleCap<Poly64, [u8; 32]>,
 }
@@ -105,7 +106,7 @@ impl BinaryPolyWhirMultiStarkInputShape {
     > {
         crate::artifact::binary_native::codec::MultiDecode {
             public_counts: self.public_value_counts().collect(),
-            cap_roots: 1usize << self.cap_height,
+            cap_roots: self.cap_roots,
             bus: self
                 .relation
                 .bus
@@ -160,7 +161,7 @@ impl BinaryPolyWhirMultiStarkInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let commitment = (0..1usize << self.cap_height)
+        let commitment = (0..self.cap_roots)
             .map(|_| {
                 b.alloc_private_input_array::<16>("polynomial WHIR MultiStark commitment")
                     .to_vec()
@@ -328,6 +329,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             config,
             order,
             hash,
+            MerkleArity::Two,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -345,6 +347,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
         config: &WhirConfig<Poly192, Poly64, PC>,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -361,6 +364,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             config,
             order,
             hash,
+            arity,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -381,6 +385,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
         config: &WhirConfig<Poly192, Poly64, PC>,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -398,6 +403,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             config,
             order,
             hash,
+            arity,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -416,6 +422,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
         config: &WhirConfig<Poly192, Poly64, PC>,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -456,6 +463,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             main_protocol,
             order,
             hash,
+            arity,
             cap_height,
             limits,
         )?;
@@ -468,10 +476,11 @@ impl BinaryPolyWhirMultiStarkVerifier {
                 preprocessed_protocol.expect("checked preprocessing protocol"),
                 preprocessing.order,
                 preprocessing.hash,
+                preprocessing.arity,
                 preprocessing.cap_height,
                 limits,
             )?;
-            if preprocessing.commitment.num_roots() != 1usize << preprocessing.cap_height {
+            if preprocessing.commitment.num_roots() != verifier.cap_roots() {
                 return Err(invalid(
                     "polynomial WHIR MultiStark trusted preprocessing cap shape mismatch",
                 ));
@@ -492,7 +501,7 @@ impl BinaryPolyWhirMultiStarkVerifier {
             relation: relation.input.clone(),
             opening: opening.input_shape(),
             preprocessed: preprocessed_input,
-            cap_height,
+            cap_roots: opening.cap_roots(),
         };
         Ok(Self {
             input,
@@ -747,7 +756,7 @@ impl BinaryPolyWhirMultiStarkInputShape {
                 "native polynomial WHIR verifier does not support indexed relations",
             ));
         }
-        let commitment = (0..1usize << self.cap_height)
+        let commitment = (0..self.cap_roots)
             .map(|_| {
                 let digest = b
                     .alloc_private_input_array::<16>("native WHIR MultiStark commitment")

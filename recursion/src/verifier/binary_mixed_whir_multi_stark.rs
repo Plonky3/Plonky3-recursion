@@ -48,7 +48,7 @@ use crate::artifact::binary_native::{BinaryNativeMixedWhirConfig, NativeMmcs};
 use crate::pcs::binary::{
     BinaryBooleanWhirTraceInputShape, BinaryBooleanWhirTraceProofTargets,
     BinaryBooleanWhirTraceVerifier, BinaryGenericSumcheckProofTargets, BinaryWhirInputShape,
-    BinaryWhirProofTargets, BinaryWhirVerifier, NativeBinaryBooleanWhirTraceInput,
+    BinaryWhirProofTargets, BinaryWhirVerifier, MerkleArity, NativeBinaryBooleanWhirTraceInput,
     NativeBinaryGenericSumcheckInput, NativeBinaryWhirInput,
 };
 
@@ -66,7 +66,8 @@ pub struct BinaryMixedWhirMultiStarkInputShape {
     dense: BinaryWhirInputShape<F>,
     packed: BinaryBooleanWhirTraceInputShape,
     preprocessed: Option<MixedPreprocessedInputShape>,
-    cap_height: usize,
+    /// The roots of each part's cap.
+    cap_roots: usize,
 }
 
 /// Trusted preprocessing authority, supplied independently of every proof.
@@ -76,6 +77,7 @@ pub struct BinaryMixedWhirMultiStarkInputShape {
 pub struct BinaryMixedWhirMultiStarkPreprocessing<PC> {
     pub config: WhirConfig<BinaryField128, F, PC>,
     pub hash: ByteHash,
+    pub arity: MerkleArity,
     pub cap_height: usize,
     pub commitment: MerkleCap<F, [u8; 32]>,
 }
@@ -137,7 +139,7 @@ impl BinaryMixedWhirMultiStarkInputShape {
         use crate::artifact::binary_native::codec::{MixedWhirDecode, MultiDecode};
         MultiDecode {
             public_counts: self.public_value_counts().collect(),
-            cap_roots: 2usize << self.cap_height,
+            cap_roots: 2 * self.cap_roots,
             bus: self
                 .relation
                 .bus
@@ -200,7 +202,7 @@ impl BinaryMixedWhirMultiStarkInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let commitment = (0..2usize << self.cap_height)
+        let commitment = (0..2 * self.cap_roots)
             .map(|_| {
                 b.alloc_private_input_array::<16>("binary mixed WHIR MultiStark commitment")
                     .to_vec()
@@ -356,7 +358,8 @@ impl BinaryMixedWhirMultiStarkVerifier {
     /// only that AIR, must assume a Boolean trace, and its main trace must be opened as one
     /// batch: every column at the current row, and every column or none one row ahead.
     /// `packed` is the packed WHIR configuration over the bit stack of that table, seven
-    /// variables shorter. Both parts share `hash` and `cap_height`.
+    /// variables shorter. Both parts share `hash`, and their trees share `arity` and
+    /// `cap_height`.
     #[expect(
         clippy::too_many_arguments,
         reason = "The verifier keeps protocol inputs explicit."
@@ -368,6 +371,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
         dense: &WhirConfig<BinaryField128, F, PC>,
         packed: &WhirConfig<BinaryField128, F, PC>,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -383,6 +387,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
             packed_table,
             (dense, packed),
             hash,
+            arity,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -404,6 +409,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
         dense: &WhirConfig<BinaryField128, F, PC>,
         packed: &WhirConfig<BinaryField128, F, PC>,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -420,6 +426,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
             packed_table,
             (dense, packed),
             hash,
+            arity,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -441,6 +448,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
             &WhirConfig<BinaryField128, F, PC>,
         ),
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -496,6 +504,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
             dense_protocol,
             order,
             hash,
+            arity,
             cap_height,
             limits,
         )?;
@@ -506,6 +515,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
             packed_config,
             packed_protocol,
             hash,
+            arity,
             cap_height,
             limits,
         )?;
@@ -523,10 +533,11 @@ impl BinaryMixedWhirMultiStarkVerifier {
                 preprocessed_protocol.expect("checked preprocessing protocol"),
                 order,
                 preprocessing.hash,
+                preprocessing.arity,
                 preprocessing.cap_height,
                 limits,
             )?;
-            if preprocessing.commitment.num_roots() != 1usize << preprocessing.cap_height {
+            if preprocessing.commitment.num_roots() != verifier.cap_roots() {
                 return Err(invalid(
                     "binary mixed WHIR MultiStark trusted preprocessing cap shape mismatch",
                 ));
@@ -549,7 +560,7 @@ impl BinaryMixedWhirMultiStarkVerifier {
             dense: dense.input_shape(),
             packed: packed.input_shape(),
             preprocessed: preprocessed_input,
-            cap_height,
+            cap_roots: dense.cap_roots(),
         };
         Ok(Self {
             input,
@@ -621,9 +632,9 @@ impl BinaryMixedWhirMultiStarkVerifier {
         Ok(merged)
     }
 
-    /// The dense half and the packed half of a cap, `2^c` roots each.
+    /// The dense half and the packed half of a cap, one part's cap roots each.
     fn split_cap<'a, T>(&self, cap: &'a [T]) -> Result<(&'a [T], &'a [T]), VerificationError> {
-        let roots = 1usize << self.input.cap_height;
+        let roots = self.input.cap_roots;
         if cap.len() != 2 * roots {
             return Err(invalid(
                 "binary mixed WHIR MultiStark cap does not hold one cap per part",

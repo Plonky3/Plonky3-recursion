@@ -36,8 +36,8 @@ use super::{
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{
     BinaryGenericSumcheckProofTargets, BinaryWhirInputShape, BinaryWhirProofTargets,
-    BinaryWhirVerifier, ByteDigestMmcs, NativeBinaryGenericSumcheckInput, NativeBinaryWhirInput,
-    RecursiveBinaryWhirTowerField,
+    BinaryWhirVerifier, ByteDigestMmcs, MerkleArity, NativeBinaryGenericSumcheckInput,
+    NativeBinaryWhirInput, RecursiveBinaryWhirTowerField,
 };
 /// Proof-independent input shape including the trusted AIR program.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,7 +45,7 @@ pub struct BinaryWhirMultiStarkInputShape<F = BinaryField128> {
     relation: alloc::sync::Arc<BinaryMultiStarkRelationShape<F, BinaryField128>>,
     opening: BinaryWhirInputShape<F>,
     preprocessed: Option<WhirPreprocessedInputShape<F>>,
-    cap_height: usize,
+    cap_roots: usize,
 }
 
 /// Trusted preprocessing authority, supplied independently of every proof.
@@ -59,6 +59,7 @@ where
     pub config: WhirConfig<BinaryField128, F, PC>,
     pub order: VariableOrder,
     pub hash: ByteHash,
+    pub arity: MerkleArity,
     pub cap_height: usize,
     pub commitment: MerkleCap<F, [u8; 32]>,
 }
@@ -114,7 +115,7 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirMultiStarkInputShape<F> {
     {
         crate::artifact::binary_native::codec::MultiDecode {
             public_counts: self.public_value_counts().collect(),
-            cap_roots: 1usize << self.cap_height,
+            cap_roots: self.cap_roots,
             bus: self
                 .relation
                 .bus
@@ -176,7 +177,7 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirMultiStarkInputShape<F> {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let commitment = (0..1usize << self.cap_height)
+        let commitment = (0..self.cap_roots)
             .map(|_| {
                 b.alloc_private_input_array::<16>("binary WHIR MultiStark commitment")
                     .to_vec()
@@ -344,6 +345,7 @@ where
             config,
             order,
             hash,
+            MerkleArity::Two,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -361,6 +363,7 @@ where
         config: &WhirConfig<BinaryField128, F, PC>,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -377,6 +380,7 @@ where
             config,
             order,
             hash,
+            arity,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -397,6 +401,7 @@ where
         config: &WhirConfig<BinaryField128, F, PC>,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -414,6 +419,7 @@ where
             config,
             order,
             hash,
+            arity,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -432,6 +438,7 @@ where
         config: &WhirConfig<BinaryField128, F, PC>,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -457,6 +464,7 @@ where
             main_protocol,
             order,
             hash,
+            arity,
             cap_height,
             limits,
         )?;
@@ -469,10 +477,11 @@ where
                 preprocessed_protocol.expect("checked preprocessing protocol"),
                 preprocessing.order,
                 preprocessing.hash,
+                preprocessing.arity,
                 preprocessing.cap_height,
                 limits,
             )?;
-            if preprocessing.commitment.num_roots() != 1usize << preprocessing.cap_height {
+            if preprocessing.commitment.num_roots() != verifier.cap_roots() {
                 return Err(invalid(
                     "binary WHIR MultiStark trusted preprocessing cap shape mismatch",
                 ));
@@ -493,7 +502,7 @@ where
             relation: relation.input.clone(),
             opening: opening.input_shape(),
             preprocessed: preprocessed_input,
-            cap_height,
+            cap_roots: opening.cap_roots(),
         };
         Ok(Self {
             input,
@@ -772,7 +781,7 @@ where
                 "native scalar WHIR verifier does not support indexed relations",
             ));
         }
-        let commitment = (0..1usize << self.cap_height)
+        let commitment = (0..self.cap_roots)
             .map(|_| {
                 let digest = b
                     .alloc_private_input_array::<16>("native WHIR MultiStark commitment")

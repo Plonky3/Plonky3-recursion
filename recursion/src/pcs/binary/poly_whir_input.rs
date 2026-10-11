@@ -22,7 +22,7 @@ use p3_whir::pcs::proof::{PcsProof, QueryOpenings};
 use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
 
 use super::whir_plan::{FoldShape, OracleSite, invalid, limit};
-use super::{BinaryPolyWhirVerifier, ByteDigestMmcs};
+use super::{BinaryPolyWhirVerifier, ByteDigestMmcs, MerkleArity};
 use crate::transcript::domain_separator_seed;
 use crate::verifier::binary_field_policy::{
     BinaryRelationPolicy, NativePoly64Relation, Poly64Relation,
@@ -44,7 +44,9 @@ pub struct BinaryPolyWhirInputShape {
     protocol: OpeningProtocol,
     order: VariableOrder,
     hash: ByteHash,
+    arity: MerkleArity,
     cap_height: usize,
+    cap_roots: usize,
     initial_ood: usize,
     initial_fold: FoldShape,
     sites: Vec<OracleSite>,
@@ -66,7 +68,7 @@ impl BinaryPolyWhirInputShape {
                 .iter_openings()
                 .map(|(_, batch)| (batch.current().len(), batch.next().len()))
                 .collect(),
-            cap_roots: 1usize << self.cap_height,
+            cap_roots: self.cap_roots,
             initial_ood: self.initial_ood,
             initial_fold: fold(&self.initial_fold),
             sites: self
@@ -76,7 +78,7 @@ impl BinaryPolyWhirInputShape {
                     width: site.width,
                     oracle: OracleDecode {
                         rows: site.queries.num_queries(),
-                        path_len: site.log_height - self.cap_height,
+                        path_len: site.path_len,
                     },
                     query_pow_bits: site.query_pow_bits,
                     ood: site.ood,
@@ -156,7 +158,7 @@ impl BinaryPolyWhirInputShape {
         let initial_sumcheck = fold(b, &self.initial_fold, &mut field, &mut base)?;
         let mut rounds = Vec::new();
         for (i, site) in self.sites.iter().take(self.sites.len() - 1).enumerate() {
-            let cap = (0..1usize << self.cap_height)
+            let cap = (0..self.cap_roots)
                 .map(|_| {
                     let digest = b.alloc_private_input_array::<16>("WHIR round cap").to_vec();
                     b.check_construction_limits()?;
@@ -165,8 +167,7 @@ impl BinaryPolyWhirInputShape {
                 .collect::<Result<_, VerificationError>>()?;
             let ood_answers = fields(b, site.ood, &mut field)?;
             let pow_witness = base(b)?;
-            let (rows, paths) =
-                opening::<P, CF>(b, site, self.cap_height, i == 0, &mut field, &mut base)?;
+            let (rows, paths) = opening::<P, CF>(b, site, i == 0, &mut field, &mut base)?;
             let sumcheck = fold(b, &site.fold, &mut field, &mut base)?;
             rounds.push(BinaryPolyWhirRoundTargets {
                 cap,
@@ -183,14 +184,8 @@ impl BinaryPolyWhirInputShape {
             .sites
             .last()
             .expect("a checked WHIR plan has a final query site");
-        let (final_rows, final_paths) = opening::<P, CF>(
-            b,
-            site,
-            self.cap_height,
-            self.sites.len() == 1,
-            &mut field,
-            &mut base,
-        )?;
+        let (final_rows, final_paths) =
+            opening::<P, CF>(b, site, self.sites.len() == 1, &mut field, &mut base)?;
         let final_sumcheck = fold(b, &site.fold, &mut field, &mut base)?;
         Ok(BinaryPolyWhirProofTargets {
             evals,
@@ -236,7 +231,9 @@ impl BinaryPolyWhirVerifier {
             protocol: p.protocol.clone(),
             order: p.order,
             hash: p.hash,
+            arity: p.arity,
             cap_height: p.cap_height,
+            cap_roots: p.cap_roots,
             initial_ood: p.initial_ood,
             initial_fold: p.initial_fold.clone(),
             sites: p.sites.clone(),
@@ -260,9 +257,9 @@ impl BinaryPolyWhirVerifier {
         let p = &self.plan;
         let shape = WhirShape::new(config, p.protocol.num_openings());
         if domain_separator_seed(&shape.domain_separator::<Poly64, Poly192>()) != p.engine_seed
-            || mmcs.compression_arity() != 2
+            || mmcs.compression_arity() != p.arity.digests()
             || mmcs.cap_height() != p.cap_height
-            || commitment.roots().len() != 1usize << p.cap_height
+            || commitment.roots().len() != p.cap_roots
             || proof.evals.len() != p.protocol.num_openings()
             || p.protocol.check_points(points).is_err()
             || p.protocol
@@ -304,7 +301,7 @@ impl BinaryPolyWhirVerifier {
                 if round
                     .commitment
                     .as_ref()
-                    .is_none_or(|cap| cap.roots().len() != 1usize << p.cap_height)
+                    .is_none_or(|cap| cap.roots().len() != p.cap_roots)
                     || round.ood_answers.len() != site.ood
                 {
                     return Err(invalid(
@@ -343,7 +340,7 @@ impl BinaryPolyWhirVerifier {
             let max_frontier = site
                 .queries
                 .num_queries()
-                .checked_mul(site.log_height - p.cap_height)
+                .checked_mul(site.path_len)
                 .ok_or(VerificationError::ResourceArithmeticOverflow {
                     component: "binary Poly WHIR frontier",
                 })?;
@@ -567,8 +564,7 @@ impl BinaryPolyWhirVerifier {
                 return Err(invalid("binary WHIR restored path count mismatch"));
             }
             for (path, &index) in paths.iter().zip(&indices[i]) {
-                if path.leaf_index != index || path.siblings.len() != site.log_height - p.cap_height
-                {
+                if path.leaf_index != index || path.siblings.len() != site.path_len {
                     return Err(invalid("binary WHIR restored path geometry mismatch"));
                 }
                 for digest in &path.siblings {
@@ -624,7 +620,6 @@ fn fold<CF: Field + Eq + Hash, T, B>(
 fn opening<P, CF>(
     b: &mut CircuitBuilder<CF>,
     site: &OracleSite,
-    cap: usize,
     is_base: bool,
     field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<P::ChallengeTarget, VerificationError>,
     base: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<P::BaseTarget, VerificationError>,
@@ -649,7 +644,7 @@ where
         .collect::<Result<_, _>>()?;
     let paths = (0..site.queries.num_queries())
         .map(|_| {
-            (0..site.log_height - cap)
+            (0..site.path_len)
                 .map(|_| {
                     let digest = b
                         .alloc_private_input_array::<16>("WHIR path digest")
@@ -746,18 +741,18 @@ impl NativeBinaryPolyWhirInput {
             .take(expected.sites.len() - 1)
             .enumerate()
         {
-            for _ in 0..1usize << expected.cap_height {
+            for _ in 0..expected.cap_roots {
                 cursor.words(16)?;
             }
             cursor.fields(site.ood)?;
             cursor.coefficients(1)?;
-            cursor.opening(site, expected.cap_height, i == 0)?;
+            cursor.opening(site, i == 0)?;
             cursor.fold(&site.fold)?;
         }
         cursor.fields(expected.final_len)?;
         cursor.coefficients(1)?;
         let site = expected.sites.last().expect("checked final WHIR site");
-        cursor.opening(site, expected.cap_height, expected.sites.len() == 1)?;
+        cursor.opening(site, expected.sites.len() == 1)?;
         cursor.fold(&site.fold)?;
         if cursor.position != self.limbs.len() {
             return Err(invalid(
@@ -819,12 +814,7 @@ impl NativePolyWhirCursor<'_> {
         }
         Ok(())
     }
-    fn opening(
-        &mut self,
-        site: &OracleSite,
-        cap: usize,
-        base: bool,
-    ) -> Result<(), VerificationError> {
+    fn opening(&mut self, site: &OracleSite, base: bool) -> Result<(), VerificationError> {
         for _ in 0..site.queries.num_queries() {
             if base {
                 self.coefficients(site.width)?;
@@ -833,7 +823,7 @@ impl NativePolyWhirCursor<'_> {
             }
         }
         for _ in 0..site.queries.num_queries() {
-            for _ in 0..site.log_height - cap {
+            for _ in 0..site.path_len {
                 self.words(16)?;
             }
         }

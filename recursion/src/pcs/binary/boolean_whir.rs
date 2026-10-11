@@ -22,8 +22,8 @@ use super::whir_plan::invalid;
 use super::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingInputShape, BinaryRingOutput,
     BinaryRingProofTargets, BinaryWhirInputShape, BinaryWhirProofTargets, BinaryWhirVerifier,
-    ByteDigestMmcs, NativeBinaryRingInput, NativeBinaryWhirInput, NativeBitRingProofTargets,
-    NativeBitRingReading,
+    ByteDigestMmcs, MerkleArity, NativeBinaryRingInput, NativeBinaryWhirInput,
+    NativeBitRingProofTargets, NativeBitRingReading,
 };
 use crate::verifier::binary_field_policy::{BinaryProtocolPolicy, NativeTower128Relation};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
@@ -147,6 +147,7 @@ impl NativeBinaryBooleanWhirInput {
 }
 
 impl BinaryBooleanWhirVerifier {
+    /// [`Self::with_limits`] for pairwise trees under the default limits.
     pub fn new<Ch>(
         config: &WhirConfig<BinaryField128, BinaryField128, Ch>,
         specs: Vec<BinaryRingClaimSpec>,
@@ -156,14 +157,24 @@ impl BinaryBooleanWhirVerifier {
     where
         Ch: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
     {
-        Self::with_limits(config, specs, hash, cap_height, &VerifierLimits::default())
+        Self::with_limits(
+            config,
+            specs,
+            hash,
+            MerkleArity::Two,
+            cap_height,
+            &VerifierLimits::default(),
+        )
     }
 
-    /// Checks the aggregate ring-switch and WHIR budget before allocation.
+    /// Checks the aggregate ring-switch and WHIR budget before allocation. The
+    /// packed opening's tree compresses `arity` digests per node and its cap
+    /// replaces the top `cap_height` levels.
     pub fn with_limits<Ch>(
         config: &WhirConfig<BinaryField128, BinaryField128, Ch>,
         specs: Vec<BinaryRingClaimSpec>,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError>
@@ -185,6 +196,7 @@ impl BinaryBooleanWhirVerifier {
             protocol,
             VariableOrder::Suffix,
             hash,
+            arity,
             cap_height,
             limits,
         )?;
@@ -199,6 +211,11 @@ impl BinaryBooleanWhirVerifier {
 
     pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
+    }
+
+    /// The roots of the packed opening's cap.
+    pub(crate) const fn cap_roots(&self) -> usize {
+        self.opening.cap_roots()
     }
 
     pub fn input_shape(&self) -> BinaryBooleanWhirInputShape {

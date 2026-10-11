@@ -8,6 +8,7 @@ use super::super::config::{
     MixedWhirPcs,
 };
 use super::*;
+use crate::pcs::binary::MerkleArity;
 use crate::verifier::{
     BinaryMixedWhirMultiStarkPreprocessing, BinaryMixedWhirMultiStarkVerifier,
     NativeBinaryMixedWhirMultiStarkInput,
@@ -115,12 +116,14 @@ impl NativeFamily<E, E> for MixedWhirFamily {
                 &main.dense.config,
                 &packed.whir.config,
                 main.dense.hash,
+                MerkleArity::Two,
                 main.dense.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
                 BinaryMixedWhirMultiStarkPreprocessing {
                     config: pp.dense.config.clone(),
                     hash: pp.dense.hash,
+                    arity: MerkleArity::Two,
                     cap_height: pp.dense.cap_height,
                     commitment: MerkleCap::new(vec![[0; 32]; roots]),
                 },
@@ -134,6 +137,7 @@ impl NativeFamily<E, E> for MixedWhirFamily {
                 &main.dense.config,
                 &packed.whir.config,
                 main.dense.hash,
+                MerkleArity::Two,
                 main.dense.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,

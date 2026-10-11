@@ -11,7 +11,7 @@ use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_multilinear_util::point::Point;
 use p3_recursion::BinaryTower128Challenger;
-use p3_recursion::pcs::binary::BinaryPolyWhirVerifier;
+use p3_recursion::pcs::binary::{BinaryPolyWhirVerifier, MerkleArity};
 use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table};
 use p3_sumcheck::strategy::VariableOrder;
@@ -517,6 +517,7 @@ fn polynomial_whir_bounds_price_cubic_extension_rows_and_192_bit_challenges() {
             protocol(9, false),
             VariableOrder::Prefix,
             ByteHash::Keccak256,
+            MerkleArity::Two,
             0,
             limits,
         )

@@ -17,6 +17,7 @@ use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, prove, setup, verify,
 };
 use p3_recursion::BinaryTower128Challenger;
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::verifier::{
     BinaryPolyWhirMultiStarkPreprocessing, BinaryPolyWhirMultiStarkVerifier, VerifierLimits,
 };
@@ -177,6 +178,7 @@ fn indexed_columns_and_bus_claims_close_through_independent_preprocessing() {
             &main_cfg,
             PpLayout::variable_order(),
             ByteHash::Blake3,
+            MerkleArity::Two,
             0,
             0,
             8,
@@ -184,6 +186,7 @@ fn indexed_columns_and_bus_claims_close_through_independent_preprocessing() {
                 config: pp_cfg.clone(),
                 order: PpLayout::variable_order(),
                 hash: ByteHash::Blake3,
+                arity: MerkleArity::Two,
                 cap_height: 1,
                 commitment: pp_cap.clone(),
             },

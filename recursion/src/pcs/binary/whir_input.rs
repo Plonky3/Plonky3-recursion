@@ -22,7 +22,7 @@ use p3_whir::pcs::proof::{PcsProof, QueryOpenings};
 use p3_whir::transcript::{WhirShape, WhirVerifierTranscript};
 
 use super::whir_plan::{FoldShape, OracleSite, invalid};
-use super::{BinaryWhirVerifier, ByteDigestMmcs, RecursiveBinaryWhirTowerField};
+use super::{BinaryWhirVerifier, ByteDigestMmcs, MerkleArity, RecursiveBinaryWhirTowerField};
 use crate::transcript::domain_separator_seed;
 use crate::verifier::{InputResourceUsage, VerificationError};
 
@@ -63,7 +63,9 @@ pub struct BinaryWhirInputShape<F> {
     protocol: OpeningProtocol,
     order: VariableOrder,
     hash: ByteHash,
+    arity: MerkleArity,
     cap_height: usize,
+    cap_roots: usize,
     initial_ood: usize,
     initial_fold: FoldShape,
     sites: Vec<OracleSite>,
@@ -85,7 +87,7 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
                 .iter_openings()
                 .map(|(_, batch)| (batch.current().len(), batch.next().len()))
                 .collect(),
-            cap_roots: 1usize << self.cap_height,
+            cap_roots: self.cap_roots,
             initial_ood: self.initial_ood,
             initial_fold: fold(&self.initial_fold),
             sites: self
@@ -95,7 +97,7 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
                     width: site.width,
                     oracle: OracleDecode {
                         rows: site.queries.num_queries(),
-                        path_len: site.log_height - self.cap_height,
+                        path_len: site.path_len,
                     },
                     query_pow_bits: site.query_pow_bits,
                     ood: site.ood,
@@ -174,7 +176,7 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
         let initial_sumcheck = fold(b, &self.initial_fold, &mut field)?;
         let mut rounds = Vec::new();
         for site in self.sites.iter().take(self.sites.len() - 1) {
-            let cap = (0..1usize << self.cap_height)
+            let cap = (0..self.cap_roots)
                 .map(|_| {
                     let digest = b.alloc_private_input_array::<16>("WHIR round cap").to_vec();
                     b.check_construction_limits()?;
@@ -183,7 +185,7 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
                 .collect::<Result<_, VerificationError>>()?;
             let ood_answers = fields(b, site.ood, &mut field)?;
             let pow_witness = field(b)?;
-            let (rows, paths) = opening(b, site, self.cap_height, &mut field)?;
+            let (rows, paths) = opening(b, site, &mut field)?;
             let sumcheck = fold(b, &site.fold, &mut field)?;
             rounds.push(BinaryWhirRoundTargets {
                 cap,
@@ -200,7 +202,7 @@ impl<F: RecursiveBinaryWhirTowerField> BinaryWhirInputShape<F> {
             .sites
             .last()
             .expect("a checked WHIR plan has a final query site");
-        let (final_rows, final_paths) = opening(b, site, self.cap_height, &mut field)?;
+        let (final_rows, final_paths) = opening(b, site, &mut field)?;
         let final_sumcheck = fold(b, &site.fold, &mut field)?;
         Ok(BinaryWhirProofTargets {
             evals,
@@ -250,7 +252,9 @@ where
             protocol: p.protocol.clone(),
             order: p.order,
             hash: p.hash,
+            arity: p.arity,
             cap_height: p.cap_height,
+            cap_roots: p.cap_roots,
             initial_ood: p.initial_ood,
             initial_fold: p.initial_fold.clone(),
             sites: p.sites.clone(),
@@ -298,9 +302,9 @@ where
         let p = &self.plan;
         let shape = WhirShape::new(config, p.protocol.num_openings());
         if domain_separator_seed(&shape.domain_separator::<F, BinaryField128>()) != p.engine_seed
-            || mmcs.compression_arity() != 2
+            || mmcs.compression_arity() != p.arity.digests()
             || mmcs.cap_height() != p.cap_height
-            || commitment.roots().len() != 1usize << p.cap_height
+            || commitment.roots().len() != p.cap_roots
             || proof.evals.len() != p.protocol.num_openings()
             || p.protocol.check_points(points).is_err()
             || p.protocol
@@ -342,7 +346,7 @@ where
                 if round
                     .commitment
                     .as_ref()
-                    .is_none_or(|cap| cap.roots().len() != 1usize << p.cap_height)
+                    .is_none_or(|cap| cap.roots().len() != p.cap_roots)
                     || round.ood_answers.len() != site.ood
                 {
                     return Err(invalid(
@@ -381,7 +385,7 @@ where
             let max_frontier = site
                 .queries
                 .num_queries()
-                .checked_mul(site.log_height - p.cap_height)
+                .checked_mul(site.path_len)
                 .ok_or(VerificationError::ResourceArithmeticOverflow {
                     component: "binary WHIR frontier",
                 })?;
@@ -604,8 +608,7 @@ where
                 return Err(invalid("binary WHIR restored path count mismatch"));
             }
             for (path, &index) in paths.iter().zip(&indices[i]) {
-                if path.leaf_index != index || path.siblings.len() != site.log_height - p.cap_height
-                {
+                if path.leaf_index != index || path.siblings.len() != site.path_len {
                     return Err(invalid("binary WHIR restored path geometry mismatch"));
                 }
                 for digest in &path.siblings {
@@ -664,7 +667,6 @@ where
 fn opening<CF, T>(
     b: &mut CircuitBuilder<CF>,
     site: &OracleSite,
-    cap: usize,
     field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
 ) -> Result<super::OracleOpeningTargets<Vec<T>>, VerificationError>
 where
@@ -675,7 +677,7 @@ where
         .collect::<Result<_, _>>()?;
     let paths = (0..site.queries.num_queries())
         .map(|_| {
-            (0..site.log_height - cap)
+            (0..site.path_len)
                 .map(|_| {
                     let digest = b
                         .alloc_private_input_array::<16>("WHIR path digest")
@@ -754,18 +756,18 @@ where
         cursor.fields(expected.initial_ood)?;
         cursor.fold(&expected.initial_fold)?;
         for site in expected.sites.iter().take(expected.sites.len() - 1) {
-            for _ in 0..1usize << expected.cap_height {
+            for _ in 0..expected.cap_roots {
                 cursor.words(16)?;
             }
             cursor.fields(site.ood)?;
             cursor.fields(1)?;
-            cursor.opening(site, expected.cap_height)?;
+            cursor.opening(site)?;
             cursor.fold(&site.fold)?;
         }
         cursor.fields(expected.final_len)?;
         cursor.fields(1)?;
         let site = expected.sites.last().expect("checked final WHIR site");
-        cursor.opening(site, expected.cap_height)?;
+        cursor.opening(site)?;
         cursor.fold(&site.fold)?;
         if cursor.position != self.limbs.len() {
             return Err(invalid("native WHIR coordinate packing has trailing words"));
@@ -820,12 +822,12 @@ impl NativeWhirCursor<'_> {
         }
         Ok(())
     }
-    fn opening(&mut self, site: &OracleSite, cap: usize) -> Result<(), VerificationError> {
+    fn opening(&mut self, site: &OracleSite) -> Result<(), VerificationError> {
         for _ in 0..site.queries.num_queries() {
             self.fields(site.width)?;
         }
         for _ in 0..site.queries.num_queries() {
-            for _ in 0..site.log_height - cap {
+            for _ in 0..site.path_len {
                 self.words(16)?;
             }
         }

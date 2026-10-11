@@ -9,6 +9,7 @@ use super::super::config::{
     BinaryNativeBooleanWhirTraceConfig, BinaryNativeWhirPcsParameters, NativeBooleanWhirTracePcs,
 };
 use super::*;
+use crate::pcs::binary::MerkleArity;
 use crate::verifier::{
     BinaryBooleanWhirTraceMultiStarkPreprocessing, BinaryBooleanWhirTraceMultiStarkVerifier,
     NativeBinaryBooleanWhirTraceMultiStarkInput,
@@ -53,12 +54,14 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
                 heights,
                 &main.config,
                 main.hash,
+                MerkleArity::Two,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
                 BinaryBooleanWhirTraceMultiStarkPreprocessing {
                     config: pp.config.clone(),
                     hash: pp.hash,
+                    arity: MerkleArity::Two,
                     cap_height: pp.cap_height,
                     commitment: MerkleCap::new(vec![[0; 32]; roots]),
                 },
@@ -70,6 +73,7 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
                 heights,
                 &main.config,
                 main.hash,
+                MerkleArity::Two,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,

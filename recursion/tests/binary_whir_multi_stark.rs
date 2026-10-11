@@ -17,7 +17,7 @@ use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, prove, setup, verify,
 };
 use p3_recursion::BinaryTower128Challenger;
-use p3_recursion::pcs::binary::RecursiveBinaryTowerField;
+use p3_recursion::pcs::binary::{MerkleArity, RecursiveBinaryTowerField};
 use p3_recursion::verifier::{
     BinaryWhirMultiStarkPreprocessing, BinaryWhirMultiStarkVerifier,
     NativeBinaryWhirMultiStarkInput, VerificationError, VerifierLimits,
@@ -381,6 +381,7 @@ fn check_preprocessed(
             &main_cfg,
             GateLayout::variable_order(),
             ByteHash::Keccak256,
+            MerkleArity::Two,
             0,
             0,
             8,
@@ -388,6 +389,7 @@ fn check_preprocessed(
                 config: pp_cfg.clone(),
                 order: GateLayout::variable_order(),
                 hash: ByteHash::Keccak256,
+                arity: MerkleArity::Two,
                 cap_height: 1,
                 commitment: pp_cap.clone(),
             },

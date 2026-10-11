@@ -11,7 +11,7 @@ use super::gadgets::{next_eval_using, reduce_sumcheck_using};
 use super::verifier::observe_cap_with_host;
 use super::whir_gadgets::{eval_coefficients_using, eval_multilinear_using, select_eval_using};
 use super::whir_plan::{FoldShape, OracleSite, WhirPlan, invalid};
-use super::{BinaryWhirProofTargets, BinaryWhirSumcheckTargets};
+use super::{BinaryWhirProofTargets, BinaryWhirSumcheckTargets, MerkleArity};
 use crate::BinaryTower128Challenger;
 use crate::verifier::VerificationError;
 use crate::verifier::binary_field_policy::{BinaryOracleWord, BinaryWhirPolicy};
@@ -302,24 +302,43 @@ where
                 H::constrain_sibling(b, sibling)?;
             }
             let heights = [1usize << check.site.log_height];
-            if let Some(words) = words {
-                b.verify_byte_hash_mmcs_opening_words_with_host::<H>(
-                    p.hash,
-                    &[words.concat()],
-                    &heights,
-                    index,
-                    path,
-                    &check.cap,
-                )?;
-            } else {
-                b.verify_byte_hash_mmcs_opening_bytes_with_host::<H>(
-                    p.hash,
+            let (hash, cap) = (p.hash, &check.cap);
+            match (words, p.arity) {
+                (Some(words), MerkleArity::Two) => b
+                    .verify_byte_hash_mmcs_opening_words_with_host::<H>(
+                        hash,
+                        &[words.concat()],
+                        &heights,
+                        index,
+                        path,
+                        cap,
+                    )?,
+                (Some(words), MerkleArity::Four) => b
+                    .verify_byte_hash_mmcs_opening_words_with_host_arity::<H, 4>(
+                        hash,
+                        &[words.concat()],
+                        &heights,
+                        index,
+                        path,
+                        cap,
+                    )?,
+                (None, MerkleArity::Two) => b.verify_byte_hash_mmcs_opening_bytes_with_host::<H>(
+                    hash,
                     &[bytes],
                     &heights,
                     index,
                     path,
-                    &check.cap,
-                )?;
+                    cap,
+                )?,
+                (None, MerkleArity::Four) => b
+                    .verify_byte_hash_mmcs_opening_bytes_with_host_arity::<H, 4>(
+                        hash,
+                        &[bytes],
+                        &heights,
+                        index,
+                        path,
+                        cap,
+                    )?,
             }
             b.check_construction_limits()?;
         }
@@ -384,8 +403,8 @@ where
     Ok(())
 }
 
-pub(super) fn check_cap(cap_height: usize, cap: &[Vec<ExprId>]) -> Result<(), VerificationError> {
-    if cap.len() != 1usize << cap_height || cap.iter().any(|digest| digest.len() != 16) {
+pub(super) fn check_cap(roots: usize, cap: &[Vec<ExprId>]) -> Result<(), VerificationError> {
+    if cap.len() != roots || cap.iter().any(|digest| digest.len() != 16) {
         Err(invalid("binary WHIR cap shape mismatch"))
     } else {
         Ok(())
@@ -397,7 +416,7 @@ pub(super) fn check_targets<F, E, T, B>(
     points: &[Vec<T>],
     proof: &BinaryWhirProofTargets<T, B>,
 ) -> Result<(), VerificationError> {
-    check_cap(p.cap_height, cap)?;
+    check_cap(p.cap_roots, cap)?;
     let shapes = p.protocol.table_shapes();
     if points.len() != p.protocol.num_openings()
         || proof.evals.len() != points.len()
@@ -418,15 +437,15 @@ pub(super) fn check_targets<F, E, T, B>(
     }
     check_fold(&proof.initial_sumcheck, &p.initial_fold)?;
     for (site, round) in p.sites.iter().zip(&proof.rounds) {
-        check_cap(p.cap_height, &round.cap)?;
+        check_cap(p.cap_roots, &round.cap)?;
         if round.ood_answers.len() != site.ood {
             return Err(invalid("binary WHIR target OOD shape mismatch"));
         }
-        check_opening(site, p.cap_height, &round.rows, &round.paths)?;
+        check_opening(site, &round.rows, &round.paths)?;
         check_fold(&round.sumcheck, &site.fold)?;
     }
     let site = p.sites.last().expect("checked final site");
-    check_opening(site, p.cap_height, &proof.final_rows, &proof.final_paths)?;
+    check_opening(site, &proof.final_rows, &proof.final_paths)?;
     check_fold(&proof.final_sumcheck, &site.fold)
 }
 fn expand<P, CF>(
@@ -469,16 +488,15 @@ fn check_fold<T, B>(
 }
 fn check_opening<T>(
     site: &OracleSite,
-    cap: usize,
     rows: &[Vec<T>],
     paths: &[Vec<Vec<ExprId>>],
 ) -> Result<(), VerificationError> {
     if rows.len() != site.queries.num_queries()
         || rows.iter().any(|row| row.len() != site.width)
         || paths.len() != rows.len()
-        || paths.iter().any(|path| {
-            path.len() != site.log_height - cap || path.iter().any(|digest| digest.len() != 16)
-        })
+        || paths
+            .iter()
+            .any(|path| path.len() != site.path_len || path.iter().any(|digest| digest.len() != 16))
     {
         Err(invalid("binary WHIR target query opening shape mismatch"))
     } else {

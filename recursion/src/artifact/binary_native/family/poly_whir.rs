@@ -8,6 +8,7 @@ use super::super::config::{
     NativePolyWhirPcs,
 };
 use super::*;
+use crate::pcs::binary::MerkleArity;
 use crate::verifier::{
     BinaryPolyWhirMultiStarkPreprocessing, BinaryPolyWhirMultiStarkVerifier,
     NativeBinaryPolyWhirMultiStarkInput,
@@ -71,6 +72,7 @@ where
                 &main.config,
                 L::variable_order(),
                 main.hash,
+                MerkleArity::Two,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
@@ -78,6 +80,7 @@ where
                     config: pp.config.clone(),
                     order: L::variable_order(),
                     hash: pp.hash,
+                    arity: MerkleArity::Two,
                     cap_height: pp.cap_height,
                     commitment: MerkleCap::new(vec![[0; 32]; roots]),
                 },
@@ -90,6 +93,7 @@ where
                 &main.config,
                 L::variable_order(),
                 main.hash,
+                MerkleArity::Two,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,

@@ -9,11 +9,14 @@ use p3_circuit::{Circuit, CircuitBuilder};
 use p3_commit::MultilinearPcs;
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_merkle_tree::MerkleTreeMmcs;
 use p3_multilinear_util::point::Point;
 use p3_recursion::BinaryTower128Challenger;
-use p3_recursion::pcs::binary::{BinaryWhirVerifier, RecursiveBinaryTowerField};
+use p3_recursion::pcs::binary::{BinaryWhirVerifier, MerkleArity, RecursiveBinaryTowerField};
+use p3_recursion::verifier::VerifierLimits;
 use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
+use p3_symmetric::CompressionFunctionFromHasher;
 use p3_test_utils::binary_field_params::{blake3, keccak};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
 
@@ -42,7 +45,30 @@ macro_rules! check {
             0
         )
     };
-    ($f:ty, $params:ident, $hash:expr, $layout:ident, $protocol:expr, $parameters:expr, $cap_height:expr) => {{
+    ($f:ty, $params:ident, $hash:expr, $layout:ident, $protocol:expr, $parameters:expr, $cap_height:expr) => {
+        check!(
+            $f,
+            $params,
+            $hash,
+            $layout,
+            $protocol,
+            $parameters,
+            $cap_height,
+            Two,
+            2
+        )
+    };
+    (
+        $f:ty,
+        $params:ident,
+        $hash:expr,
+        $layout:ident,
+        $protocol:expr,
+        $parameters:expr,
+        $cap_height:expr,
+        $arity:ident,
+        $digests:literal
+    ) => {{
         type F = $f;
         type E = BinaryField128;
         type Ch = $params::LevelChallenger<F>;
@@ -51,18 +77,28 @@ macro_rules! check {
         let n = p3_sumcheck::layout::plan_stacked_layout(&protocol.table_shapes()).0;
         let domain = BinaryWhirDomain::<F>::default();
         let config = WhirConfig::<E, F, Ch>::new_with_domain(n, $parameters, &domain).unwrap();
-        let mmcs = $params::LevelMmcs::<F>::new(
+        let arity = MerkleArity::$arity;
+        let mmcs = MerkleTreeMmcs::<
+            F,
+            u8,
+            $params::FieldHash,
+            CompressionFunctionFromHasher<$params::ByteHash, $digests, 32>,
+            $digests,
+            32,
+        >::new(
             $params::FieldHash::new($params::byte_hash()),
-            $params::Compress::new($params::byte_hash()),
+            CompressionFunctionFromHasher::new($params::byte_hash()),
             $cap_height,
         );
         let pcs = WhirProver::<E, F, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
-        let recursive = BinaryWhirVerifier::<F>::new(
+        let recursive = BinaryWhirVerifier::<F>::with_limits(
             &config,
             protocol.clone(),
             L::variable_order(),
             $hash,
+            arity,
             $cap_height,
+            &VerifierLimits::default(),
         )
         .unwrap();
         let shape = recursive.input_shape();
@@ -71,7 +107,7 @@ macro_rules! check {
             ByteHash::Keccak256 => b.enable_keccak_f1600::<BabyBear>(),
             ByteHash::Blake3 => b.enable_blake3_compress::<BabyBear>(),
         }
-        let cap = (0..1usize << $cap_height)
+        let cap = (0..arity.cap_roots($cap_height).unwrap())
             .map(|_| b.alloc_private_input_array::<16>("WHIR cap").to_vec())
             .collect::<Vec<_>>();
         let points = protocol
@@ -182,12 +218,14 @@ macro_rules! check {
             } else {
                 p3_sumcheck::strategy::VariableOrder::Prefix
             };
-            let other = BinaryWhirVerifier::<F>::new(
+            let other = BinaryWhirVerifier::<F>::with_limits(
                 &config,
                 protocol.clone(),
                 other_order,
                 $hash,
+                arity,
                 $cap_height,
+                &VerifierLimits::default(),
             )
             .unwrap();
             assert!(
@@ -403,6 +441,43 @@ fn varied_table_heights_and_mixed_openings_follow_native_batching_order() {
     );
 }
 
+/// A prime-field host opens four-digest trees too: one Keccak-f or Blake3
+/// block per node, at the even and odd tree heights of a two-variable fold,
+/// under a one-level cap of four roots.
+#[test]
+fn arity_four_trees_match_native_openings_in_prime_field_circuits() {
+    let parameters = ProtocolParameters {
+        security_level: 8,
+        pow_bits: 0,
+        round_log_inv_rates: vec![],
+        folding_factor: FoldingFactor::Constant(2),
+        soundness_type: SecurityAssumption::JohnsonBound,
+        starting_log_inv_rate: 1,
+    };
+    check!(
+        BinaryField128,
+        keccak,
+        ByteHash::Keccak256,
+        SuffixProver,
+        protocol(9, 1, true),
+        parameters.clone(),
+        1,
+        Four,
+        4
+    );
+    check!(
+        BinaryField32,
+        blake3,
+        ByteHash::Blake3,
+        PrefixProver,
+        protocol(9, 1, false),
+        parameters,
+        0,
+        Four,
+        4
+    );
+}
+
 #[test]
 fn full_additive_whir_opening_proves_in_a_prime_field_circuit() {
     use p3_circuit_prover::ConstraintProfile;
@@ -495,7 +570,7 @@ fn two_intermediate_rounds_preserve_repeated_stratified_query_rows() {
 
 #[test]
 fn trusted_whir_geometry_and_aggregate_limits_reject_before_allocation() {
-    use p3_recursion::verifier::{VerificationError, VerifierLimits};
+    use p3_recursion::verifier::VerificationError;
     use p3_sumcheck::strategy::VariableOrder;
     type F = BinaryField32;
     let domain = BinaryWhirDomain::<F>::default();
@@ -519,6 +594,7 @@ fn trusted_whir_geometry_and_aggregate_limits_reject_before_allocation() {
             protocol,
             VariableOrder::Prefix,
             ByteHash::Keccak256,
+            MerkleArity::Two,
             cap,
             limits,
         )
@@ -526,6 +602,35 @@ fn trusted_whir_geometry_and_aggregate_limits_reject_before_allocation() {
     let defaults = VerifierLimits::default();
     assert!(make(protocol(10, 1, false), 0, &defaults).is_err());
     assert!(make(protocol(11, 1, false), 8, &defaults).is_err());
+    // A cap counts tree levels: the final seven-bit tree has seven pairwise
+    // levels but four four-digest ones, and both sites' caps are charged.
+    let make_arity = |arity, cap, limits: &VerifierLimits| {
+        BinaryWhirVerifier::<F>::with_limits(
+            &config,
+            protocol(11, 1, false),
+            VariableOrder::Prefix,
+            ByteHash::Keccak256,
+            arity,
+            cap,
+            limits,
+        )
+    };
+    assert!(make_arity(MerkleArity::Two, 7, &defaults).is_ok());
+    assert!(make_arity(MerkleArity::Four, 4, &defaults).is_ok());
+    assert!(make_arity(MerkleArity::Four, 5, &defaults).is_err());
+    let limits = VerifierLimits {
+        max_cap_roots: 2 * 16,
+        ..defaults
+    };
+    assert!(make_arity(MerkleArity::Two, 4, &limits).is_ok());
+    assert!(make_arity(MerkleArity::Four, 2, &limits).is_ok());
+    assert!(matches!(
+        make_arity(MerkleArity::Four, 3, &limits),
+        Err(VerificationError::ResourceLimitExceeded {
+            component: "cap roots",
+            ..
+        })
+    ));
     let limits = VerifierLimits {
         max_total_scalar_elements: 128,
         ..defaults

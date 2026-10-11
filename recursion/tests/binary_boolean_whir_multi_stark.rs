@@ -21,7 +21,7 @@ use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, prove, setup, verify,
 };
 use p3_recursion::BinaryTower128Challenger;
-use p3_recursion::pcs::binary::RecursiveBinaryTowerField;
+use p3_recursion::pcs::binary::{MerkleArity, RecursiveBinaryTowerField};
 use p3_recursion::verifier::{
     BinaryBooleanWhirTraceMultiStarkPreprocessing, BinaryBooleanWhirTraceMultiStarkVerifier,
     NativeBinaryBooleanWhirTraceMultiStarkInput, VerificationError, VerifierLimits,
@@ -214,12 +214,14 @@ fn check(
             &[height],
             &main_cfg,
             ByteHash::Keccak256,
+            MerkleArity::Two,
             0,
             0,
             8,
             BinaryBooleanWhirTraceMultiStarkPreprocessing {
                 config: pp_cfg.clone(),
                 hash: ByteHash::Keccak256,
+                arity: MerkleArity::Two,
                 cap_height: 1,
                 commitment: pp_cap.clone(),
             },
@@ -246,6 +248,7 @@ fn check(
                     vec![OpeningBatch::new((0..width).collect(), next)],
                 )]),
                 ByteHash::Keccak256,
+                MerkleArity::Two,
                 cap,
                 &limits,
             )
