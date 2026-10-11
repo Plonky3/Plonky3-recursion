@@ -585,4 +585,73 @@ mod tests {
             Some(2)
         ));
     }
+
+    /// Coefficient-cell selection draws the native transcript's nonzero
+    /// values, whose 24-byte draws straddle digest refills, and resumes it
+    /// exactly after the next observation; a claimed coefficient that differs
+    /// from any of those draws is rejected.
+    #[test]
+    fn native_cells_match_the_native_transcript() {
+        use p3_binary_field::BinaryChallenger;
+        use p3_challenger::{CanObserve, HashChallenger};
+        use p3_circuit::ops::ByteHash;
+        use p3_circuit::ops::binary_encoding::BinaryCircuitEncoding;
+        use p3_keccak::Keccak256Hash;
+
+        type H = NativeBinaryEncoding;
+        type P = NativePoly64Relation;
+        let initial = [129u8, 3, 251, 7];
+        let mut native =
+            BinaryChallenger::<Poly64, HashChallenger<u8, Keccak256Hash, 32>>::from_hasher(
+                initial.to_vec(),
+                Keccak256Hash,
+            );
+        let plan = BinaryPolyNonzeroChallengePlan::new(3, 5).unwrap();
+        let mut expected = plan.sample_native(&mut native).unwrap();
+        let observed = [0x80123456789abcde, 0x57a983b1de021365, 0xfefdfcfbfaf9f8f7];
+        for coefficient in observed {
+            native.observe(Poly64::new(coefficient));
+        }
+        expected.push(native.sample_algebra_element::<Poly192>());
+
+        let mut b = CircuitBuilder::<Poly64>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let initial = initial.map(|byte| b.define_const(H::encode_u16(byte.into()).unwrap()));
+        let ch = BinaryTower128Challenger::with_initial_bytes_with_host::<H, Poly64>(
+            &mut b,
+            ByteHash::Keccak256,
+            &initial,
+        )
+        .unwrap();
+        let output = plan.sample_native_targets(&mut b, ch).unwrap();
+        let observed = b.native_poly192_constant(observed);
+        let mut ch =
+            P::observe_after_queries::<H>(&mut b, output.continuation, &[observed]).unwrap();
+        let mut actual = output.values;
+        actual.push(P::sample::<H>(&mut b, &mut ch).unwrap());
+        for value in &actual {
+            for &coefficient in value.coefficients() {
+                let claimed = b.public_input();
+                b.connect(coefficient, claimed);
+            }
+        }
+        let circuit = b.build().unwrap();
+        let expected: Vec<_> = expected
+            .into_iter()
+            .flat_map(Poly192::coefficients)
+            .collect();
+        let runs = |public: &[Poly64]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        assert!(runs(&expected));
+        for changed in 0..expected.len() {
+            let mut wrong = expected.clone();
+            wrong[changed] += Poly64::new(1 << 40);
+            assert!(!runs(&wrong), "changed coefficient {changed}");
+        }
+    }
 }
