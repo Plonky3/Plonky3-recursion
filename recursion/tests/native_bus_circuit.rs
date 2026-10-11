@@ -1966,10 +1966,10 @@ fn native_blake3_bytes_prove_the_digest_of_a_multi_chunk_message() {
     assert!(tower_accepts(&prepared, public)(traces));
 }
 
-/// A message limb reaches the table as a block input. A limb with a seventeenth coordinate
-/// passes the fanout and gate rows; the table's bits cannot carry it, so the witness bus
-/// refuses the traces, and lifting the limb's lowest bit to carry it leaves a cell outside
-/// {0, 1}, which the dense table refuses. `LIMBS` private limbs span three blocks.
+/// A message limb reaches the table as a block input, read by no gate. A limb with a
+/// seventeenth coordinate passes the fanout rows; the table's bits cannot carry it, so the
+/// witness bus refuses the traces, and lifting the limb's lowest bit to carry it leaves a cell
+/// outside {0, 1}, which the dense table refuses. `LIMBS` private limbs span three blocks.
 #[test]
 fn native_blake3_blocks_range_check_message_limbs() {
     const LIMBS: usize = 80;
@@ -2032,9 +2032,9 @@ fn native_blake3_blocks_range_check_message_limbs() {
             .collect();
         assert_eq!(changed, [(call, index)], "limb {limb}");
         let mut traces = honest_traces.clone();
-        let [fanout, _, bridge] =
+        let [fanout, gates, bridge] =
             patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
-        assert!(fanout > 0 && bridge == 0);
+        assert!(fanout > 0 && gates == 0 && bridge == 0);
         for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
             check_constraints(air, trace, public);
         }

@@ -33,11 +33,12 @@ fn forged_bit(t: usize) -> usize {
     column(|cols| cols.block[(FORGED_LIMB - 32) / 2][16 + t])
 }
 
-/// A limb with a seventeenth coordinate passes the fanout and gate rows. The BLAKE3 table's
-/// bits cannot carry it, so the witness bus refuses the traces in both modes. Lifting the
-/// limb's lowest bit to carry it balances the bus and leaves a cell outside {0, 1}: under the
-/// dense commitment the traces prove and the zerocheck refuses the proof; under the bit
-/// commitment the commitment refuses the cell before the transcript moves.
+/// A message limb is a block input, read by no gate. A limb with a seventeenth coordinate
+/// passes the fanout rows. The BLAKE3 table's bits cannot carry it, so the witness bus refuses
+/// the traces in both modes. Lifting the limb's lowest bit to carry it balances the bus and
+/// leaves a cell outside {0, 1}: under the dense commitment the traces prove and the zerocheck
+/// refuses the proof; under the bit commitment the commitment refuses the cell before the
+/// transcript moves.
 #[test]
 fn forged_sixteen_bit_limb_is_refused_in_both_modes() {
     let limbs: Vec<u16> = (0..LIMBS as u16)
@@ -81,8 +82,8 @@ fn forged_sixteen_bit_limb_is_refused_in_both_modes() {
     let table = bits.packed_table_index().unwrap();
     let public = bits.public_values(&statement).unwrap();
     let mut traces = bits.traces(&witness).unwrap();
-    let [fanout, _, bridge] = patch_witness_cells(bits.airs(), &mut traces, &honest, &forged);
-    assert!(fanout > 0 && bridge == 0);
+    let [fanout, gates, bridge] = patch_witness_cells(bits.airs(), &mut traces, &honest, &forged);
+    assert!(fanout > 0 && gates == 0 && bridge == 0);
     assert_eq!(traces[table].width, NUM_BLAKE3_BINARY_COLS);
     let forged_tables = |traces: &[RowMajorMatrix<F>]| {
         traces
