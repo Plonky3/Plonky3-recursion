@@ -71,8 +71,8 @@ jobs:
               --test direct_circuit_air --test exactly_one --test indexed_circuit_air --test input_dedup
               --test keccak_f1600 --test manifest --test native_binary_bits --test native_binary_circuit_air
               --test native_binary_coordinates --test native_binary_mmcs --test native_bus_circuit_air
-              --test native_keccak --test native_poly192 --test native_tower128 --test npo_integration
-              --test statement --test statement_schema_api --test trusted_statement
+              --test native_bus_packed --test native_keccak --test native_poly192 --test native_tower128
+              --test npo_integration --test statement --test statement_schema_api --test trusted_statement
             profile: --config profile.test.package.p3-recursion.opt-level=0
             feature_args: ''
           - shard: boolean
