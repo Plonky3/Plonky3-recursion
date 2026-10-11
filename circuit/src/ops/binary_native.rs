@@ -189,6 +189,19 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
             .push_unconstrained_op(vec![vec![value]], 1, InverseOrZeroHint, "binary_is_zero")
             .2[0]
             .ok_or(CircuitBuilderError::MissingOutput)?;
+        self.binary_is_zero_with_inverse(value, inverse)
+    }
+
+    /// Returns `z = value * inverse + 1` under the constraint `value * z = 0`.
+    ///
+    /// For any `inverse`, a nonzero `value` has a satisfying witness only when
+    /// `inverse` is its inverse, giving `z = 0`, and a zero `value` gives
+    /// `z = 1`.
+    pub(crate) fn binary_is_zero_with_inverse(
+        &mut self,
+        value: ExprId,
+        inverse: ExprId,
+    ) -> Result<ExprId, CircuitBuilderError> {
         let one = self.define_const(F::ONE);
         let zero = self.mul_add(value, inverse, one);
         let product = self.mul(value, zero);
@@ -372,5 +385,48 @@ impl<F: BinaryCoordinateField> HintExecutor<F> for InverseOrZeroHint {
 
     fn boxed(&self) -> Box<dyn HintExecutor<F>> {
         Box::new(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs the zero test with a chosen inverse and a claimed result, both
+    /// public, so a forged hint reaches the constraints.
+    fn accepts<F: BinaryCoordinateField>(value: F, inverse: F, claimed: F) -> bool {
+        let mut builder = CircuitBuilder::<F>::new();
+        let inputs = [(); 3].map(|()| builder.public_input());
+        let zero = builder
+            .binary_is_zero_with_inverse(inputs[0], inputs[1])
+            .unwrap();
+        builder.connect(zero, inputs[2]);
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&[value, inverse, claimed])
+            .and_then(|()| runner.run())
+            .is_ok()
+    }
+
+    fn rejects_forged_inverses<F: BinaryCoordinateField>(nonzero: u128) {
+        let value = F::from_raw_coordinates(nonzero).unwrap();
+        let inverse = value.inverse();
+        let other = value + F::ONE;
+        assert!(accepts(value, inverse, F::ZERO));
+        // No inverse but the true one satisfies the constraint for a nonzero value.
+        assert!(!accepts(value, F::ZERO, F::ONE));
+        assert!(!accepts(value, F::ONE, other));
+        assert!(!accepts(value, inverse, F::ONE));
+        for inverse in [F::ZERO, F::ONE, inverse] {
+            assert!(accepts(F::ZERO, inverse, F::ONE));
+            assert!(!accepts(F::ZERO, inverse, F::ZERO));
+        }
+    }
+
+    #[test]
+    fn zero_test_rejects_forged_inverses() {
+        rejects_forged_inverses::<BinaryField128>(0x8000_0000_0000_0000_0000_0000_0001_0000);
+        rejects_forged_inverses::<Poly64>(0x8000_0000_0001_0000);
     }
 }

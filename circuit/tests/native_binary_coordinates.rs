@@ -332,8 +332,9 @@ fn sparse_coordinates_enforce_construction_limits() {
     ));
 }
 
-/// The zero test is bound to its input: a circuit that claims the wrong
-/// answer for a zero or a nonzero scalar has no satisfying witness.
+/// The hinted zero test answers zero and nonzero scalars, a run claiming the
+/// wrong answer fails, and constant inputs fold. Forged inverses are covered
+/// by the unit tests beside `binary_is_zero`.
 fn zero_test<F: BinaryCoordinateField>(nonzero: u128) {
     let mut builder = CircuitBuilder::<F>::new();
     let input = builder.public_input();
