@@ -265,7 +265,10 @@ fn non_bit_state_meets_the_constraints_and_every_commitment_refuses_it() {
     let message = refused
         .downcast_ref::<std::string::String>()
         .map_or("", |message| message.as_str());
-    assert!(message.contains("bit columns"), "{message}");
+    let refusal = alloc::format!(
+        "instance 0 assumes {NUM_KECCAK_BINARY_COLS} bit columns, the commitment holds 0"
+    );
+    assert!(message.contains(&refusal), "{message}");
 
     assert!(check_boolean_assumptions::<E, E, _, Dense>(&[air], &dense).is_err());
 

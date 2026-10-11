@@ -13,7 +13,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_multi_stark::{
     MultiStarkProof, ProverInstance, ProverInstances, ProvingKey, VerificationError as StarkError,
     VerifierInstance, VerifierInstances, VerifyingKey, prove_with_security, security_report, setup,
-    verify_with_security,
+    verify, verify_with_security,
 };
 use p3_sumcheck::{OpeningBatch, TableShape};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirProver};
@@ -665,6 +665,46 @@ fn bit_region_is_the_packed_table_alone() {
     for table in [0, KECCAK] {
         assert_eq!(dense_only.bit_region(table, NUM_KECCAK_BINARY_COLS), 0);
     }
+}
+
+/// A verifier refuses a Boolean-assuming AIR at an instance the mixed commitment holds densely,
+/// before reading the proof. Setup and the prover refuse that pairing too; this refusal is the
+/// one a verifier handed a proof from elsewhere relies on.
+#[test]
+fn verifier_refuses_bits_assumed_outside_the_packed_table() {
+    let fixture = Fixture::new();
+    let proof = fixture.prove();
+    fixture.verify(&proof).unwrap();
+    // The Keccak AIR moves to instance 0, which the commitment holds densely. The preprocessed
+    // AIRs keep their heights, so only the bit region tells the statements apart.
+    let order = [KECCAK, 0, 2];
+    let instances = VerifierInstances::new(
+        order
+            .iter()
+            .map(|&index| {
+                VerifierInstance::new(
+                    &fixture.airs[index],
+                    &fixture.verifying,
+                    fixture.heights[index],
+                    &fixture.public[index],
+                )
+            })
+            .collect(),
+    );
+    assert!(matches!(
+        verify(
+            &fixture.config,
+            instances,
+            &proof,
+            POW_BITS,
+            &mut challenger()
+        ),
+        Err(StarkError::UncommittedBits {
+            instance: 0,
+            assumed: NUM_KECCAK_BINARY_COLS,
+            committed: 0,
+        })
+    ));
 }
 
 #[test]
