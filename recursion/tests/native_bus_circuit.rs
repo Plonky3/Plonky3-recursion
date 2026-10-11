@@ -8,18 +8,19 @@ use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
 use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::{ByteHash, bytes_to_limbs};
+use p3_circuit::ops::{ByteHash, bytes_to_limbs, keccak_limbs_to_state, keccak_state_to_limbs};
+use p3_circuit::tables::WitnessTrace;
 use p3_circuit::{AluOpKind, Circuit, CircuitBuilder, ExprId, Op, WitnessId};
 use p3_circuit_prover::native_bus::{NativeBusCircuit, NativeBusCircuitAir};
 use p3_field::{Field, PrimeCharacteristicRing};
-use p3_keccak::Keccak256Hash;
+use p3_keccak::{Keccak256Hash, KeccakF};
 use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
     BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
 };
 use p3_recursion::verifier::VerifierLimits;
-use p3_symmetric::CryptographicHasher;
+use p3_symmetric::{CryptographicHasher, Permutation};
 
 type F = BinaryField128;
 
@@ -260,6 +261,127 @@ fn native_product_buses_authenticate_keccak_call_boundaries() {
     let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         prover.prove(&public, forged)
     }));
+    if let Ok(Ok(proof)) = attempt {
+        assert!(authority.verify_native(&proof, &public).is_err());
+    }
+}
+
+/// A message whose first block is circuit constants starts its only Keccak-f
+/// call from that block's precomputed state, fixed by constant gates. A
+/// prover who starts the call from a state with one other capacity limb, with
+/// the matching call output and digest, satisfies every other table but that
+/// limb's constant gate, so the proof is rejected.
+#[test]
+fn native_product_buses_fix_the_precomputed_state_of_a_constant_block() {
+    const PREFIX: usize = 68;
+    let words: Vec<u16> = (0..PREFIX as u16 + 3)
+        .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
+        .collect();
+    let hashed = Keccak256Hash.hash_iter(words.iter().flat_map(|word| word.to_le_bytes()));
+    let encode = |word: u16| F::from_raw_coordinates(word.into()).unwrap();
+    let statement = |digest: &[u16]| -> Vec<F> {
+        words[PREFIX..]
+            .iter()
+            .chain(digest)
+            .map(|&word| encode(word))
+            .collect()
+    };
+
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let mut message: Vec<_> = words[..PREFIX]
+        .iter()
+        .map(|&word| b.define_const(encode(word)))
+        .collect();
+    message.extend(b.alloc_public_input_array::<3>("message suffix"));
+    for limb in b.native_keccak256_words(&message).unwrap() {
+        let expected = b.public_input();
+        b.connect(limb, expected);
+    }
+    let circuit = b.build().unwrap();
+    let calls: Vec<_> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor {
+                inputs, outputs, ..
+            } => Some((&inputs[0], &outputs[0])),
+            _ => None,
+        })
+        .collect();
+    let [(input, output)] = calls[..] else {
+        panic!("the constant block takes no Keccak-f call")
+    };
+
+    let prepared = NativeBusCircuit::new(&circuit, "prefix").unwrap();
+    let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec(&prepared),
+        &VerifierLimits {
+            max_rounds: 256,
+            max_metadata_entries: 1 << 20,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let honest = statement(&bytes_to_limbs(&hashed));
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&honest).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let public = prepared.public_values(&honest).unwrap();
+    let proof = prover
+        .prove(&public, prepared.traces(&witness).unwrap())
+        .unwrap();
+    authority.verify_native(&proof, &public).unwrap();
+
+    // A nonzero capacity limb whose constant no gate reads.
+    let mut values: Vec<F> = witness
+        .index
+        .iter()
+        .map(|&id| *witness.get_value(id).unwrap())
+        .collect();
+    let read_by_gate = |id: WitnessId| {
+        circuit.ops.iter().any(|op| {
+            matches!(*op, Op::Alu { a, b, c, intermediate_out, .. }
+                if a == id || b == id || c == Some(id) || intermediate_out == Some(id))
+        })
+    };
+    let lane = (PREFIX..100)
+        .find(|&lane| {
+            values[input[lane].0 as usize] != F::ZERO
+                && input.iter().filter(|&&id| id == input[lane]).count() == 1
+                && !read_by_gate(input[lane])
+        })
+        .unwrap();
+    values[input[lane].0 as usize] += F::ONE;
+    let limbs: Vec<u16> = input
+        .iter()
+        .map(|id| u16::try_from(values[id.0 as usize].to_raw_coordinates()).unwrap())
+        .collect();
+    let permuted =
+        keccak_state_to_limbs(&KeccakF.permute(keccak_limbs_to_state(&limbs.try_into().unwrap())));
+    for (id, &raw) in output.iter().zip(&permuted) {
+        values[id.0 as usize] = encode(raw);
+    }
+    let claimed = statement(&permuted[..16]);
+    for (id, &value) in circuit.public_rows.iter().zip(&claimed) {
+        assert_eq!(values[id.0 as usize], value, "public rows read the call");
+    }
+    let public = prepared.public_values(&claimed).unwrap();
+    let traces = prepared.traces(&WitnessTrace::new(values)).unwrap();
+    let gates = prepared
+        .airs()
+        .iter()
+        .position(|air| air.width() == 5)
+        .unwrap();
+    for (table, ((air, trace), public)) in
+        prepared.airs().iter().zip(&traces).zip(&public).enumerate()
+    {
+        let local = catch_unwind(AssertUnwindSafe(|| check_constraints(air, trace, public)));
+        assert_eq!(local.is_err(), table == gates, "table {table}");
+    }
+    let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
     if let Ok(Ok(proof)) = attempt {
         assert!(authority.verify_native(&proof, &public).is_err());
     }
