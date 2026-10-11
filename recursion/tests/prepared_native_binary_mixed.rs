@@ -246,12 +246,25 @@ fn prove_mixed_output_layer(arity: MerkleArity) {
 #[test]
 #[ignore = "builds and proves a prime-field verifier of a full packed-Keccak native proof; run explicitly"]
 fn mixed_output_layer_token_is_wrapped_by_the_prime_layer() {
+    wrap_mixed_output_layer(MerkleArity::Two);
+}
+
+/// The prime-field layer opens the four-digest trees of the mixed layer's output.
+#[test]
+#[ignore = "builds and proves a prime-field verifier of a full packed-Keccak native proof; run explicitly"]
+fn four_digest_mixed_output_token_is_wrapped_by_the_prime_layer() {
+    wrap_mixed_output_layer(MerkleArity::Four);
+}
+
+/// Wraps the output token of the mixed layer over a child of `arity` trees, its output
+/// committed with `arity` trees, in the prime-field layer and checks the wrap's proof.
+fn wrap_mixed_output_layer(arity: MerkleArity) {
     let Fixture {
         public,
         checked,
         layer,
         ..
-    } = prepare(MerkleArity::Two);
+    } = prepare(arity);
     let outer = layer.prove_verified(&checked).unwrap();
     let token = layer.verify(&outer, &public).unwrap();
     let authority = layer.authority().clone();
