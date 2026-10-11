@@ -8,7 +8,9 @@ use p3_air::{BaseAir, check_constraints};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
 use p3_blake3::Blake3;
-use p3_blake3_air::{Blake3BinaryCols, NUM_BLAKE3_BINARY_COLS};
+use p3_blake3_air::{
+    Blake3BinaryCols, Blake3CompressionInput, NUM_BLAKE3_BINARY_COLS, generate_binary_trace_rows,
+};
 use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
@@ -2084,6 +2086,77 @@ fn native_blake3_chain_refuses_a_wrong_output_limb() {
         assert!(
             !accepts(prepared.traces(&forged).unwrap()),
             "output {index} of call {call}"
+        );
+    }
+}
+
+/// A prover who regenerates the last call's row from another counter or flags word than its
+/// constant inputs hold, and claims the digest that row computes, keeps every constant gate and
+/// satisfies every table's local constraints: the row is a true compression, and the witness
+/// differs from the honest one only at the claimed outputs. The row pushes its counter and
+/// flags limbs under the labels of those constant inputs, which no reader of the constants
+/// matches, so the proof is refused.
+#[test]
+fn native_blake3_rows_bind_their_counter_and_flags_to_the_witness() {
+    let (circuit, statement) = blake3_chain::<F>(3);
+    let prepared = NativeBusCircuit::new(&circuit, "blake3").unwrap();
+    let table = blake3_table(&prepared);
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest = witness_values(&witness);
+    assert!(tower_accepts(
+        &prepared,
+        prepared.public_values(&statement).unwrap()
+    )(prepared.traces(&witness).unwrap()));
+
+    let calls = blake3_calls(&circuit);
+    let call = calls.len() - 1;
+    let (inputs, outputs) = &calls[call];
+    let limbs: Vec<u16> = inputs
+        .iter()
+        .map(|id| u16::try_from(honest[id.0 as usize].to_raw_coordinates()).unwrap())
+        .collect();
+    let words: [u32; BLAKE3_INPUT_WORDS] = limbs_to_words(&limbs).try_into().unwrap();
+    // Input word 24 is the counter's low word and word 27 the flags.
+    for word in [24, 27] {
+        let mut forged_words = words;
+        forged_words[word] ^= 1;
+        let row = generate_binary_trace_rows::<F>(
+            vec![Blake3CompressionInput {
+                block: core::array::from_fn(|j| forged_words[j]),
+                chaining_value: core::array::from_fn(|j| forged_words[16 + j]),
+                counter: u64::from(forged_words[24]) | u64::from(forged_words[25]) << 32,
+                block_len: forged_words[26],
+                flags: forged_words[27],
+            }],
+            0,
+        );
+        let digest: Vec<F> = words_to_limbs(&blake3_compress(&forged_words)[..8])
+            .into_iter()
+            .map(limb_value)
+            .collect();
+        let mut values = honest.clone();
+        for (id, &limb) in outputs.iter().zip(&digest) {
+            values[id.0 as usize] = limb;
+        }
+        let claimed: Vec<F> = statement[..statement.len() - digest.len()]
+            .iter()
+            .chain(&digest)
+            .copied()
+            .collect();
+        assert_ne!(claimed, statement);
+
+        let public = prepared.public_values(&claimed).unwrap();
+        let mut traces = prepared.traces(&WitnessTrace::new(values)).unwrap();
+        traces[table].values[call * NUM_BLAKE3_BINARY_COLS..][..NUM_BLAKE3_BINARY_COLS]
+            .copy_from_slice(&row.values);
+        for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+            check_constraints(air, trace, public);
+        }
+        assert!(
+            !tower_accepts(&prepared, public)(traces),
+            "input word {word}"
         );
     }
 }
