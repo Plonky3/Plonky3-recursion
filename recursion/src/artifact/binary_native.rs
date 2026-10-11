@@ -69,7 +69,7 @@ pub use whir::{BinaryNativeWhirAuthority, BinaryNativeWhirProver, VerifiedBinary
 
 use super::wire::{Writer, encode_framed};
 use super::{ArtifactError, ArtifactKind, ArtifactLimits};
-use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
+use crate::pcs::binary::{MerkleArity, RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::{
     BinaryMultiStarkPreprocessing, BinaryMultiStarkVerifier, InputResourceUsage,
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
@@ -273,6 +273,12 @@ fn write_hash(w: &mut Writer, hash: ByteHash) -> Result<(), ArtifactError> {
         ByteHash::Blake3 => 2,
     })
 }
+fn write_arity(w: &mut Writer, arity: MerkleArity) -> Result<(), ArtifactError> {
+    w.write_u8(match arity {
+        MerkleArity::Two => 2,
+        MerkleArity::Four => 4,
+    })
+}
 fn write_pcs(w: &mut Writer, pcs: BinaryNativePcsParameters) -> Result<(), ArtifactError> {
     for count in [
         pcs.config.num_variables(),
@@ -314,16 +320,30 @@ where
     E: ExtensionField<F> + PackedValue<Value = E>,
     K: NativeFamily<F, E>,
 {
+    // Revision 2 follows each commitment's parameters with the arity of its trees; revision 1
+    // has pairwise trees throughout.
+    let pairwise = core::iter::once(&spec.main)
+        .chain(&spec.preprocessed)
+        .all(|p| K::arity(p) == MerkleArity::Two);
+    let write_commitment = |w: &mut Writer, p: &K::Parameters| {
+        K::write_parameters(w, p)?;
+        if pairwise {
+            Ok(())
+        } else {
+            write_arity(w, K::arity(p))
+        }
+    };
     encode_framed(
         ArtifactKind::Verifier,
         K::suite(),
         limits.max_verifier_bytes,
         |w| {
-            w.write_u16(1)?; // Binary relation revision, including native 0.8 transcript/layout rules.
-            K::write_parameters(w, &spec.main)?;
+            // Binary relation revision, including native 0.8 transcript/layout rules.
+            w.write_u16(if pairwise { 1 } else { 2 })?;
+            write_commitment(w, &spec.main)?;
             w.write_bool(spec.preprocessed.is_some())?;
             if let Some(pp) = &spec.preprocessed {
-                K::write_parameters(w, pp)?;
+                write_commitment(w, pp)?;
             }
             write_hash(w, spec.transcript_hash)?;
             w.write_vec(

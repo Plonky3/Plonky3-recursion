@@ -14,6 +14,7 @@ use p3_keccak::Keccak256Hash;
 use p3_recursion::artifact::{
     BinaryNativeVerifierSpec, BinaryNativeWhirAuthority, BinaryNativeWhirPcsParameters,
 };
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::verifier::VerifierLimits;
 use p3_symmetric::CryptographicHasher;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -68,11 +69,29 @@ fn spec(
     variables: usize,
     preprocessed: Option<usize>,
 ) -> BinaryNativeVerifierSpec<BinaryNativeWhirPcsParameters<F>> {
-    let parameters =
-        |n| BinaryNativeWhirPcsParameters::<F>::new(n, protocol(), ByteHash::Keccak256, 0).unwrap();
+    spec_with(variables, preprocessed, [MerkleArity::Two; 2])
+}
+
+/// The spec whose main and preprocessing trees have the given arities.
+fn spec_with(
+    variables: usize,
+    preprocessed: Option<usize>,
+    [main, pp]: [MerkleArity; 2],
+) -> BinaryNativeVerifierSpec<BinaryNativeWhirPcsParameters<F>> {
+    let parameters = |n, arity| {
+        BinaryNativeWhirPcsParameters::<F>::with_limits(
+            n,
+            protocol(),
+            ByteHash::Keccak256,
+            arity,
+            0,
+            &VerifierLimits::default(),
+        )
+        .unwrap()
+    };
     BinaryNativeVerifierSpec {
-        main: parameters(variables),
-        preprocessed: preprocessed.map(parameters),
+        main: parameters(variables, main),
+        preprocessed: preprocessed.map(|n| parameters(n, pp)),
         transcript_hash: ByteHash::Keccak256,
         initial_bytes: b"dense-format-pin".to_vec(),
         sumcheck_pow_bits: 0,
@@ -94,6 +113,11 @@ fn tiny_air_identity() -> String {
 
 /// Identity digest and encoded proof for a circuit with three Keccak-f calls.
 fn native_bus_pins() -> (String, Vec<u8>) {
+    native_bus_pins_with([MerkleArity::Two; 2])
+}
+
+/// [`native_bus_pins`] with main and preprocessing trees of the given arities.
+fn native_bus_pins_with(arities: [MerkleArity; 2]) -> (String, Vec<u8>) {
     let mut b = CircuitBuilder::<F>::new();
     b.enable_native_keccak_f1600().unwrap();
     let message = b.alloc_public_input_array::<3>("message");
@@ -120,7 +144,11 @@ fn native_bus_pins() -> (String, Vec<u8>) {
     let (prover, authority) = BinaryNativeWhirAuthority::<F, _>::setup(
         prepared.airs().to_vec(),
         prepared.log_heights().to_vec(),
-        spec(prepared.main_variables(), prepared.preprocessed_variables()),
+        spec_with(
+            prepared.main_variables(),
+            prepared.preprocessed_variables(),
+            arities,
+        ),
         &VerifierLimits {
             max_rounds: 256,
             max_metadata_entries: 1 << 20,
@@ -150,6 +178,24 @@ fn dense_whir_nativebus_identity_and_proof_pins() {
     let (identity, proof) = native_bus_pins();
     assert_eq!(identity, NATIVE_BUS_IDENTITY_DIGEST);
     assert_eq!(digest(&proof), NATIVE_BUS_PROOF_DIGEST);
+}
+
+/// Pairwise trees keep the pinned identity. Any four-digest tree changes the relation revision,
+/// which then binds each commitment's arity, so every assignment of arities to the main and
+/// preprocessing trees has its own identity; each one proves, verifies and encodes.
+#[test]
+fn dense_whir_identity_binds_each_commitment_tree_arity() {
+    use MerkleArity::{Four, Two};
+    let identities: Vec<_> = [[Two, Two], [Four, Two], [Two, Four], [Four, Four]]
+        .into_iter()
+        .map(|arities| native_bus_pins_with(arities).0)
+        .collect();
+    assert_eq!(identities[0], NATIVE_BUS_IDENTITY_DIGEST);
+    for (i, first) in identities.iter().enumerate() {
+        for second in &identities[i + 1..] {
+            assert_ne!(first, second);
+        }
+    }
 }
 
 #[test]
