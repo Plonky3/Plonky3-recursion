@@ -64,8 +64,9 @@ struct Args {
     /// Maximum combined initial main and preprocessing codeword cells.
     #[arg(long, default_value_t = 1 << 27)]
     max_pcs_codeword_cells: usize,
-    /// Maximum aggregate verifier rounds in each recursive output authority.
-    #[arg(long, default_value_t = 256)]
+    /// Maximum aggregate verifier rounds in each recursive output authority. It bounds the
+    /// work of verifying an untrusted output proof, not prover memory.
+    #[arg(long, default_value_t = 1024)]
     max_verifier_rounds: usize,
     /// WHIR security level per opening; composed security still requires four bits.
     #[arg(long, default_value_t = 32)]

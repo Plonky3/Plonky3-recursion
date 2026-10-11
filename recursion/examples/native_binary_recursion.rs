@@ -116,8 +116,9 @@ struct Args {
     /// `--pcs folding`, since each multiplies every committed codeword.
     #[arg(long)]
     max_pcs_codeword_cells: Option<usize>,
-    /// Maximum aggregate verifier rounds in each recursive output authority.
-    #[arg(long, default_value_t = 256)]
+    /// Maximum aggregate verifier rounds in each recursive output authority. It bounds the
+    /// work of verifying an untrusted output proof, not prover memory.
+    #[arg(long, default_value_t = 1024)]
     max_verifier_rounds: usize,
     /// PCS security level per opening; composed security still requires four bits.
     #[arg(long, default_value_t = 32)]
