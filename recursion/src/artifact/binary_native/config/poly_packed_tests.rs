@@ -6,7 +6,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_binary_field::{Poly64, Poly192};
-use p3_binary_pcs::whir::{BinaryWhirDomain, BooleanWhirPcs};
+use p3_binary_pcs::whir::{BinaryWhirDomain, BooleanWhirError, BooleanWhirPcs};
 use p3_binary_pcs::{BooleanTraceCommitment, BooleanTraceCommitmentError};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::keccak_state_to_limbs;
@@ -19,6 +19,7 @@ use p3_keccak::KeccakF;
 use p3_keccak_air::NUM_KECCAK_BINARY_COLS;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::SuffixProver;
+use p3_sumcheck::ring_switch::bits::{BitRingSwitchProofError, SuccessorTensors};
 use p3_sumcheck::{
     OpeningBatch, OpeningEvals, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec,
 };
@@ -318,6 +319,8 @@ fn one_element_poly_packed_table_is_charged_no_successor_tensors() {
     );
 }
 
+/// Each forgery is absorbed before the draws after it, so a rejection follows a diverged
+/// transcript as well as the check it names; only the prover-side test below isolates a binding.
 #[test]
 fn tampered_poly_packed_proofs_are_rejected() {
     let packed = packed_keccak(3);
@@ -338,31 +341,77 @@ fn tampered_poly_packed_proofs_are_rejected() {
         .map(|_| ())
     };
     verify(&cap, &point, &proof).unwrap();
+    // The ring-switch reduction's verdict; it refuses every forgery below before the proximity
+    // opening runs.
+    let reduction = |cap: &MerkleCap<F, [u8; 32]>, point: &Point<E>, proof: &Proof| {
+        let error = verify(cap, point, proof).unwrap_err();
+        match error {
+            BooleanTraceCommitmentError::Boolean(BooleanWhirError::ReductionProof(error)) => error,
+            other => panic!("{other:?}"),
+        }
+    };
     let decoded = || -> Proof { postcard::from_bytes(&bytes).unwrap() };
+    let tampered = |tamper: &dyn Fn(&mut Proof)| {
+        let mut proof = decoded();
+        tamper(&mut proof);
+        reduction(&cap, &point, &proof)
+    };
+    // Bit 63 is the last of the element's 64 rows, the one row of `last` the successor reading
+    // weighs.
+    let last_row = F::from_raw_coordinates(1 << 63).unwrap();
 
-    let mut value = decoded();
-    value.values[0] += E::ONE;
-    assert!(verify(&cap, &point, &value).is_err());
-
-    let mut next = decoded();
-    let last = next.values.len() - 1;
-    next.values[last] += E::ONE;
-    assert!(verify(&cap, &point, &next).is_err());
-
-    let mut tensor = decoded();
-    tensor.opening.reduction.claims[0]
-        .tensor
-        .add_exterior_product(E::ONE, F::ONE);
-    assert!(verify(&cap, &point, &tensor).is_err());
+    assert_eq!(
+        tampered(&|proof| proof.values[0] += E::ONE),
+        BitRingSwitchProofError::ClaimMismatch
+    );
+    // The next values are absorbed before the column point, so the current reading moves too.
+    assert_eq!(
+        tampered(&|proof| *proof.values.last_mut().unwrap() += E::ONE),
+        BitRingSwitchProofError::ClaimMismatch
+    );
+    assert_eq!(
+        tampered(&|proof| {
+            proof.opening.reduction.claims[0]
+                .tensor
+                .add_exterior_product(E::ONE, F::ONE);
+        }),
+        BitRingSwitchProofError::ClaimMismatch
+    );
+    assert_eq!(
+        tampered(&|proof| successor(proof).carry.add_exterior_product(E::ONE, F::ONE)),
+        BitRingSwitchProofError::SuccessorClaimMismatch
+    );
+    assert_eq!(
+        tampered(&|proof| successor(proof).last.add_exterior_product(E::ONE, last_row)),
+        BitRingSwitchProofError::SuccessorClaimMismatch
+    );
+    // The rows of `last` the successor reading skips are bound by the sumcheck instead.
+    assert_eq!(
+        tampered(&|proof| successor(proof).last.add_exterior_product(E::ONE, F::ONE)),
+        BitRingSwitchProofError::FinalCheck
+    );
 
     let mut roots = cap.roots().to_vec();
     roots.reverse();
-    assert!(verify(&MerkleCap::new(roots), &point, &decoded()).is_err());
+    assert_eq!(
+        reduction(&MerkleCap::new(roots), &point, &decoded()),
+        BitRingSwitchProofError::ClaimMismatch
+    );
 
     let mut coordinates = point.as_slice().to_vec();
     coordinates[0] += E::ONE;
-    let moved = Point::new(coordinates);
-    assert!(verify(&cap, &moved, &decoded()).is_err());
+    assert_eq!(
+        reduction(&cap, &Point::new(coordinates), &decoded()),
+        BitRingSwitchProofError::ClaimMismatch
+    );
+}
+
+/// The carry and last tensors of the one reduction.
+fn successor(proof: &mut Proof) -> &mut SuccessorTensors<F, E> {
+    proof.opening.reduction.claims[0]
+        .successor
+        .as_mut()
+        .unwrap()
 }
 
 /// The multi-STARK prover supplies the zerocheck's values of the batch. The opening binds them
@@ -381,14 +430,15 @@ fn supplied_poly_packed_values_are_bound_by_the_opening() {
         .open_at(data.clone(), &protocol, points, &mut challenger())
         .unwrap();
     let (current, next) = evaluated.values.split_at(NUM_KECCAK_BINARY_COLS);
-    let supplied = |current: Vec<E>| vec![Some(OpeningEvals::new(current, next.to_vec()))];
+    let supplied =
+        |current: &[E], next: &[E]| vec![Some(OpeningEvals::new(current.to_vec(), next.to_vec()))];
 
     let bound = pcs
         .open_at_known(
             data.clone(),
             &protocol,
             points,
-            &supplied(current.to_vec()),
+            &supplied(current, next),
             &mut challenger(),
         )
         .unwrap();
@@ -400,7 +450,26 @@ fn supplied_poly_packed_values_are_bound_by_the_opening() {
     let mut wrong = current.to_vec();
     wrong[0] += E::ONE;
     assert!(matches!(
-        pcs.open_at_known(data, &protocol, points, &supplied(wrong), &mut challenger()),
+        pcs.open_at_known(
+            data.clone(),
+            &protocol,
+            points,
+            &supplied(&wrong, next),
+            &mut challenger()
+        ),
+        Err(BooleanTraceCommitmentError::ColumnBatchValueMismatch { .. })
+    ));
+
+    let mut wrong = next.to_vec();
+    *wrong.last_mut().unwrap() += E::ONE;
+    assert!(matches!(
+        pcs.open_at_known(
+            data,
+            &protocol,
+            points,
+            &supplied(current, &wrong),
+            &mut challenger()
+        ),
         Err(BooleanTraceCommitmentError::ColumnBatchValueMismatch { .. })
     ));
 }
