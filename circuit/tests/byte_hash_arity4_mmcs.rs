@@ -5,6 +5,7 @@ use core::hash::Hash;
 
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{BinaryField8, BinaryField128, Poly64, TowerLevel};
+use p3_blake3::Blake3;
 use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
@@ -16,25 +17,28 @@ use p3_keccak::Keccak256Hash;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::{Dimensions, Matrix};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
+use p3_symmetric::{CompressionFunctionFromHasher, CryptographicHasher, SerializingHasher};
 use proptest::prelude::*;
 
-type FieldHash = SerializingHasher<Keccak256Hash>;
-type KeccakMmcs<const N: usize> = MerkleTreeMmcs<
+type ByteMmcs<Hs, const N: usize> = MerkleTreeMmcs<
     BinaryField8,
     u8,
-    FieldHash,
-    CompressionFunctionFromHasher<Keccak256Hash, N, 32>,
+    SerializingHasher<Hs>,
+    CompressionFunctionFromHasher<Hs, N, 32>,
     N,
     32,
 >;
 
-const fn keccak_mmcs<const N: usize>(cap_height: usize) -> KeccakMmcs<N> {
-    KeccakMmcs::new(
-        FieldHash::new(Keccak256Hash),
-        CompressionFunctionFromHasher::new(Keccak256Hash),
+const fn byte_mmcs<Hs: Copy, const N: usize>(hasher: Hs, cap_height: usize) -> ByteMmcs<Hs, N> {
+    ByteMmcs::new(
+        SerializingHasher::new(hasher),
+        CompressionFunctionFromHasher::new(hasher),
         cap_height,
     )
+}
+
+const fn keccak_mmcs<const N: usize>(cap_height: usize) -> ByteMmcs<Keccak256Hash, N> {
+    byte_mmcs(Keccak256Hash, cap_height)
 }
 
 /// `max_height` and the shorter heights its tree can inject,
@@ -154,11 +158,14 @@ proptest! {
 }
 
 /// A circuit field for the opening gadget, with its byte hash enabled.
-struct Carrier<F: Field + Eq + Hash> {
+struct Carrier<F: Field + Eq + Hash, Hs = Keccak256Hash> {
     builder: fn() -> CircuitBuilder<F>,
     /// A word plus `2^16`: equal to it in the low sixteen bits, but no
     /// sixteen-bit word.
     widen: fn(F) -> F,
+    /// The byte hash and the p3 hasher of its trees.
+    hash: ByteHash,
+    hasher: Hs,
 }
 
 fn native<F: BinaryCoordinateField>() -> Carrier<F> {
@@ -169,6 +176,8 @@ fn native<F: BinaryCoordinateField>() -> Carrier<F> {
             b
         },
         widen: |word| word + F::from_raw_coordinates(1 << 16).unwrap(),
+        hash: ByteHash::Keccak256,
+        hasher: Keccak256Hash,
     }
 }
 
@@ -180,6 +189,21 @@ fn prime() -> Carrier<BabyBear> {
             b
         },
         widen: |word| word + BabyBear::from_u32(1 << 16),
+        hash: ByteHash::Keccak256,
+        hasher: Keccak256Hash,
+    }
+}
+
+fn prime_blake3() -> Carrier<BabyBear, Blake3> {
+    Carrier {
+        builder: || {
+            let mut b = CircuitBuilder::new();
+            b.enable_blake3_compress::<BabyBear>();
+            b
+        },
+        widen: |word| word + BabyBear::from_u32(1 << 16),
+        hash: ByteHash::Blake3,
+        hasher: Blake3,
     }
 }
 
@@ -210,17 +234,22 @@ fn matrices(heights: &[usize], words: bool) -> Vec<RowMajorMatrix<BinaryField8>>
 /// Opens `index` of a p3 arity-4 tree over matrices of `heights` and checks
 /// that the gadget accepts exactly that opening. Every opened row, sibling,
 /// sibling order within a group, index bit and the selected cap root is
-/// bound, while the other cap roots are not read. Every sibling word is
-/// absorbed as a Keccak lane, so a sibling word widened past sixteen bits is
-/// rejected with no range check of its own.
-fn check_opening<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
-    carrier: &Carrier<F>,
+/// bound, while the other cap roots are not read. Every sibling word is an
+/// input word of one node hash, which bounds it to sixteen bits as a native
+/// Keccak lane or through the prime host's word decomposition, so a sibling
+/// word widened past sixteen bits is rejected with no range check of its own.
+fn check_opening<F, H, Hs>(
+    carrier: &Carrier<F, Hs>,
     heights: &[usize],
     cap_height: usize,
     index: usize,
     words: bool,
-) {
-    let mmcs = keccak_mmcs::<4>(cap_height);
+) where
+    F: Field + Eq + Hash,
+    H: BinaryCircuitHost<F>,
+    Hs: CryptographicHasher<u8, [u8; 32]> + Copy + Sync,
+{
+    let mmcs = byte_mmcs::<Hs, 4>(carrier.hasher, cap_height);
     let matrices = matrices(heights, words);
     let dims: Vec<_> = matrices.iter().map(Matrix::dimensions).collect();
     let (commitment, data) = mmcs.commit(matrices);
@@ -246,7 +275,7 @@ fn check_opening<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
     let cap: Vec<_> = roots.iter().map(|_| inputs(16)).collect();
     if words {
         b.verify_byte_hash_mmcs_opening_words_with_host_arity::<H, 4>(
-            ByteHash::Keccak256,
+            carrier.hash,
             &rows,
             heights,
             &bits,
@@ -255,7 +284,7 @@ fn check_opening<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
         )
     } else {
         b.verify_byte_hash_mmcs_opening_bytes_with_host_arity::<H, 4>(
-            ByteHash::Keccak256,
+            carrier.hash,
             &rows,
             heights,
             &bits,
@@ -372,7 +401,12 @@ fn check_opening<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
 /// Single matrices of `2^k` rows for odd and even `k` under caps of up to two
 /// levels, whose odd top groups pad two digests to four; then mixed heights
 /// with injections, pairwise bridges and a tallest height of seven rows.
-fn check_openings<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(carrier: &Carrier<F>) {
+fn check_openings<F, H, Hs>(carrier: &Carrier<F, Hs>)
+where
+    F: Field + Eq + Hash,
+    H: BinaryCircuitHost<F>,
+    Hs: CryptographicHasher<u8, [u8; 32]> + Copy + Sync,
+{
     for words in [false, true] {
         for k in 1..=5usize {
             let height = 1 << k;
@@ -381,7 +415,7 @@ fn check_openings<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(carrier: &Carri
             indices.dedup();
             for cap_height in 0..=k.div_ceil(2).min(2) {
                 for &index in &indices {
-                    check_opening::<F, H>(carrier, &[height], cap_height, index, words);
+                    check_opening::<F, H, Hs>(carrier, &[height], cap_height, index, words);
                 }
             }
         }
@@ -395,7 +429,7 @@ fn check_openings<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(carrier: &Carri
             let max_height = heights[0];
             for cap_height in 0..=top_cap {
                 for index in [0, 3, max_height - 1] {
-                    check_opening::<F, H>(carrier, heights, cap_height, index, words);
+                    check_opening::<F, H, Hs>(carrier, heights, cap_height, index, words);
                 }
             }
         }
@@ -404,17 +438,23 @@ fn check_openings<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(carrier: &Carri
 
 #[test]
 fn native_tower_openings_match_p3_arity_four_trees() {
-    check_openings::<BinaryField128, NativeBinaryEncoding>(&native());
+    check_openings::<BinaryField128, NativeBinaryEncoding, _>(&native());
 }
 
 #[test]
 fn native_polynomial_openings_match_p3_arity_four_trees() {
-    check_openings::<Poly64, NativeBinaryEncoding>(&native());
+    check_openings::<Poly64, NativeBinaryEncoding, _>(&native());
 }
 
 #[test]
 fn prime_openings_match_p3_arity_four_trees() {
-    check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>>(&prime());
+    check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>, _>(&prime());
+}
+
+/// A Blake3 node hashes its 128 digest bytes as two blocks of one chunk.
+#[test]
+fn prime_blake3_openings_match_p3_arity_four_trees() {
+    check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>, _>(&prime_blake3());
 }
 
 /// Every height ladder of up to sixteen rows, one index each: the root binds
@@ -427,7 +467,13 @@ fn native_openings_match_p3_arity_four_trees_for_every_small_height_ladder() {
             let heights = ladder(max_height, mask);
             let index = mask as usize % max_height;
             for words in [false, true] {
-                check_opening::<Poly64, NativeBinaryEncoding>(&native(), &heights, 0, index, words);
+                check_opening::<Poly64, NativeBinaryEncoding, _>(
+                    &native(),
+                    &heights,
+                    0,
+                    index,
+                    words,
+                );
             }
         }
     }
