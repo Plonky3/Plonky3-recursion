@@ -52,6 +52,7 @@ use alloc::{format, vec};
 
 use p3_binary_field::{Poly64, Poly192};
 use p3_circuit::ops::NativePoly192Target;
+use p3_circuit::ops::binary_native::BinaryCoordinateExtractor;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::{Field, PrimeCharacteristicRing};
 
@@ -162,15 +163,10 @@ impl NativePolyBitTensorTarget {
         Ok(column)
     }
 
-    /// Column `v` without decomposing the rows: coordinate `v` of row `u` is
-    /// `Tr(delta_v * row_u)`, with `delta_v` the trace-dual of `x^v` (see
-    /// `poly64_trace_dual_basis`). The trace is field arithmetic on the row,
-    /// so every coordinate is bound to its row with no hint and lies in `F_2`
-    /// with no Boolean check, at 64 nodes per row.
-    ///
-    /// Decomposing a row costs about three nodes per coordinate, so this is
-    /// cheaper for a tensor read in one or two columns. Once the rows are
-    /// decomposed, or the column is formed, this returns `column`.
+    /// Column `v` without decomposing the rows, using a checked
+    /// trace-coordinate witness per row. Each coordinate costs at most four
+    /// ALU operations, plus the column's constant-weighted sum.
+    /// Reuses a previously read column or decomposed rows.
     pub fn trace_column(
         &mut self,
         b: &mut CircuitBuilder<Poly64>,
@@ -180,11 +176,10 @@ impl NativePolyBitTensorTarget {
         if self.bits.is_some() || self.columns[v].is_some() {
             return self.column(b, v);
         }
-        let dual = b.define_const(poly64_trace_dual_basis()[v]);
+        let extractor = BinaryCoordinateExtractor::new(v)?;
         let mut column_bits = Vec::with_capacity(ROWS);
         for &row in &self.rows {
-            let scaled = b.mul(dual, row);
-            column_bits.push(trace(b, scaled));
+            column_bits.push(extractor.extract(b, row)?);
             b.check_construction_limits()?;
         }
         let limbs = weigh_bits(b, &column_bits);
@@ -643,24 +638,6 @@ fn weigh_bits(b: &mut CircuitBuilder<Poly64>, bits: &[ExprId]) -> Limbs {
         *limb = sum;
     }
     limbs
-}
-
-/// The absolute trace `sum_(m < 64) x^(2^m)` by doubling: with
-/// `T_k = sum_(m < 2^k) x^(2^m)`, `T_(k+1) = T_k + T_k^(2^(2^k))`. The last
-/// of each step's `2^k` squarings is fused into the sum, so `T_6` costs 63
-/// nodes.
-fn trace(b: &mut CircuitBuilder<Poly64>, x: ExprId) -> ExprId {
-    let mut sum = x;
-    let mut span = 1;
-    while span < COLUMNS {
-        let mut power = sum;
-        for _ in 1..span {
-            power = b.mul(power, power);
-        }
-        sum = b.mul_add(power, power, sum);
-        span *= 2;
-    }
-    sum
 }
 
 /// `sum_x eq(point, x) * values[x]`, with the point's first coordinate as the

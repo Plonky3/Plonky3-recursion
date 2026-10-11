@@ -29,6 +29,7 @@ use alloc::{format, vec};
 
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::ops::NativeTower128Target;
+use p3_circuit::ops::binary_native::BinaryCoordinateExtractor;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::PrimeCharacteristicRing;
 
@@ -41,7 +42,8 @@ const LOG_DIMENSION: usize = 7;
 ///
 /// Row `u`'s raw coordinate `v` is the coefficient of `beta_u tensor beta_v`.
 /// Column readings decompose every row once, with the checked coordinate
-/// gadget, and keep those bits and the columns formed from them.
+/// gadget, and keep those bits and the columns formed from them. For an
+/// isolated column, [`Self::trace_column`] avoids decomposing all coordinates.
 #[derive(Clone, Debug)]
 pub struct NativeBitTensorTarget {
     rows: Vec<NativeTower128Target>,
@@ -120,6 +122,37 @@ impl NativeBitTensorTarget {
         Ok(column)
     }
 
+    /// Read one column using a checked trace-coordinate witness per row.
+    /// Each coordinate costs at most four ALU operations, plus the column's
+    /// constant-weighted sum. Reuses a previously read column or decomposed rows.
+    pub fn trace_column(
+        &mut self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        v: usize,
+    ) -> Result<NativeTower128Target, CircuitBuilderError> {
+        if v >= DIMENSION {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "NativeBitTensorColumn",
+                expected: format!("column index below {DIMENSION}"),
+                got: v,
+            });
+        }
+        if self.bits.is_some() || self.columns[v].is_some() {
+            return self.column(b, v);
+        }
+        let extractor = BinaryCoordinateExtractor::new(v)?;
+        let mut sum = ExprId::ZERO;
+        for (u, row) in self.rows.iter().enumerate() {
+            let bit = extractor.extract(b, row.as_expr())?;
+            let weight = b.define_const(BinaryField128::from_repr(1 << u));
+            sum = b.mul_add(bit, weight, sum);
+        }
+        b.check_construction_limits()?;
+        let column = b.native_tower128_from_expr(sum);
+        self.columns[v] = Some(column);
+        Ok(column)
+    }
+
     /// Reads the column multilinear extension, `sum_v eq(point, v) * column_v`,
     /// in the same variable order as [`Self::evaluate_rows`]. This is the
     /// incoming claim of a bit ring switch whose absorbed coordinates are
@@ -157,8 +190,8 @@ impl NativeBitTensorTarget {
         let mut shifted = (1..DIMENSION)
             .map(|v| self.column(b, v))
             .collect::<Result<Vec<_>, _>>()?;
-        let carry = carry.column(b, 0)?;
-        let last = last.column(b, DIMENSION - 1)?;
+        let carry = carry.trace_column(b, 0)?;
+        let last = last.trace_column(b, DIMENSION - 1)?;
         shifted.push(b.native_tower128_add(&carry, &last));
         Ok(fold(b, &shifted, point))
     }

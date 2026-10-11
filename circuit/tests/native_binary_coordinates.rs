@@ -196,3 +196,138 @@ fn constant_coordinates_fold_without_hints_and_reject_high_bits() {
     );
     assert!(builder.binary_decompose_coordinates(full, 127).is_err());
 }
+
+fn sparse_coordinates<F: BinaryCoordinateField>() {
+    use p3_circuit::ops::binary_native::BinaryCoordinateExtractor;
+    let mut b = CircuitBuilder::<F>::new();
+    let input = b.public_input();
+    for column in 0..F::COORDINATE_BITS {
+        let extractor = BinaryCoordinateExtractor::<F>::new(column).unwrap();
+        let bit = extractor.extract(&mut b, input).unwrap();
+        let expected = b.public_input();
+        b.connect(bit, expected);
+    }
+    let circuit = b.build().unwrap();
+    let mask = u128::MAX >> (128 - F::COORDINATE_BITS);
+    let cases: Vec<u128> = if F::COORDINATE_BITS <= 4 {
+        (0..=mask).collect()
+    } else {
+        [0, mask, 0xfedc_ba98_7654_3210_8123_4567_89ab_cdef & mask]
+            .into_iter()
+            .chain((0..F::COORDINATE_BITS).map(|i| 1u128 << i))
+            .collect()
+    };
+    for raw in cases {
+        let mut public = vec![F::from_raw_coordinates(raw).unwrap()];
+        public.extend((0..F::COORDINATE_BITS).map(|i| F::from_bool(raw >> i & 1 != 0)));
+        let accepts = |public: &[F]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        assert!(accepts(&public), "{raw:x}");
+        public[1 + raw as usize % F::COORDINATE_BITS] += F::ONE;
+        assert!(!accepts(&public));
+    }
+    assert!(BinaryCoordinateExtractor::<F>::new(F::COORDINATE_BITS).is_err());
+    assert!(BinaryCoordinateExtractor::<F>::new(usize::MAX).is_err());
+}
+
+#[test]
+fn sparse_coordinates_bind_each_sealed_field_basis() {
+    use p3_binary_field::{
+        BinaryField2, BinaryField4, BinaryField16, BinaryField32, BinaryField64, Gf2,
+    };
+    sparse_coordinates::<Gf2>();
+    sparse_coordinates::<BinaryField2>();
+    sparse_coordinates::<BinaryField4>();
+    sparse_coordinates::<BinaryField8>();
+    sparse_coordinates::<BinaryField16>();
+    sparse_coordinates::<BinaryField32>();
+    sparse_coordinates::<BinaryField64>();
+    sparse_coordinates::<BinaryField128>();
+    sparse_coordinates::<Ghash128>();
+    sparse_coordinates::<Poly64>();
+}
+
+#[test]
+fn sparse_coordinates_reuse_constants_and_checked_prefixes_without_claiming_other_bits() {
+    use p3_circuit::ops::binary_native::BinaryCoordinateExtractor;
+    use p3_circuit::{ExprId, Op};
+    let extractor = BinaryCoordinateExtractor::<Poly64>::new(3).unwrap();
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let constant = b.define_const(Poly64::new(0xa5));
+    assert_eq!(extractor.extract(&mut b, constant).unwrap(), ExprId::ZERO);
+    let input = b.public_input();
+    let bits = b.binary_decompose_coordinates(input, 4).unwrap();
+    let calls = b.construction_usage().unwrap().non_primitive_calls;
+    assert_eq!(extractor.extract(&mut b, input).unwrap(), bits[3]);
+    assert_eq!(
+        BinaryCoordinateExtractor::<Poly64>::new(7)
+            .unwrap()
+            .extract(&mut b, input)
+            .unwrap(),
+        ExprId::ZERO
+    );
+    assert_eq!(b.construction_usage().unwrap().non_primitive_calls, calls);
+    let circuit = b.build().unwrap();
+    assert_eq!(
+        circuit
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Hint { .. }))
+            .count(),
+        1
+    );
+    for (raw, accepted) in [(0xf, true), (0x8f, false)] {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[Poly64::new(raw)]).unwrap();
+        assert_eq!(runner.run().is_ok(), accepted);
+    }
+
+    // Reading one coordinate must leave the other coordinates unconstrained.
+    // A later full decomposition must still supply and check all of them.
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let input = b.public_input();
+    let sparse = extractor.extract(&mut b, input).unwrap();
+    let bits = b.binary_decompose_coordinates(input, 64).unwrap();
+    b.connect(sparse, bits[3]);
+    let expected = b.public_input();
+    b.connect(bits[63], expected);
+    let circuit = b.build().unwrap();
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[Poly64::new(0x8000_0000_0000_0008), Poly64::ONE])
+        .unwrap();
+    runner.run().unwrap();
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&[Poly64::new(0x8000_0000_0000_0008), Poly64::ZERO])
+        .unwrap();
+    assert!(runner.run().is_err());
+}
+
+#[test]
+fn sparse_coordinates_enforce_construction_limits() {
+    use p3_circuit::CircuitConstructionLimits;
+    use p3_circuit::ops::binary_native::BinaryCoordinateExtractor;
+    let limits = CircuitConstructionLimits {
+        max_expression_nodes: usize::MAX,
+        max_pending_connects: usize::MAX,
+        max_non_primitive_calls: 0,
+        max_non_primitive_slots: usize::MAX,
+    };
+    let mut b = CircuitBuilder::<Poly64>::with_construction_limits(limits).unwrap();
+    let input = b.public_input();
+    assert!(matches!(
+        BinaryCoordinateExtractor::<Poly64>::new(3)
+            .unwrap()
+            .extract(&mut b, input),
+        Err(CircuitBuilderError::ConstructionLimitExceeded {
+            component: "non-primitive calls",
+            ..
+        })
+    ));
+}

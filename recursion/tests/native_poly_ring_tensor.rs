@@ -599,9 +599,8 @@ fn closing_weight_refuses_changed_inputs() {
 /// Column readings are sound only because every row's bits are checked: each
 /// bit is connected to its Boolean check and the row to its recomposition. A
 /// tensor's first column therefore adds at least 65 connections per row. The
-/// carry and last tensors are read in one column each by the trace, field
-/// arithmetic on the rows with no hinted bit, so they add no connection, and
-/// the two of them cost less than one checked column of a fresh tensor.
+/// carry and last tensors check one Boolean bit and one Artin–Schreier
+/// relation per row; together they cost less than one fully decomposed column.
 #[test]
 fn node_counts_at_the_native_fixed_point() {
     const CHECKED_ROW_CONNECTS: usize = COLUMNS + 1;
@@ -661,14 +660,14 @@ fn node_counts_at_the_native_fixed_point() {
     );
     assert!(columns_and_current <= 60_193);
     assert!(successor <= 1_137);
-    assert!(carry_and_last <= 29_947);
+    assert!(carry_and_last <= 4_500);
     assert!(first_rows <= 1_725);
     assert!(shared_rows <= 1_464);
     assert!(closing <= 95_000, "closing weight uses {closing} nodes");
     // The later readings reuse the batching point's equality tables.
     assert!(shared_rows < first_rows);
     assert!(column_connects >= ROWS * CHECKED_ROW_CONNECTS);
-    assert_eq!(carry_and_last_connects, 0);
+    assert_eq!(carry_and_last_connects, 2 * ROWS * 2);
     assert!(carry_and_last < checked_column);
 }
 
@@ -730,12 +729,12 @@ fn readings_stop_at_the_node_budget() {
     tensor.column(&mut n.b, 0).unwrap();
     assert!(budget_error(tensor.column(&mut n.b, 1)));
 
-    // A trace column checks the budget after every row.
-    let budget = 4096;
+    // A sparse trace column checks the budget after every row.
+    let budget = 1024;
     let mut n = Native::with_node_budget(budget);
     let mut tensor = n.tensor(&rows);
     assert!(budget_error(tensor.trace_column(&mut n.b, 0)));
-    assert!(n.nodes() <= budget + 64);
+    assert!(n.nodes() <= budget + 16);
 
     // The fixed-point closing weight adds about 100k nodes. No stretch between
     // its checkpoints adds more than about a thousand.

@@ -294,6 +294,16 @@ fn readings_match_released_bit_ring_switch_claims() {
         n.expect(&actual, successor.carry.column(0));
         let actual = last_t.column(&mut n.b, 127).unwrap();
         n.expect(&actual, successor.last.column(127));
+        let mut fresh = n.tensor(&rows);
+        for v in [0, 1, 64, 127] {
+            let actual = fresh.trace_column(&mut n.b, v).unwrap();
+            n.expect(&actual, tensor.column(v));
+            let actual = tensor_t.trace_column(&mut n.b, v).unwrap();
+            n.expect(&actual, tensor.column(v));
+        }
+        // A later ordinary column still decomposes and checks the remaining bits.
+        let actual = fresh.column(&mut n.b, 2).unwrap();
+        n.expect(&actual, tensor.column(2));
         let (circuit, public, private) = n.build();
         assert!(accepts(&circuit, &public, &private));
         for index in 0..public.len() {
@@ -523,7 +533,9 @@ fn closing_weight_fits_the_factored_coefficient_budget() {
 ///
 /// Column readings are sound only because every row's bits are checked: each
 /// bit is connected to its Boolean check and the row to its recomposition. A
-/// tensor's first column therefore adds at least 129 connections per row.
+/// tensor's first full column therefore adds at least 129 connections per row.
+/// Sparse carry and last columns instead check one Boolean bit and one
+/// Artin–Schreier relation per row.
 #[test]
 fn node_counts_at_the_native_fixed_point() {
     const CHECKED_ROW_CONNECTS: usize = 128 + 1;
@@ -543,8 +555,8 @@ fn node_counts_at_the_native_fixed_point() {
     let columns_and_current = n.nodes() - start;
     let column_connects = n.connects() - start_connects;
     let (start, start_connects) = (n.nodes(), n.connects());
-    carry.column(&mut n.b, 0).unwrap();
-    last.column(&mut n.b, 127).unwrap();
+    carry.trace_column(&mut n.b, 0).unwrap();
+    last.trace_column(&mut n.b, 127).unwrap();
     let carry_and_last = n.nodes() - start;
     let carry_and_last_connects = n.connects() - start_connects;
     let start = n.nodes();
@@ -563,10 +575,10 @@ fn node_counts_at_the_native_fixed_point() {
     );
     assert!(columns_and_current <= 79_102);
     assert!(successor <= 306);
-    assert!(carry_and_last <= 118_577);
-    assert!(closing <= 48_879);
+    assert!(carry_and_last <= 3_000);
+    assert!(closing <= 13_000);
     assert!(column_connects >= 128 * CHECKED_ROW_CONNECTS);
-    assert!(carry_and_last_connects >= 2 * 128 * CHECKED_ROW_CONNECTS);
+    assert_eq!(carry_and_last_connects, 2 * 128 * 2);
 }
 
 #[test]
@@ -585,6 +597,7 @@ fn malformed_shapes_return_errors() {
             .is_err()
     );
     assert!(tensor.column(&mut n.b, 128).is_err());
+    assert!(tensor.trace_column(&mut n.b, 128).is_err());
     let batch = [zero; ABSORBED];
     assert!(closing_weight_native(&mut n.b, &[zero], &[], &batch, None).is_err());
     assert!(closing_weight_native(&mut n.b, &[zero], &[zero], &batch[1..], None).is_err());
@@ -614,6 +627,13 @@ fn readings_stop_at_the_node_budget() {
     let mut tensor = n.tensor(&rows);
     tensor.column(&mut n.b, 0).unwrap();
     assert!(budget_error(tensor.column(&mut n.b, 1)));
+
+    // A sparse column stops inside its row loop when the budget is crossed.
+    let budget = 512;
+    let mut n = Native::with_node_budget(budget);
+    let mut tensor = n.tensor(&rows);
+    assert!(budget_error(tensor.trace_column(&mut n.b, 0)));
+    assert!(n.nodes() <= budget + 16);
 
     // The fixed-point closing weight adds about 13k nodes. No stretch between
     // its checkpoints adds more than a few hundred.

@@ -18,6 +18,9 @@ use p3_field::Field;
 use crate::ops::HintExecutor;
 use crate::{CircuitBuilder, CircuitBuilderError, CircuitError, ExprId, WitnessId};
 
+mod coordinate;
+pub use coordinate::BinaryCoordinateExtractor;
+
 mod sealed {
     pub trait Sealed {}
 }

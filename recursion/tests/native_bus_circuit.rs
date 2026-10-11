@@ -1678,3 +1678,108 @@ fn product_bus_circuit_proves_over_poly64_with_poly192_challenges() {
     wrong.last_mut().unwrap()[1] += Poly64::ONE;
     assert!(authority.verify_native(&proof, &wrong).is_err());
 }
+
+/// A prover may replace either hinted output. Keep the actual extractor's
+/// compiled constraints and replay all witness occurrences under those hints.
+fn check_sparse_coordinate_hints<F: BinaryCoordinateField>(
+    dual: F,
+    trace_one: F,
+    setup: impl Fn(&NativeBusCircuit<F>, Vec<Vec<F>>) -> Accepts<F>,
+) {
+    use p3_circuit::ops::binary_native::BinaryCoordinateExtractor;
+    let mut b = CircuitBuilder::<F>::new();
+    let input = b.public_input();
+    let expected = b.public_input();
+    let bit = BinaryCoordinateExtractor::<F>::new(3)
+        .unwrap()
+        .extract(&mut b, input)
+        .unwrap();
+    b.connect(bit, expected);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "sparse-coordinate").unwrap();
+    let public = [F::ZERO, F::ZERO];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest: Vec<_> = (0..circuit.witness_count)
+        .map(|i| *witness.get_value(WitnessId(i)).unwrap())
+        .collect();
+    let honest_traces = prepared.traces(&witness).unwrap();
+    assert!(setup(&prepared, prepared.public_values(&public).unwrap())(
+        honest_traces.clone()
+    ));
+    let outputs = circuit
+        .ops
+        .iter()
+        .find_map(|op| {
+            if let Op::Hint { outputs, .. } = op {
+                Some(outputs)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert_eq!(outputs.len(), 2);
+
+    // The other Artin-Schreier root also satisfies the same proof circuit.
+    let mut hinted = honest.clone();
+    hinted[outputs[1].0 as usize] += F::ONE;
+    let alternate = replay(&circuit, &hinted, &public, &[]);
+    let mut alternate_traces = honest_traces.clone();
+    patch_witness_cells(prepared.airs(), &mut alternate_traces, &honest, &alternate);
+    assert!(setup(&prepared, prepared.public_values(&public).unwrap())(
+        alternate_traces
+    ));
+
+    // With z=0 and x=kappa*t/delta, the field equation holds for any t.
+    // Only the actual emitted Boolean gate rejects this non-Boolean t.
+    let non_boolean = F::from_raw_coordinates(2).unwrap();
+    let forged_public = [trace_one * non_boolean / dual, non_boolean];
+    hinted[outputs[0].0 as usize] = non_boolean;
+    hinted[outputs[1].0 as usize] = F::ZERO;
+    let forged = replay(&circuit, &hinted, &forged_public, &[]);
+    let mut forged_traces = honest_traces;
+    patch_witness_cells(prepared.airs(), &mut forged_traces, &honest, &forged);
+    let values = prepared.public_values(&forged_public).unwrap();
+    // Public rows repeat the new statement rather than witness-labelled cells.
+    for (trace, public) in forged_traces.iter_mut().zip(&values) {
+        if !public.is_empty() {
+            assert_eq!(trace.width, public.len());
+            for row in trace.values.chunks_mut(trace.width) {
+                row.copy_from_slice(public);
+            }
+        }
+    }
+    let failed: Vec<_> = prepared
+        .airs()
+        .iter()
+        .zip(&forged_traces)
+        .zip(&values)
+        .filter_map(|((air, trace), public)| {
+            catch_unwind(AssertUnwindSafe(|| check_constraints(air, trace, public)))
+                .is_err()
+                .then_some(air.width())
+        })
+        .collect();
+    assert_eq!(failed, [5], "only the Boolean gate AIR should reject");
+    assert!(!setup(&prepared, values)(forged_traces));
+}
+
+#[test]
+fn sparse_tower_coordinate_proof_rejects_non_boolean_hints() {
+    check_sparse_coordinate_hints(
+        p3_recursion::pcs::binary::binary128_trace_dual_basis()[3],
+        F::from_repr(1u128 << 64),
+        tower_accepts,
+    );
+}
+
+#[test]
+fn sparse_poly_coordinate_proof_rejects_non_boolean_hints() {
+    use p3_binary_field::Poly64;
+    check_sparse_coordinate_hints(
+        p3_recursion::pcs::binary::poly64_trace_dual_basis()[3],
+        Poly64::new(1u64 << 61),
+        poly64_accepts,
+    );
+}
