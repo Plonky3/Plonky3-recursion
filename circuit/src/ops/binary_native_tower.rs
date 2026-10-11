@@ -138,8 +138,8 @@ impl CircuitBuilder<BinaryField128> {
     /// coordinates. The caller must establish that range, for example by
     /// reading the words from native Keccak-f or Blake3 outputs, which the
     /// native hash AIR derives from Boolean bits. No coordinates are recorded,
-    /// so a later decomposition of the scalar is a full one. IDs must belong to this
-    /// builder's graph.
+    /// so a later decomposition of the scalar is a full one. IDs must belong to
+    /// this builder's graph.
     pub fn native_tower128_from_unchecked_words(
         &mut self,
         words: [ExprId; 8],
