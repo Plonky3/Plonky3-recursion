@@ -171,17 +171,23 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
         Ok(builder.native_keccak256_words(words)?.to_vec())
     }
 
-    /// The swapped limbs are outputs of the final native Keccak-f call, which
-    /// the native hash AIR derives from that call's output bits, or constants
-    /// for a message absorbed while building.
+    /// Keccak-256 returns swapped limbs that are outputs of the final native
+    /// Keccak-f call, which the native hash AIR derives from that call's
+    /// output bits, or constants for a message absorbed while building. Any
+    /// other hash returns `None`.
     fn hash_bytes_to_limbs(
         builder: &mut CircuitBuilder<F>,
         hash: ByteHash,
         bytes: &[ExprId],
     ) -> Result<Option<DigestLimbs>, CircuitBuilderError> {
         <Self as BinaryCircuitHost<F>>::check_hash(hash)?;
-        let (limbs, swapped) = builder.native_keccak256_bytes_with_swapped_digest(bytes)?;
-        Ok(Some(DigestLimbs { limbs, swapped }))
+        match hash {
+            ByteHash::Keccak256 => {
+                let (limbs, swapped) = builder.native_keccak256_bytes_with_swapped_digest(bytes)?;
+                Ok(Some(DigestLimbs { limbs, swapped }))
+            }
+            ByteHash::Blake3 => Ok(None),
+        }
     }
 
     /// As [`Self::hash_bytes_to_limbs`].
@@ -191,8 +197,13 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
         words: &[ExprId],
     ) -> Result<Option<DigestLimbs>, CircuitBuilderError> {
         <Self as BinaryCircuitHost<F>>::check_hash(hash)?;
-        let (limbs, swapped) = builder.native_keccak256_words_with_swapped_digest(words)?;
-        Ok(Some(DigestLimbs { limbs, swapped }))
+        match hash {
+            ByteHash::Keccak256 => {
+                let (limbs, swapped) = builder.native_keccak256_words_with_swapped_digest(words)?;
+                Ok(Some(DigestLimbs { limbs, swapped }))
+            }
+            ByteHash::Blake3 => Ok(None),
+        }
     }
 
     /// Adds no constraint. Under a Boolean index bit the two selected digests
