@@ -1,13 +1,16 @@
 //! Prime-field wrap of a native proof whose Boolean table is committed as packed bits.
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_baby_bear::BabyBear;
 use p3_binary_field::BinaryField128;
+use p3_circuit::CircuitError;
 use p3_circuit::ops::ByteHash;
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirPcsParameters,
-    BinaryNativeVerifierSpec, BinaryNativeWhirPcsParameters, VerifiedBinaryNativeMixedWhirProof,
+    BinaryNativeMixedWhirProver, BinaryNativeVerifierSpec, BinaryNativeWhirPcsParameters,
+    VerifiedBinaryNativeMixedWhirProof,
 };
 use p3_recursion::builtin_config::{
     BabyBearD4Poseidon2BinaryConfig, FriConfigV1, SuiteIdV1, baby_bear_d4_poseidon2_binary,
@@ -145,12 +148,7 @@ fn spec(initial_bytes: Vec<u8>) -> BinaryNativeVerifierSpec<BinaryNativeMixedWhi
     }
 }
 
-fn setup(
-    initial_bytes: Vec<u8>,
-) -> (
-    p3_recursion::artifact::BinaryNativeMixedWhirProver<TestAir>,
-    Authority,
-) {
+fn setup(initial_bytes: Vec<u8>) -> (BinaryNativeMixedWhirProver<TestAir>, Authority) {
     Authority::setup_with_artifact_limits(
         airs(),
         heights(),
@@ -160,21 +158,16 @@ fn setup(
     .unwrap()
 }
 
-fn public() -> Vec<Vec<F>> {
-    vec![vec![F::ONE + F::ONE], vec![], vec![F::ZERO]]
-}
-
-fn token(initial_bytes: Vec<u8>) -> (Authority, VerifiedBinaryNativeMixedWhirProof) {
-    let (prover, authority) = setup(initial_bytes);
-    let public = public();
-    let tables = vec![
-        square_rows(public[0][0]),
-        bit_rows(),
-        square_rows(public[2][0]),
-    ];
+/// A token for the statement whose first square starts at `first`.
+fn verified(
+    prover: &BinaryNativeMixedWhirProver<TestAir>,
+    authority: &Authority,
+    first: F,
+) -> VerifiedBinaryNativeMixedWhirProof {
+    let public = vec![vec![first], vec![], vec![F::ZERO]];
+    let tables = vec![square_rows(first), bit_rows(), square_rows(F::ZERO)];
     let proof = prover.prove_tables(&public, tables).unwrap();
-    let token = authority.verify_native(&proof, &public).unwrap();
-    (authority, token)
+    authority.verify_native(&proof, &public).unwrap()
 }
 
 fn config() -> C {
@@ -206,26 +199,53 @@ fn layer(authority: &Authority) -> PreparedBinaryMixedWhirMultiStarkLayer<C, 4> 
     .unwrap()
 }
 
-/// The prime circuit of even the smallest mixed relation has tens of millions of operations,
-/// above 12 GB in a debug build.
+/// The prime circuit of even the smallest mixed relation has tens of millions of operations:
+/// building the layer peaks at about 13.6 GB in a debug build, and proving above 23 GB.
 #[test]
-#[ignore = "builds a prime-field mixed verifier: above 12 GB in debug; run explicitly"]
-fn wrap_binds_the_native_identity_and_statement() {
-    let (authority, token) = token(vec![7, 19, 13]);
+#[ignore = "proves a prime-field mixed verifier: above 23 GB in debug; run explicitly"]
+fn wrap_proves_an_honest_token_and_binds_the_native_identity_and_statement() {
+    let (prover, authority) = setup(vec![7, 19, 13]);
+    let two = verified(&prover, &authority, F::ONE + F::ONE);
+    let three = verified(&prover, &authority, F::ONE + F::ONE + F::ONE);
     let layer = layer(&authority);
     assert_eq!(
         layer.native_verifier_identity(),
         Some(authority.canonical_verifier_bytes())
     );
 
-    let (_, foreign) = self::token(vec![7, 19, 13, 0]);
+    let (foreign_prover, foreign_authority) = setup(vec![7, 19, 13, 0]);
+    let foreign = verified(&foreign_prover, &foreign_authority, F::ONE + F::ONE);
     assert!(matches!(
         layer.prove_verified(&foreign),
         Err(VerificationError::InvalidProofShape(message))
             if message == "binary verified input belongs to another native authority"
     ));
 
-    let mut wrong = token.public_values().to_vec();
-    wrong[0][0] += F::ONE;
-    assert!(layer.prove(token.native_input(), &wrong).is_err());
+    let statement = |token: &VerifiedBinaryNativeMixedWhirProof| {
+        layer
+            .statement_layout()
+            .pack::<BabyBear>(token.public_values())
+            .unwrap()
+    };
+    let output = layer.prove_verified(&two).unwrap();
+    layer
+        .verifier()
+        .verify(&output.0, &statement(&two))
+        .unwrap();
+    assert!(
+        layer
+            .verifier()
+            .verify(&output.0, &statement(&three))
+            .is_err()
+    );
+
+    // Each token's input fails witness generation under the other token's statement.
+    for (token, other) in [(&two, &three), (&three, &two)] {
+        assert!(matches!(
+            layer.prove(token.native_input(), other.public_values()),
+            Err(VerificationError::Circuit(
+                CircuitError::WitnessConflict { .. }
+            ))
+        ));
+    }
 }
