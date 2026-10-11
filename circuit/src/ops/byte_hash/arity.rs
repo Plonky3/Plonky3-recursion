@@ -426,16 +426,7 @@ where
     ) -> Result<Vec<Vec<ExprId>>, CircuitBuilderError> {
         match (bits, siblings) {
             (&[bit], [sibling]) => {
-                let (left, right) = node
-                    .iter()
-                    .zip(sibling)
-                    .map(|(&current, &other)| {
-                        (
-                            self.select(bit, other, current),
-                            self.select(bit, current, other),
-                        )
-                    })
-                    .unzip();
+                let (left, right) = self.order_digest_pair(bit, node, sibling);
                 Ok(vec![left, right])
             }
             (&[low, high], [first, second, third]) => {

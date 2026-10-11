@@ -1162,6 +1162,11 @@ where
         }
     }
 
+    /// Whether `id` is the constant zero or the constant one.
+    pub(crate) fn is_const_bit(&self, id: ExprId) -> bool {
+        self.expr_builder.is_const_zero(id) || self.expr_builder.is_const_one(id)
+    }
+
     /// Selects between two values using selector `b`:
     /// result = s + b · (t − s).
     ///

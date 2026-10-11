@@ -41,9 +41,9 @@ struct Case {
 }
 
 /// Pairwise output trees under a cap of two levels: 4 roots. The second layer
-/// measures 411,547 expression nodes, 16,477 pending connections, 6,265
-/// non-primitive calls, 703,484 slots, 397,174 witnesses, 185,480 operations
-/// and 1,523 native Keccak-f calls.
+/// measures 16,477 pending connections, 6,265 non-primitive calls, 703,484
+/// slots, 390,486 witnesses, 178,792 operations and 1,523 native Keccak-f
+/// calls.
 const PAIRWISE: Case = Case {
     arity: MerkleArity::Two,
     cap_height: 2,
@@ -54,8 +54,8 @@ const PAIRWISE: Case = Case {
         max_non_primitive_slots: 788_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 445_000,
-        max_operations: 208_000,
+        max_witnesses: 438_000,
+        max_operations: 200_500,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_710,

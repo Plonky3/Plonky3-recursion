@@ -653,16 +653,7 @@ where
         let leaf = rows_at(log_max);
         let mut node = hash_rows(self, &leaf)?;
         for (level, (&bit, sibling)) in index_bits.iter().zip(siblings).enumerate() {
-            let (left, right): (Vec<ExprId>, Vec<ExprId>) = node
-                .iter()
-                .zip(sibling)
-                .map(|(&current, &other)| {
-                    (
-                        self.select(bit, other, current),
-                        self.select(bit, current, other),
-                    )
-                })
-                .unzip();
+            let (left, right) = self.order_digest_pair(bit, &node, sibling);
             node = compress(self, &left, &right)?;
 
             let reached = log_max - level - 1;
@@ -696,6 +687,37 @@ where
         }
         self.check_construction_limits()?;
         Ok(())
+    }
+
+    /// Orders the digest `node` with its `sibling` under the Boolean `bit`: `(node, sibling)`
+    /// when clear, `(sibling, node)` when set.
+    ///
+    /// In characteristic two, with `d = sibling + node`, the pair is `(node + bit * d,
+    /// sibling + bit * d)`: three gates per limb instead of the four of two selects. A constant
+    /// `bit` folds away under [`Self::select`].
+    pub(super) fn order_digest_pair(
+        &mut self,
+        bit: ExprId,
+        node: &[ExprId],
+        sibling: &[ExprId],
+    ) -> (Vec<ExprId>, Vec<ExprId>) {
+        node.iter()
+            .zip(sibling)
+            .map(|(&current, &other)| {
+                if F::TWO == F::ZERO && !self.is_const_bit(bit) {
+                    let diff = self.add(other, current);
+                    (
+                        self.mul_add(bit, diff, current),
+                        self.mul_add(bit, diff, other),
+                    )
+                } else {
+                    (
+                        self.select(bit, other, current),
+                        self.select(bit, current, other),
+                    )
+                }
+            })
+            .unzip()
     }
 
     /// Constrains the number whose little-endian (boolean) bits are `bits` to be at most `bound`.
