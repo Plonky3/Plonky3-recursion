@@ -66,6 +66,7 @@ mod poly_generic_sumcheck;
 mod poly_interpolation;
 mod poly_nonzero;
 pub(crate) use poly_interpolation::Poly192SumcheckInterpolator;
+pub(crate) use poly_nonzero::{sample_nonzero_bits, sample_nonzero_cells};
 mod poly_whir_gadgets;
 pub(crate) use poly_whir_gadgets::poly_whir_query_point;
 mod poly_whir_input;

@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use p3_circuit::ops::NativePoly192Target;
 
 use super::*;
+use crate::pcs::binary::BinaryPolyNonzeroChallengeTailOutput;
 
 /// Captured Poly64 domain seeds use raw little-endian transcript bytes.
 pub(crate) fn poly_seed_bytes_with_host<H, CF>(
@@ -72,10 +73,15 @@ pub(crate) trait BinaryPolyPolicy<CF: Field + Eq + Hash>:
         b: &mut CircuitBuilder<CF>,
         value: &Self::ChallengeTarget,
     ) -> Result<[ExprId; 192], CircuitBuilderError>;
-    fn from_checked_bits(
+    /// Draws `count` nonzero challenges within `max_draws`, the
+    /// `following_count` draws after them and the continuation after those.
+    fn sample_nonzero<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
-        bits: [ExprId; 192],
-    ) -> Result<Self::ChallengeTarget, CircuitBuilderError>;
+        ch: BinaryTower128Challenger,
+        count: usize,
+        max_draws: usize,
+        following_count: usize,
+    ) -> Result<BinaryPolyNonzeroChallengeTailOutput<Self::ChallengeTarget>, VerificationError>;
     fn observe_base<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
         ch: &mut BinaryTower128Challenger,
@@ -97,14 +103,14 @@ impl<CF: Field + Eq + Hash> BinaryPolyPolicy<CF> for Poly64Relation {
             value.coefficients()[i / 64].bits()[i % 64]
         }))
     }
-    fn from_checked_bits(
+    fn sample_nonzero<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
-        bits: [ExprId; 192],
-    ) -> Result<BinaryPoly192Target, CircuitBuilderError> {
-        let a0 = b.binary_poly64_from_bits(bits[..64].try_into().expect("fixed coefficient"))?;
-        let a1 = b.binary_poly64_from_bits(bits[64..128].try_into().expect("fixed coefficient"))?;
-        let a2 = b.binary_poly64_from_bits(bits[128..].try_into().expect("fixed coefficient"))?;
-        Ok(b.binary_poly192_from_coefficients([a0, a1, a2]))
+        ch: BinaryTower128Challenger,
+        count: usize,
+        max_draws: usize,
+        following_count: usize,
+    ) -> Result<BinaryPolyNonzeroChallengeTailOutput, VerificationError> {
+        crate::pcs::binary::sample_nonzero_bits::<H, CF>(b, ch, count, max_draws, following_count)
     }
     fn observe_base<H: BinaryCircuitHost<CF>>(
         b: &mut CircuitBuilder<CF>,
@@ -184,11 +190,14 @@ impl BinaryPolyPolicy<Poly64> for NativePoly64Relation {
     ) -> Result<[ExprId; 192], CircuitBuilderError> {
         b.native_poly192_to_bits(value)
     }
-    fn from_checked_bits(
+    fn sample_nonzero<H: BinaryCircuitHost<Poly64>>(
         b: &mut CircuitBuilder<Poly64>,
-        bits: [ExprId; 192],
-    ) -> Result<NativePoly192Target, CircuitBuilderError> {
-        b.native_poly192_from_bits(bits)
+        ch: BinaryTower128Challenger,
+        count: usize,
+        max_draws: usize,
+        following_count: usize,
+    ) -> Result<BinaryPolyNonzeroChallengeTailOutput<NativePoly192Target>, VerificationError> {
+        crate::pcs::binary::sample_nonzero_cells::<H>(b, ch, count, max_draws, following_count)
     }
     fn observe_base<H: BinaryCircuitHost<Poly64>>(
         b: &mut CircuitBuilder<Poly64>,

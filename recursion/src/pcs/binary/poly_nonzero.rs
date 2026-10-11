@@ -5,18 +5,16 @@ use core::hash::Hash;
 
 use p3_binary_field::{Poly64, Poly192};
 use p3_challenger::FieldChallenger;
-use p3_circuit::CircuitBuilder;
-#[cfg(test)]
-use p3_circuit::ExprId;
 use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::{BinaryPoly192Target, NativePoly192Target};
+use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 
-use super::nonzero::select_nonzero_words;
+use super::nonzero::{select_nonzero_cells, select_nonzero_words};
 use super::whir_plan::invalid;
 use crate::verifier::binary_field_policy::{
-    BinaryPolyPolicy, NativePoly64Relation, Poly64Relation,
+    BinaryPolyPolicy, BinaryProtocolPolicy, NativePoly64Relation, Poly64Relation,
 };
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -87,30 +85,17 @@ impl BinaryPolyNonzeroChallengePlan {
     pub(crate) fn sample_using<P, H, CF>(
         &self,
         b: &mut CircuitBuilder<CF>,
-        mut ch: BinaryTower128Challenger,
+        ch: BinaryTower128Challenger,
     ) -> Result<BinaryPolyNonzeroChallengeOutput<P::ChallengeTarget>, VerificationError>
     where
         CF: Field + Eq + Hash,
         H: BinaryCircuitHost<CF>,
         P: BinaryPolyPolicy<CF>,
     {
-        let mut candidates = Vec::with_capacity(self.max_draws);
-        for _ in 0..self.max_draws {
-            let value = ch.sample_poly192_with_host::<H, CF>(b)?;
-            let bits = core::array::from_fn(|i| value.coefficients()[i / 64].bits()[i % 64]);
-            let (_, digest) = ch.retained_query_digest()?;
-            candidates.push((bits, digest));
-        }
-        let (hash, _) = ch.retained_query_digest()?;
-        let (selected, _, digest) =
-            select_nonzero_words::<192, _>(b, self.count, 192, self.max_draws, 0, &candidates)?;
-        let values = selected
-            .into_iter()
-            .map(|bits| P::from_checked_bits(b, bits))
-            .collect::<Result<_, _>>()?;
+        let output = P::sample_nonzero::<H>(b, ch, self.count, self.max_draws, 0)?;
         Ok(BinaryPolyNonzeroChallengeOutput {
-            values,
-            continuation: BinaryQueryContinuation::from_digest(hash, digest),
+            values: output.values,
+            continuation: output.continuation,
         })
     }
 
@@ -144,7 +129,6 @@ impl BinaryPolyNonzeroChallengePlan {
 pub struct BinaryPolyNonzeroChallengeTailPlan {
     prefix: BinaryPolyNonzeroChallengePlan,
     following_count: usize,
-    total_draws: usize,
     usage: InputResourceUsage,
 }
 
@@ -196,7 +180,6 @@ impl BinaryPolyNonzeroChallengeTailPlan {
         Ok(Self {
             prefix,
             following_count,
-            total_draws,
             usage,
         })
     }
@@ -222,42 +205,20 @@ impl BinaryPolyNonzeroChallengeTailPlan {
     pub(crate) fn sample_using<P, H, CF>(
         &self,
         b: &mut CircuitBuilder<CF>,
-        mut ch: BinaryTower128Challenger,
+        ch: BinaryTower128Challenger,
     ) -> Result<BinaryPolyNonzeroChallengeTailOutput<P::ChallengeTarget>, VerificationError>
     where
         CF: Field + Eq + Hash,
         H: BinaryCircuitHost<CF>,
         P: BinaryPolyPolicy<CF>,
     {
-        let mut candidates = Vec::with_capacity(self.total_draws);
-        for _ in 0..self.total_draws {
-            let value = ch.sample_poly192_with_host::<H, CF>(b)?;
-            let bits = core::array::from_fn(|i| value.coefficients()[i / 64].bits()[i % 64]);
-            let (_, digest) = ch.retained_query_digest()?;
-            candidates.push((bits, digest));
-        }
-        let (hash, _) = ch.retained_query_digest()?;
-        let (values, following, digest) = select_nonzero_words::<192, _>(
+        P::sample_nonzero::<H>(
             b,
+            ch,
             self.prefix.count,
-            192,
             self.prefix.max_draws,
             self.following_count,
-            &candidates,
-        )?;
-        let values = values
-            .into_iter()
-            .map(|bits| P::from_checked_bits(b, bits))
-            .collect::<Result<_, _>>()?;
-        let following = following
-            .into_iter()
-            .map(|bits| P::from_checked_bits(b, bits))
-            .collect::<Result<_, _>>()?;
-        Ok(BinaryPolyNonzeroChallengeTailOutput {
-            values,
-            following,
-            continuation: BinaryQueryContinuation::from_digest(hash, digest),
-        })
+        )
     }
 
     /// Stops at the first accepted prefix plus exactly the fixed tail length.
@@ -279,7 +240,85 @@ impl BinaryPolyNonzeroChallengeTailPlan {
     }
 }
 
-#[cfg(test)]
+/// Draws `count` nonzero Poly192 challenges within `max_draws`, the
+/// `following_count` draws after them and the continuation after those,
+/// selecting each draw by its 192 checked coefficient bits.
+pub(crate) fn sample_nonzero_bits<H, CF>(
+    b: &mut CircuitBuilder<CF>,
+    mut ch: BinaryTower128Challenger,
+    count: usize,
+    max_draws: usize,
+    following_count: usize,
+) -> Result<BinaryPolyNonzeroChallengeTailOutput, VerificationError>
+where
+    CF: Field + Eq + Hash,
+    H: BinaryCircuitHost<CF>,
+{
+    let total_draws = max_draws
+        .checked_add(following_count)
+        .ok_or_else(|| invalid("polynomial nonzero challenge draw count"))?;
+    let mut candidates = Vec::with_capacity(total_draws);
+    for _ in 0..total_draws {
+        let value = ch.sample_poly192_with_host::<H, CF>(b)?;
+        let bits = core::array::from_fn(|i| value.coefficients()[i / 64].bits()[i % 64]);
+        let (_, digest) = ch.retained_query_digest()?;
+        candidates.push((bits, digest));
+    }
+    let (hash, _) = ch.retained_query_digest()?;
+    let (values, following, digest) =
+        select_nonzero_words::<192, _>(b, count, 192, max_draws, following_count, &candidates)?;
+    let values = values
+        .into_iter()
+        .map(|bits| target_from_bits(b, bits))
+        .collect::<Result<_, _>>()?;
+    let following = following
+        .into_iter()
+        .map(|bits| target_from_bits(b, bits))
+        .collect::<Result<_, _>>()?;
+    Ok(BinaryPolyNonzeroChallengeTailOutput {
+        values,
+        following,
+        continuation: BinaryQueryContinuation::from_digest(hash, digest),
+    })
+}
+
+/// Draws the same challenges as [`sample_nonzero_bits`] on the native Poly64
+/// carrier. Each candidate is the policy's draw, whose three coefficient
+/// cells pack drawn words without decomposing them, and a hinted zero test
+/// per coefficient replaces the bitwise one. The transcript, the selected
+/// values and the continuation are unchanged.
+pub(crate) fn sample_nonzero_cells<H: BinaryCircuitHost<Poly64>>(
+    b: &mut CircuitBuilder<Poly64>,
+    mut ch: BinaryTower128Challenger,
+    count: usize,
+    max_draws: usize,
+    following_count: usize,
+) -> Result<BinaryPolyNonzeroChallengeTailOutput<NativePoly192Target>, VerificationError> {
+    let total_draws = max_draws
+        .checked_add(following_count)
+        .ok_or_else(|| invalid("polynomial nonzero challenge draw count"))?;
+    let mut candidates = Vec::with_capacity(total_draws);
+    for _ in 0..total_draws {
+        let value = NativePoly64Relation::sample::<H>(b, &mut ch)?;
+        let (_, digest) = ch.retained_query_digest()?;
+        candidates.push((*value.coefficients(), digest));
+    }
+    let (hash, _) = ch.retained_query_digest()?;
+    let (values, following, digest) =
+        select_nonzero_cells(b, count, max_draws, following_count, &candidates)?;
+    Ok(BinaryPolyNonzeroChallengeTailOutput {
+        values: values
+            .into_iter()
+            .map(|cells| b.native_poly192_from_coefficients(cells))
+            .collect(),
+        following: following
+            .into_iter()
+            .map(|cells| b.native_poly192_from_coefficients(cells))
+            .collect(),
+        continuation: BinaryQueryContinuation::from_digest(hash, digest),
+    })
+}
+
 fn target_from_bits<EF: p3_field::Field + Eq + Hash>(
     b: &mut CircuitBuilder<EF>,
     bits: [ExprId; 192],
@@ -449,5 +488,100 @@ mod tests {
         assert!(!run([zero, high, zero, dense, high], [high, zero], 1));
         assert!(!run([zero, high, zero, dense, high], [high, dense], 3));
         assert!(!run([zero, zero, zero, zero, high], [high, high], 4));
+    }
+
+    /// Native coefficient cells: a draw is zero only when all three
+    /// coefficients are, so a draw with a single nonzero coefficient is
+    /// accepted. A zero draw at the first position or between accepted draws
+    /// is skipped, and more zeros than the slack leave no witness. A claimed
+    /// value, tail value or completion digest that differs is rejected.
+    #[test]
+    fn native_cells_test_every_coefficient_and_bind_the_selection() {
+        let (count, max_draws, tail) = (2, 4, 1);
+        let mut b = CircuitBuilder::<Poly64>::new();
+        let candidates: Vec<_> = (0..max_draws + tail)
+            .map(|_| {
+                let cells = b.alloc_public_input_array::<3>("candidate coefficients");
+                let digest = b.alloc_public_input_array::<16>("candidate digest");
+                (cells, RetainedDigest::Words(digest))
+            })
+            .collect();
+        let (values, following, digest) =
+            select_nonzero_cells(&mut b, count, max_draws, tail, &candidates).unwrap();
+        for cells in values.into_iter().chain(following) {
+            for cell in cells {
+                let claimed = b.public_input();
+                b.connect(cell, claimed);
+            }
+        }
+        let RetainedDigest::Words(digest) = digest else {
+            panic!("word digests select a word digest")
+        };
+        for limb in digest {
+            let claimed = b.public_input();
+            b.connect(limb, claimed);
+        }
+        let circuit = b.build().unwrap();
+        // Digest limbs are nonzero and distinct; `None` claims a zero digest.
+        let run = |draws: [[u64; 3]; 5], claimed: [[u64; 3]; 3], digest_at: Option<usize>| {
+            let limb = |index: usize, j: usize| Poly64::new((16 * index + j + 1) as u64);
+            let mut public = vec![];
+            for (index, raw) in draws.into_iter().enumerate() {
+                public.extend(raw.map(Poly64::new));
+                public.extend((0..16).map(|j| limb(index, j)));
+            }
+            public.extend(claimed.into_iter().flat_map(|raw| raw.map(Poly64::new)));
+            public.extend((0..16).map(|j| digest_at.map_or(Poly64::ZERO, |index| limb(index, j))));
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(&public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        let zero = [0; 3];
+        let low = [1 << 63, 0, 0];
+        let middle = [0, 5, 0];
+        let high = [0, 0, 1];
+        let dense = [7, 11, u64::MAX];
+        assert!(run(
+            [zero, high, middle, dense, low],
+            [high, middle, dense],
+            Some(3)
+        ));
+        assert!(run(
+            [low, zero, high, zero, dense],
+            [low, high, zero],
+            Some(3)
+        ));
+        assert!(run(
+            [zero, zero, high, dense, low],
+            [high, dense, low],
+            Some(4)
+        ));
+        assert!(!run(
+            [zero, zero, zero, high, dense],
+            [high, zero, zero],
+            None
+        ));
+        assert!(!run(
+            [zero, zero, zero, high, dense],
+            [high, dense, zero],
+            Some(4)
+        ));
+        assert!(!run(
+            [zero, high, middle, dense, low],
+            [high, dense, low],
+            Some(4)
+        ));
+        assert!(!run(
+            [zero, high, middle, dense, low],
+            [high, middle, low],
+            Some(3)
+        ));
+        assert!(!run(
+            [zero, high, middle, dense, low],
+            [high, middle, dense],
+            Some(2)
+        ));
     }
 }
