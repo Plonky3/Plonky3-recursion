@@ -5,8 +5,8 @@
 //! the bit ring switch and the packed WHIR opening, every other table through a dense WHIR
 //! opening, under a Merkle cap and with grinding. Building the second layer and its witness
 //! takes seconds, while proving it takes gigabytes of codewords, so the default test bounds the
-//! circuit size and checks that witness generation refuses a forged packed opened value or a
-//! changed child statement.
+//! circuit size, checks that witness generation refuses a forged packed opened value or a
+//! changed child statement, and that proving refuses a token of a foreign child authority.
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField128, TowerLevel};
@@ -21,12 +21,15 @@ use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
     BinaryNativeWhirPcsParameters, VerifiedBinaryNativeMixedWhirProof,
+    VerifiedBinaryNativeWhirProof,
 };
 use p3_recursion::prepared::{
     NativeBinaryMixedRecursionOptions, NativeBinaryMixedRecursiveProof,
     NativeBinaryRecursionOptions, PreparedNativeBinaryMixedWhirLayer,
 };
-use p3_recursion::verifier::{BinaryMixedWhirMultiStarkInputShape, VerifierLimits};
+use p3_recursion::verifier::{
+    BinaryMixedWhirMultiStarkInputShape, VerificationError, VerifierLimits,
+};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = BinaryField128;
@@ -129,10 +132,12 @@ fn options(depth: usize) -> NativeBinaryMixedRecursionOptions {
     }
 }
 
-/// The source statement, the first layer's checked mixed proof, and the second layer over the
-/// first layer's output authority.
+/// The source statement, authority and checked proof, the first layer's checked mixed proof,
+/// and the second layer over the first layer's output authority.
 struct Fixture {
     expected: Vec<Vec<F>>,
+    authority: BinaryNativeWhirAuthority<F, SquaringAir>,
+    source: VerifiedBinaryNativeWhirProof<F>,
     first: PreparedNativeBinaryMixedWhirLayer,
     first_proof: NativeBinaryMixedRecursiveProof,
     checked: VerifiedBinaryNativeMixedWhirProof,
@@ -185,6 +190,8 @@ fn prepare() -> Fixture {
     .unwrap();
     Fixture {
         expected,
+        authority,
+        source,
         first,
         first_proof,
         checked,
@@ -196,11 +203,12 @@ fn prepare() -> Fixture {
 fn second_mixed_layer_is_bounded_and_refuses_a_forged_child() {
     let Fixture {
         expected,
+        authority,
+        source,
         first,
         first_proof,
         checked,
         second,
-        ..
     } = prepare();
     let child = first.authority();
     let verifier = child.recursive_verifier();
@@ -317,6 +325,26 @@ fn second_mixed_layer_is_bounded_and_refuses_a_forged_child() {
     let mut forged = private;
     forged[opened] += F::ONE;
     assert!(run(&statement, &forged).is_err());
+
+    // The same source proof through a first layer that differs only in its initial transcript
+    // bytes: a checked mixed token of the child's shape and statement, under a foreign child
+    // authority.
+    let mut foreign_options = options(1);
+    foreign_options.base.initial_bytes.push(0);
+    let foreign_first = PreparedNativeBinaryMixedWhirLayer::from_native_authority(
+        &authority,
+        foreign_options,
+        &DirectCircuitLimits::default(),
+    )
+    .unwrap();
+    let foreign = foreign_first
+        .verify(&foreign_first.prove_verified(&source).unwrap(), &expected)
+        .unwrap();
+    assert_eq!(foreign.public_values(), checked.public_values());
+    assert!(matches!(
+        second.prove_verified(&foreign),
+        Err(VerificationError::PreparedInputMismatch { .. })
+    ));
 }
 
 #[test]
