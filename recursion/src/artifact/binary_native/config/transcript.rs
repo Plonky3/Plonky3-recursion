@@ -406,6 +406,10 @@ mod tests {
                     }
                 }
             }
+            // An observation empties the output, so the tail is drawn from a
+            // flush of the whole pending input, kept digest included.
+            native.observe(F::ONE);
+            reference.observe(F::ONE);
             let native_tail: [F; 4] = native.sample_array();
             let reference_tail: [F; 4] = reference.sample_array();
             assert_eq!(native_tail, reference_tail);
