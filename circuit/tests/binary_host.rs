@@ -7,7 +7,7 @@ use p3_binary_field::{BinaryField128, Poly64};
 use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
-use p3_circuit::{CircuitBuilder, ExprId};
+use p3_circuit::{CircuitBuilder, ExprId, NpoTypeId, Op};
 use p3_field::Field;
 use p3_keccak::Keccak256Hash;
 use p3_symmetric::CryptographicHasher;
@@ -60,17 +60,12 @@ fn check<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(mut b: CircuitBuilder<F>
 }
 
 /// A four-digest node is Keccak-256 of the 128 concatenated digest bytes and a
-/// two-digest node is the pairwise compression. Returns the non-primitive calls
-/// the four-digest node adds.
-fn check_compress_n<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
-    mut b: CircuitBuilder<F>,
-) -> usize {
+/// two-digest node is the pairwise compression.
+fn check_compress_n<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(mut b: CircuitBuilder<F>) {
     let input = b.alloc_public_input_array::<64>("four digests");
     let expected = b.alloc_public_input_array::<16>("compressed digest");
     let digests: Vec<&[ExprId]> = input.chunks(16).collect();
-    let calls = b.construction_usage().unwrap().non_primitive_calls;
     let actual = H::compress_n(&mut b, ByteHash::Keccak256, &digests).unwrap();
-    let node_calls = b.construction_usage().unwrap().non_primitive_calls - calls;
     let pair = H::compress_n(&mut b, ByteHash::Keccak256, &digests[..2]).unwrap();
     let compressed = H::compress(&mut b, ByteHash::Keccak256, digests[0], digests[1]).unwrap();
     for i in 0..16 {
@@ -113,25 +108,76 @@ fn check_compress_n<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
         wrong[changed] += F::ONE;
         assert!(!runs(&wrong), "changed input {changed}");
     }
-    node_calls
 }
 
-/// A native four-digest node is a single Keccak-f call, as a pairwise node is,
-/// which is what halves the hashing of an arity-4 authentication path.
+/// The Keccak-f calls, operations of type `keccak`, of a circuit that
+/// compresses `arity` digests into one node.
+fn node_keccak_calls<F: Field + Eq + Hash, H: BinaryCircuitHost<F>>(
+    mut b: CircuitBuilder<F>,
+    keccak: &NpoTypeId,
+    arity: usize,
+) -> usize {
+    let input = b.alloc_public_input_array::<64>("four digests");
+    let expected = b.alloc_public_input_array::<16>("compressed digest");
+    let digests: Vec<&[ExprId]> = input.chunks(16).take(arity).collect();
+    let node = H::compress_n(&mut b, ByteHash::Keccak256, &digests).unwrap();
+    for (&computed, &expected) in node.iter().zip(&expected) {
+        b.connect(computed, expected);
+    }
+    b.build()
+        .unwrap()
+        .ops
+        .iter()
+        .filter(|op| {
+            matches!(op, Op::NonPrimitiveOpWithExecutor { executor, .. }
+                if executor.op_type() == keccak)
+        })
+        .count()
+}
+
+/// A four-digest node is a single Keccak-f call on the native and prime
+/// hosts, as a pairwise node is, which is what halves the hashing of an
+/// arity-4 authentication path.
 #[test]
 fn native_and_prime_hosts_compress_four_digests_in_one_keccak_block() {
-    let mut b = CircuitBuilder::<BinaryField128>::new();
-    b.enable_native_keccak_f1600().unwrap();
-    assert_eq!(
-        check_compress_n::<BinaryField128, NativeBinaryEncoding>(b),
-        1
-    );
-    let mut b = CircuitBuilder::<Poly64>::new();
-    b.enable_native_keccak_f1600().unwrap();
-    assert_eq!(check_compress_n::<Poly64, NativeBinaryEncoding>(b), 1);
-    let mut b = CircuitBuilder::<BabyBear>::new();
-    b.enable_keccak_f1600::<BabyBear>();
-    check_compress_n::<BabyBear, PrimeBinaryEncoding<BabyBear>>(b);
+    let native = || {
+        let mut b = CircuitBuilder::<BinaryField128>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        b
+    };
+    check_compress_n::<BinaryField128, NativeBinaryEncoding>(native());
+    let keccak = NpoTypeId::native_keccak_f1600();
+    for arity in [2, 4] {
+        assert_eq!(
+            node_keccak_calls::<BinaryField128, NativeBinaryEncoding>(native(), &keccak, arity),
+            1
+        );
+    }
+    let native = || {
+        let mut b = CircuitBuilder::<Poly64>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        b
+    };
+    check_compress_n::<Poly64, NativeBinaryEncoding>(native());
+    for arity in [2, 4] {
+        assert_eq!(
+            node_keccak_calls::<Poly64, NativeBinaryEncoding>(native(), &keccak, arity),
+            1
+        );
+    }
+    let prime = || {
+        let mut b = CircuitBuilder::<BabyBear>::new();
+        b.enable_keccak_f1600::<BabyBear>();
+        b
+    };
+    check_compress_n::<BabyBear, PrimeBinaryEncoding<BabyBear>>(prime());
+    let keccak = NpoTypeId::keccak_f1600();
+    for arity in [2, 4] {
+        assert_eq!(
+            node_keccak_calls::<BabyBear, PrimeBinaryEncoding<BabyBear>>(prime(), &keccak, arity),
+            1
+        );
+    }
 }
 
 #[test]
