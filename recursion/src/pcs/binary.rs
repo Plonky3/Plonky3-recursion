@@ -87,6 +87,7 @@ mod trace_native;
 mod trace_plan;
 mod trace_routing;
 mod trace_whir;
+mod trace_whir_poly;
 mod verifier;
 mod whir_gadgets;
 mod whir_input;
@@ -179,6 +180,10 @@ pub use trace_whir::{
     BinaryBooleanWhirTraceInputShape, BinaryBooleanWhirTraceProofTargets,
     BinaryBooleanWhirTraceVerifier, NativeBinaryBooleanWhirTraceInput,
     NativeBooleanWhirTraceProofTargets,
+};
+pub use trace_whir_poly::{
+    BinaryPolyBooleanWhirTraceInputShape, BinaryPolyBooleanWhirTraceVerifier,
+    NativeBinaryPolyBooleanWhirTraceInput, NativePolyBooleanWhirTraceProofTargets,
 };
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,

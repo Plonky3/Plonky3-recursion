@@ -61,6 +61,17 @@ impl TracePlan {
         num_variables: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
+        Self::with_value_limbs(protocol, num_variables, 8, limits)
+    }
+
+    /// Plans the routing, charging `limbs` input limbs for every opened value and point
+    /// coordinate.
+    pub fn with_value_limbs(
+        protocol: OpeningProtocol,
+        num_variables: usize,
+        limbs: usize,
+        limits: &VerifierLimits,
+    ) -> Result<Self, VerificationError> {
         if num_variables > limits.max_log_domain_or_degree || num_variables >= usize::BITS as usize
         {
             return Err(VerificationError::ResourceLimitExceeded {
@@ -97,11 +108,11 @@ impl TracePlan {
         usage.add_metadata_entries(limits, value_count)?;
         usage.add_scalar_elements(
             limits,
-            value_count
-                .checked_mul(8)
-                .ok_or(VerificationError::ResourceArithmeticOverflow {
+            value_count.checked_mul(limbs).ok_or(
+                VerificationError::ResourceArithmeticOverflow {
                     component: "binary trace value limbs",
-                })?,
+                },
+            )?,
         )?;
         for shape in &shapes {
             if shape.width() == 0 || shape.width() > limits.max_matrix_width {
@@ -137,7 +148,7 @@ impl TracePlan {
             usage.add_scalar_elements(
                 limits,
                 arity
-                    .checked_mul(8)
+                    .checked_mul(limbs)
                     .ok_or(VerificationError::ResourceArithmeticOverflow {
                         component: "binary trace point limbs",
                     })?,

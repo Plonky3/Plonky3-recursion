@@ -5,12 +5,12 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use p3_binary_field::{BinaryField128, BitCoordinates, TowerLevel};
+use p3_binary_field::{BinaryField128, BitCoordinates, Poly64, Poly192, TowerLevel};
 use p3_binary_pcs::{ChallengeField, Coordinates, FoldAlphabet};
 use p3_challenger::fs::TranscriptField;
 use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
-use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
+use p3_circuit::ops::{BinaryTower128Target, NativePoly192Target, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
@@ -25,10 +25,15 @@ use super::verifier::{
     assert_equal, constrain_width, observe_seed, observe_seed_with_host, observe_values,
     seed_bytes_with_host,
 };
-use super::{BinaryRingClaimTargets, NativeBitRingReading, RecursiveBinaryChallengeField};
+use super::{
+    BinaryRingClaimTargets, NativeBitRingReading, NativePolyBitRingReading,
+    RecursiveBinaryChallengeField,
+};
 use crate::transcript::SeedTap;
 use crate::verifier::VerificationError;
-use crate::verifier::binary_field_policy::{BinaryProtocolPolicy, NativeTower128Relation};
+use crate::verifier::binary_field_policy::{
+    BinaryProtocolPolicy, NativePoly64Relation, NativeTower128Relation, poly_observe_seed_with_host,
+};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 /// Routing of a trace whose bits are packed into values of `F` and read at points of `E`.
@@ -400,6 +405,35 @@ impl TraceRouting<BinaryField128> {
         let readings = readings
             .into_iter()
             .map(|reading| NativeBitRingReading {
+                point: reading.point,
+                current: Some(reading.current),
+                next: reading.next,
+            })
+            .collect();
+        Ok((readings, ch))
+    }
+}
+
+impl TraceRouting<Poly64, Poly192> {
+    /// The native column batch in the Poly64 carrier, with Poly192 points, values and column
+    /// coordinates.
+    pub fn bind_native(
+        &self,
+        b: &mut CircuitBuilder<Poly64>,
+        ch: BinaryTower128Challenger,
+        points: &[Vec<NativePoly192Target>],
+        values: &[NativePoly192Target],
+    ) -> Result<(Vec<NativePolyBitRingReading>, BinaryTower128Challenger), VerificationError> {
+        let (readings, ch) = self.bind_native_using::<NativePoly64Relation, Poly64>(
+            b,
+            ch,
+            points,
+            values,
+            poly_observe_seed_with_host::<NativeBinaryEncoding, Poly64>,
+        )?;
+        let readings = readings
+            .into_iter()
+            .map(|reading| NativePolyBitRingReading {
                 point: reading.point,
                 current: Some(reading.current),
                 next: reading.next,
