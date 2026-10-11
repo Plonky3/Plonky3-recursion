@@ -60,9 +60,10 @@ impl NativeTranscript {
 
     /// The smallest-index proof-of-work witness for `bits` against this transcript.
     ///
-    /// Candidates, their order, the search range and the panics are those of
-    /// `p3_binary_field::BinaryChallenger::grind`. Of the valid candidates the
-    /// first is returned, so the witness does not depend on thread scheduling.
+    /// Candidates and their indexing, the search range and the panics are those
+    /// of `p3_binary_field::BinaryChallenger::grind`. Of the valid candidates the
+    /// one of smallest index is returned, so the witness does not depend on
+    /// thread scheduling.
     /// The transcript is not advanced.
     ///
     /// # Panics
