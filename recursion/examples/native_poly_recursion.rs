@@ -12,10 +12,10 @@
 //!
 //! | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
 //! |----------|-----------|----------------|------------|--------|----------|-----------|
-//! | 2        | 1,650,094 | 402,653,184    | 6.8 s      | 9.5 s  | 15.2 GB  | 14.5 GB   |
-//! | 3        | 2,111,009 | 671,088,640    | 11.0 s     | 20.3 s | 25.5 GB  | 23.3 GB   |
+//! | 2        | 1,521,969 | 402,653,184    | 6.9 s      | 8.3 s  | 15.2 GB  | 14.7 GB   |
+//! | 3        | 1,948,639 | 671,088,640    | 10.9 s     | 20.1 s | 25.5 GB  | 23.7 GB   |
 //!
-//! Layer 1 takes 0.55 s with 24,289 witnesses and 6,291,456 codeword cells. From layer 3 on,
+//! Layer 1 takes 0.48 s with 17,921 witnesses and 5,242,880 codeword cells. From layer 3 on,
 //! more than 2,621 Keccak-f calls (25 trace rows each) give the Keccak table 2^17 rows instead
 //! of 2^16; hence the default limits of 2^29 trace cells and 2^30 codeword cells, 4 GiB and
 //! 8 GiB of Poly64 cells.

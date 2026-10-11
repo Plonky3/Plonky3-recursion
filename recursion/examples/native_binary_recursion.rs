@@ -19,21 +19,21 @@
 //!
 //! | Command                                | witnesses | codeword cells |
 //! |----------------------------------------|-----------|----------------|
-//! | `--layers 2`                           | 873,971   | 109,051,904    |
-//! | `--layers 3`                           | 1,154,682 | 109,051,904    |
-//! | `--keccak-commitment dense --layers 3` | 941,172   | 335,544,320    |
-//! | `--pcs folding --layers 2`             | 1,063,069 | 603,979,776    |
-//! | `--log-inv-rate 2 --layers 2`          | 815,367   | 209,715,200    |
+//! | `--layers 2`                           | 745,548   | 58,720,256     |
+//! | `--layers 3`                           | 942,072   | 109,051,904    |
+//! | `--keccak-commitment dense --layers 3` | 792,174   | 335,544,320    |
+//! | `--pcs folding --layers 2`             | 956,788   | 603,979,776    |
+//! | `--log-inv-rate 2 --layers 2`          | 689,946   | 109,051,904    |
 //!
 //! | Command                                | last layer | wall   | resident | footprint |
 //! |----------------------------------------|------------|--------|----------|-----------|
-//! | `--layers 2`                           | 10.7 s     | 12.3 s | 6.1 GB   | 5.8 GB    |
-//! | `--layers 3`                           | 10.0 s     | 23.1 s | 6.5 GB   | 5.9 GB    |
-//! | `--keccak-commitment dense --layers 3` | 13.0 s     | 27.7 s | 16.7 GB  | 12.4 GB   |
-//! | `--pcs folding --layers 2`             | 20.0 s     | 21.4 s | 26.6 GB  | 27.8 GB   |
-//! | `--log-inv-rate 2 --layers 2`          | 9.8 s      | 11.3 s | 9.2 GB   | 7.8 GB    |
+//! | `--layers 2`                           | 10.5 s     | 12.0 s | 4.1 GB   | 3.9 GB    |
+//! | `--layers 3`                           | 11.7 s     | 24.3 s | 6.5 GB   | 5.9 GB    |
+//! | `--keccak-commitment dense --layers 3` | 13.7 s     | 29.0 s | 16.7 GB  | 12.2 GB   |
+//! | `--pcs folding --layers 2`             | 20.3 s     | 21.9 s | 28.3 GB  | 27.4 GB   |
+//! | `--log-inv-rate 2 --layers 2`          | 10.1 s     | 12.0 s | 5.1 GB   | 5.0 GB    |
 //!
-//! Layer 1 takes 0.9 s with 19,596 witnesses, and 0.6 s with 36,317 under `--pcs folding`. The
+//! Layer 1 takes 0.9 s with 14,092 witnesses, and 0.9 s with 22,661 under `--pcs folding`. The
 //! default codeword-cell limit is 2^29 at `--log-inv-rate 1`, doubled for each further rate bit
 //! and for `--pcs folding`, which multiplies every dense codeword.
 //!
