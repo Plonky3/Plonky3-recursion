@@ -332,9 +332,7 @@ fn native_word_observations_sample_like_byte_observations() {
 /// absorbed as a lane at an even offset, split at an odd offset, and split
 /// in an odd-length input. A seventeenth coordinate is rejected, although
 /// the low sixteen coordinates hash and sample honestly.
-#[test]
-fn native_out_of_range_observed_words_are_rejected_on_every_absorb_path() {
-    type F = BinaryField128;
+fn out_of_range_observed_words<F: BinaryCoordinateField>() {
     const WORD: u16 = 0xb7e5;
     // Bytes before and after the word: even offset, odd offset, odd length.
     for (before, after) in [(&[3u8, 251][..], &[][..]), (&[3], &[7]), (&[3, 251], &[7])] {
@@ -384,4 +382,10 @@ fn native_out_of_range_observed_words_are_rejected_on_every_absorb_path() {
             "word with coordinate 16, bytes around it {case:?}"
         );
     }
+}
+
+#[test]
+fn native_out_of_range_observed_words_are_rejected_on_every_absorb_path() {
+    out_of_range_observed_words::<BinaryField128>();
+    out_of_range_observed_words::<Poly64>();
 }
