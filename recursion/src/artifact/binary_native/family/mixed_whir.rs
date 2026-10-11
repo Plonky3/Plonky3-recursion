@@ -74,6 +74,15 @@ impl NativeFamily<E, E> for MixedWhirFamily {
                 "binary native mixed WHIR trace height is below its initial folding factor",
             ));
         }
+        if spec
+            .preprocessed
+            .as_ref()
+            .is_some_and(|pp| pp.dense.config.round_folding_factor(0) != first)
+        {
+            return Err(invalid(
+                "binary native mixed WHIR main and preprocessing initial folding factors differ",
+            ));
+        }
         // The bit stack holds the table's columns, padded to a power of two, beneath its rows.
         let (air, &height) = airs
             .get(packed.table)

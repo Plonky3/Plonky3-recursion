@@ -85,13 +85,22 @@ fn native_bus(circuit: &Circuit<F>, keccak: KeccakCommitment) -> NativeBusCircui
 }
 
 fn whir(num_variables: usize, rate: usize) -> BinaryNativeWhirPcsParameters<F> {
+    whir_folding(num_variables, rate, FOLDING)
+}
+
+/// WHIR parameters folding `folding` variables in every round.
+fn whir_folding(
+    num_variables: usize,
+    rate: usize,
+    folding: usize,
+) -> BinaryNativeWhirPcsParameters<F> {
     BinaryNativeWhirPcsParameters::new(
         num_variables,
         ProtocolParameters {
             security_level: 32,
             pow_bits: 0,
             round_log_inv_rates: vec![],
-            folding_factor: FoldingFactor::Constant(FOLDING),
+            folding_factor: FoldingFactor::Constant(folding),
             soundness_type: SecurityAssumption::JohnsonBound,
             starting_log_inv_rate: rate,
         },
@@ -315,6 +324,18 @@ fn identity_binds_the_packed_table_rate_and_preprocessing() {
         base,
         identity(airs.clone(), heights.clone(), keccak, preprocessed)
     );
+    // The preprocessing commitment folds its first round by the main commitment's factor.
+    let mut refolded = mixed_spec(&bits, keccak, RATES);
+    refolded.preprocessed = Some(BinaryNativeMixedWhirPcsParameters::dense(whir_folding(
+        bits.preprocessed_variables().unwrap(),
+        1,
+        FOLDING + 1,
+    )));
+    assert!(matches!(
+        mixed_setup(airs.clone(), heights.clone(), refolded),
+        Err(VerificationError::InvalidProofShape(message)) if message
+            == "binary native mixed WHIR main and preprocessing initial folding factors differ"
+    ));
 
     // The configured table of a Dense-mode bus keeps its booleanity constraints.
     let dense = native_bus(&circuit, KeccakCommitment::Dense);
