@@ -45,7 +45,6 @@
 //! give about 29. The binary-bus term caps the composed security whatever the PCS level, so a
 //! `--security-target` above the cap is refused. Proofs are non-hiding. Limits count field
 //! cells or graph entries, not bytes.
-//! bytes.
 
 use std::error::Error;
 use std::time::Instant;
