@@ -1,5 +1,7 @@
 #[path = "../native_binary_air.rs"]
 mod native_binary_air;
+#[path = "../native_binary_boolean_whir_trace.rs"]
+mod native_binary_boolean_whir_trace;
 #[path = "../native_binary_challenger.rs"]
 mod native_binary_challenger;
 #[path = "../native_binary_circuit.rs"]

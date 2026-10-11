@@ -77,6 +77,7 @@ pub(crate) use poly_whir_gadgets::{
 };
 mod ring;
 mod ring_input;
+mod ring_native;
 mod tensor;
 mod tensor_native;
 mod trace;
@@ -97,7 +98,7 @@ pub use boolean::{
 };
 pub use boolean_whir::{
     BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
-    NativeBinaryBooleanWhirInput,
+    NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
 };
 pub use fields::{
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField, RecursiveBinaryWhirTowerField,
@@ -149,6 +150,9 @@ pub use ring::{
     BinaryRingProofTargets,
 };
 pub use ring_input::{BinaryRingInputShape, NativeBinaryRingInput};
+pub use ring_native::{
+    NativeBitRingClaimTargets, NativeBitRingOutput, NativeBitRingProofTargets, NativeBitRingReading,
+};
 pub use tensor::{BinaryTowerTensorTarget, binary_tensor_closing_weight};
 pub use tensor_native::{NativeBitTensorTarget, binary128_trace_dual_basis, closing_weight_native};
 pub use trace::{
@@ -158,6 +162,7 @@ pub use trace::{
 pub use trace_whir::{
     BinaryBooleanWhirTraceInputShape, BinaryBooleanWhirTraceProofTargets,
     BinaryBooleanWhirTraceVerifier, NativeBinaryBooleanWhirTraceInput,
+    NativeBooleanWhirTraceProofTargets,
 };
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,

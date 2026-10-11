@@ -67,7 +67,7 @@ pub struct BinaryBitRingVerifier<E> {
     pub(super) specs: Vec<BinaryRingClaimSpec>,
     pub(super) usage: InputResourceUsage,
     prefix_limit: usize,
-    seed: Vec<E>,
+    pub(super) seed: Vec<E>,
     field: PhantomData<E>,
 }
 

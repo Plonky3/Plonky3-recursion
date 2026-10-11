@@ -345,7 +345,7 @@ fn fold(
 
 /// `eq(point, x)` for every `x`, with the point's first coordinate as the most
 /// significant index bit.
-fn equality_table(
+pub(super) fn equality_table(
     b: &mut CircuitBuilder<BinaryField128>,
     point: &[NativeTower128Target],
 ) -> Vec<ExprId> {

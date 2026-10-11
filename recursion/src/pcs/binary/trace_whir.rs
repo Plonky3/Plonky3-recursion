@@ -5,7 +5,7 @@ use core::hash::Hash;
 
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryTower128Target, ByteHash};
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
@@ -20,7 +20,7 @@ use super::trace_routing::{TraceEntry, TraceRouting};
 use super::whir_plan::invalid;
 use super::{
     BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
-    NativeBinaryBooleanWhirInput,
+    NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
 };
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -37,6 +37,13 @@ pub struct BinaryBooleanWhirTraceProofTargets {
     /// Protocol batch order, current values then next values in each batch.
     pub values: Vec<BinaryTower128Target>,
     pub opening: BinaryBooleanWhirProofTargets,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeBooleanWhirTraceProofTargets {
+    /// Protocol batch order, current values then next values in each batch.
+    pub values: Vec<NativeTower128Target>,
+    pub opening: NativeBooleanWhirProofTargets,
 }
 
 /// Pins the complete trace schedule, including unopened table placement, and
@@ -104,6 +111,24 @@ impl BinaryBooleanWhirTraceInputShape {
             opening: self.opening.allocate_targets::<BF, EF>(b)?,
         })
     }
+
+    /// One scalar input per opened value, then the packed opening's native inputs.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<NativeBooleanWhirTraceProofTargets, VerificationError> {
+        let values = (0..self.value_count)
+            .map(|_| {
+                let value = b.alloc_private_input("native binary WHIR trace value");
+                b.check_construction_limits()?;
+                Ok(b.native_tower128_from_expr(value))
+            })
+            .collect::<Result<_, VerificationError>>()?;
+        Ok(NativeBooleanWhirTraceProofTargets {
+            values,
+            opening: self.opening.allocate_native_targets(b)?,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -133,6 +158,24 @@ impl NativeBinaryBooleanWhirTraceInput {
             .flat_map(|&v| (0..8).map(move |i| EF::from_u16((v >> (16 * i)) as u16)))
             .collect::<Vec<_>>();
         values.extend(self.opening.private_values::<EF>(&expected.opening)?);
+        Ok(values)
+    }
+
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryBooleanWhirTraceInputShape,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary WHIR trace input belongs to another verifier",
+            ));
+        }
+        let mut values: Vec<_> = self
+            .values
+            .iter()
+            .map(|&v| BinaryField128::from_repr(v))
+            .collect();
+        values.extend(self.opening.private_native_values(&expected.opening)?);
         Ok(values)
     }
 }
@@ -312,6 +355,51 @@ impl BinaryBooleanWhirTraceVerifier {
                     .verify_readings_after_queries::<BF, EF>(b, token, cap, &proof.opening)?
             }
         };
+        Ok((self.routing.evals(&proof.values), ch))
+    }
+
+    /// The native carrier verifies the column-batched route of one table only, over a hash
+    /// with a native circuit.
+    pub(crate) fn check_native_circuit_support(&self) -> Result<(), VerificationError> {
+        self.routing.native_run()?;
+        self.child.check_native_circuit_support()
+    }
+
+    pub fn observe_commitment_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: &mut BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        self.child.observe_commitment_native(b, ch, cap)
+    }
+
+    /// Native carrier counterpart of [`Self::verify_at`] for the column-batched route: binds
+    /// the opened values to one column-batched ring claim per opening, runs every ring-switch
+    /// round, authenticates the packed opening, and returns the opened values in protocol
+    /// order with the exact challenger after the packed WHIR opening.
+    pub fn verify_at_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<NativeTower128Target>],
+        proof: &NativeBooleanWhirTraceProofTargets,
+    ) -> Result<
+        (
+            Vec<OpeningBatch<NativeTower128Target>>,
+            BinaryTower128Challenger,
+        ),
+        VerificationError,
+    > {
+        self.check_native_circuit_support()?;
+        self.routing
+            .check_points(points.iter().map(Vec::len), proof.values.len())?;
+        self.child.check_native_targets(b, cap, &proof.opening)?;
+        let (readings, ch) = self.routing.bind_native(b, ch, points, &proof.values)?;
+        let ch = self
+            .child
+            .verify_readings_native(b, ch, cap, &readings, &proof.opening)?;
         Ok((self.routing.evals(&proof.values), ch))
     }
 

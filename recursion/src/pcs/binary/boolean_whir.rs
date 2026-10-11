@@ -7,7 +7,8 @@ use core::hash::Hash;
 use p3_binary_field::BinaryField128;
 use p3_binary_pcs::whir::BooleanWhirProof;
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::ByteHash;
+use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
+use p3_circuit::ops::{ByteHash, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField64};
 use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
@@ -22,8 +23,9 @@ use super::whir_plan::invalid;
 use super::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingInputShape, BinaryRingOutput,
     BinaryRingProofTargets, BinaryWhirInputShape, BinaryWhirProofTargets, BinaryWhirVerifier,
-    NativeBinaryRingInput, NativeBinaryWhirInput,
+    NativeBinaryRingInput, NativeBinaryWhirInput, NativeBitRingProofTargets, NativeBitRingReading,
 };
+use crate::verifier::binary_field_policy::{BinaryProtocolPolicy, NativeTower128Relation};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
@@ -40,6 +42,12 @@ pub struct BinaryBooleanWhirVerifier {
 pub struct BinaryBooleanWhirProofTargets {
     pub reduction: BinaryRingProofTargets<BinaryField128>,
     pub opening: BinaryWhirProofTargets,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeBooleanWhirProofTargets {
+    pub reduction: NativeBitRingProofTargets,
+    pub opening: BinaryWhirProofTargets<NativeTower128Target>,
 }
 
 /// Pure geometry independent of the proof's common Boolean point prefix.
@@ -83,6 +91,17 @@ impl BinaryBooleanWhirInputShape {
             opening: self.opening.allocate_targets::<BF, EF>(b)?,
         })
     }
+
+    /// Native scalar inputs: the ring-switch elements and messages, then the packed opening.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<NativeBooleanWhirProofTargets, VerificationError> {
+        Ok(NativeBooleanWhirProofTargets {
+            reduction: self.reduction.allocate_native_targets(b)?,
+            opening: self.opening.allocate_native_targets(b)?,
+        })
+    }
 }
 
 /// Bounded witness extraction; authentication remains a circuit constraint.
@@ -109,6 +128,20 @@ impl NativeBinaryBooleanWhirInput {
         }
         let mut values = self.reduction.private_values::<EF>(&expected.reduction)?;
         values.extend(self.opening.private_values::<EF>(&expected.opening)?);
+        Ok(values)
+    }
+
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryBooleanWhirInputShape,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary Boolean WHIR input belongs to a different verifier",
+            ));
+        }
+        let mut values = self.reduction.private_native_values(&expected.reduction)?;
+        values.extend(self.opening.private_native_values(&expected.opening)?);
         Ok(values)
     }
 }
@@ -251,6 +284,61 @@ impl BinaryBooleanWhirVerifier {
         assert_equal(b, &output.value, &proof.opening.evals[0].current()[0]);
         self.opening
             .verify_at::<BF, EF>(b, output.challenger, cap, &[output.point], &proof.opening)
+            .map(|(_, ch)| ch)
+    }
+
+    /// The packed opening's hash must have a native circuit.
+    pub(super) fn check_native_circuit_support(&self) -> Result<(), VerificationError> {
+        self.opening
+            .check_host::<NativeBinaryEncoding, BinaryField128>()
+    }
+
+    pub(super) fn check_native_targets(
+        &self,
+        b: &CircuitBuilder<BinaryField128>,
+        cap: &[Vec<ExprId>],
+        proof: &NativeBooleanWhirProofTargets,
+    ) -> Result<(), VerificationError> {
+        self.reduction.check_native_proof(&proof.reduction)?;
+        let placeholder =
+            vec![b.native_tower128_from_expr(ExprId::ZERO); self.opening.plan.variables];
+        self.opening
+            .check_targets(cap, &[placeholder], &proof.opening)
+    }
+
+    pub fn observe_commitment_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: &mut BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        self.opening
+            .observe_commitment_with_host::<NativeBinaryEncoding, BinaryField128>(b, ch, cap)
+    }
+
+    /// Verifies the readings in the native carrier, running every ring-switch round, then
+    /// opens the packing at the surviving point. Returns the exact challenger after the
+    /// packed WHIR opening, including its closing fold.
+    pub fn verify_readings_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+        readings: &[NativeBitRingReading],
+        proof: &NativeBooleanWhirProofTargets,
+    ) -> Result<BinaryTower128Challenger, VerificationError> {
+        self.check_native_circuit_support()?;
+        self.check_native_targets(b, cap, proof)?;
+        let output = self
+            .reduction
+            .verify_native(b, ch, readings, &proof.reduction)?;
+        NativeTower128Relation::<BinaryField128>::assert_equal(
+            b,
+            &output.value,
+            &proof.opening.evals[0].current()[0],
+        );
+        self.opening
+            .verify_at_native(b, output.challenger, cap, &[output.point], &proof.opening)
             .map(|(_, ch)| ch)
     }
 

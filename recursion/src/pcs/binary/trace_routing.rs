@@ -4,9 +4,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_binary_field::BinaryField128;
 use p3_binary_pcs::{ChallengeField, Coordinates, FoldAlphabet};
-use p3_circuit::ops::BinaryTower128Target;
-use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::binary_encoding::{NativeBinaryEncoding, PrimeBinaryEncoding};
+use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
@@ -16,13 +17,15 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::trace_native::route;
-use super::trace_plan::{Route, TracePlan};
+use super::trace_plan::{Route, TableRun, TracePlan};
 use super::verifier::{
-    assert_equal, constrain_width, observe_seed, observe_values, seed_bytes_with_host,
+    assert_equal, constrain_width, observe_seed, observe_seed_with_host, observe_values,
+    seed_bytes_with_host,
 };
-use super::{BinaryRingClaimTargets, RecursiveBinaryChallengeField};
+use super::{BinaryRingClaimTargets, NativeBitRingReading, RecursiveBinaryChallengeField};
 use crate::transcript::SeedTap;
 use crate::verifier::VerificationError;
+use crate::verifier::binary_field_policy::{BinaryProtocolPolicy, NativeTower128Relation};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
 #[derive(Clone, Debug)]
@@ -237,10 +240,7 @@ where
         Ok(entry)
     }
 
-    pub fn evals(
-        &self,
-        values: &[BinaryTower128Target],
-    ) -> Vec<OpeningBatch<BinaryTower128Target>> {
+    pub fn evals<T: Clone>(&self, values: &[T]) -> Vec<OpeningBatch<T>> {
         let mut cursor = 0;
         self.plan
             .protocol
@@ -265,6 +265,103 @@ where
         }
         Ok(())
     }
+}
+
+impl TraceRouting<BinaryField128> {
+    /// The run the native carrier replays, with its column-batching seed: the batched route of
+    /// one table alone, whose column slots form one block read at `column point || row point`.
+    pub(super) fn native_run(&self) -> Result<(&TableRun, &[BinaryField128]), VerificationError> {
+        let unsupported = || {
+            invalid(
+                "native binary trace routing supports only the column-batched route of one table",
+            )
+        };
+        let Route::Batched(runs) = &self.plan.route else {
+            return Err(unsupported());
+        };
+        let ([run], [seed]) = (runs.as_slice(), self.column_seeds.as_slice()) else {
+            return Err(unsupported());
+        };
+        match run.blocks.as_slice() {
+            [block]
+                if block.selector.is_empty()
+                    && block.first == 0
+                    && block.variables == run.columns =>
+            {
+                Ok((run, seed))
+            }
+            _ => Err(unsupported()),
+        }
+    }
+
+    /// Replays the column batch of the batched route in the native carrier and returns each
+    /// opening's ring claim: the lifted point `column point || row point`, with the current
+    /// and successor values combined at the column point. The column point is drawn after the
+    /// row point and every opened value are absorbed.
+    pub fn bind_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        mut ch: BinaryTower128Challenger,
+        points: &[Vec<NativeTower128Target>],
+        values: &[NativeTower128Target],
+    ) -> Result<(Vec<NativeBitRingReading>, BinaryTower128Challenger), VerificationError> {
+        type P = NativeTower128Relation<BinaryField128>;
+        type H = NativeBinaryEncoding;
+        self.check_points(points.iter().map(Vec::len), values.len())?;
+        let (run, seed) = self.native_run()?;
+        observe_seed_with_host::<BinaryField128, H, BinaryField128>(b, &mut ch, seed)?;
+        let per_batch = run.width * (1 + usize::from(run.next));
+        let mut readings = Vec::with_capacity(points.len());
+        for (point, values) in points.iter().zip(values.chunks_exact(per_batch)) {
+            let (current, successor) = values.split_at(run.width);
+            P::observe::<H>(b, &mut ch, point)?;
+            P::observe::<H>(b, &mut ch, current)?;
+            if run.next {
+                P::observe::<H>(b, &mut ch, successor)?;
+            }
+            let column_point = (0..run.columns)
+                .map(|_| P::sample::<H>(b, &mut ch))
+                .collect::<Result<Vec<_>, _>>()?;
+            let current = combine_native(b, current, &column_point);
+            let successor = run
+                .next
+                .then(|| combine_native(b, successor, &column_point));
+            let mut lifted = column_point;
+            lifted.extend_from_slice(point);
+            readings.push(NativeBitRingReading {
+                point: lifted,
+                current: Some(current),
+                next: successor,
+            });
+            b.check_construction_limits()?;
+        }
+        Ok((readings, ch))
+    }
+}
+
+/// `sum_j eq(point, j) * values[j]`, missing values reading as zero, with the point's first
+/// coordinate as the most significant index bit.
+fn combine_native(
+    b: &mut CircuitBuilder<BinaryField128>,
+    values: &[NativeTower128Target],
+    point: &[NativeTower128Target],
+) -> NativeTower128Target {
+    let zero = b.native_tower128_from_expr(ExprId::ZERO);
+    let mut layer = values.to_vec();
+    layer.resize(1usize << point.len(), zero);
+    for coordinate in point.iter().rev() {
+        layer = layer
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[low, high]| {
+                let slope = b.native_tower128_add(low, high);
+                let scaled = b.native_tower128_mul(coordinate, &slope);
+                b.native_tower128_add(low, &scaled)
+            })
+            .collect();
+    }
+    layer[0]
 }
 
 fn sample_challenge<E, BF, EF>(

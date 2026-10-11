@@ -4,9 +4,10 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
+use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_challenger::{FieldChallenger, GrindingChallenger};
 use p3_circuit::CircuitBuilder;
-use p3_circuit::ops::BinaryTower128Target;
+use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_field::{ExtensionField, Field, PrimeField64};
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::ring_switch::bits::{
@@ -15,7 +16,8 @@ use p3_sumcheck::ring_switch::bits::{
 
 use super::{
     BinaryBitRingVerifier, BinaryRingClaimSpec, BinaryRingClaimTargets, BinaryRingProofTargets,
-    BinaryTowerTensorTarget, RecursiveBinaryChallengeField,
+    BinaryTowerTensorTarget, NativeBitRingClaimTargets, NativeBitRingProofTargets,
+    NativeBitTensorTarget, RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
 };
 use crate::verifier::VerificationError;
 
@@ -304,6 +306,120 @@ impl<E: RecursiveBinaryChallengeField> BinaryBitRingVerifier<E> {
             challenger,
         ))
     }
+}
+
+impl BinaryRingInputShape<BinaryField128> {
+    /// One scalar input per committed field element, in the native verifier's reading order:
+    /// each claim's tensor rows, then its carry and last rows, a message for every sumcheck
+    /// round, then the surviving value. Points and readings belong to the caller's route and
+    /// are not inputs here.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<NativeBitRingProofTargets, VerificationError> {
+        let absorbed = BinaryField128::RAW_BITS.ilog2() as usize;
+        let claims = self
+            .specs
+            .iter()
+            .map(|spec| {
+                let tensor = alloc_native_tensor(b)?;
+                let successor = if spec.next_rows.is_some_and(|rows| rows > absorbed) {
+                    Some((alloc_native_tensor(b)?, alloc_native_tensor(b)?))
+                } else {
+                    None
+                };
+                Ok(NativeBitRingClaimTargets { tensor, successor })
+            })
+            .collect::<Result<_, VerificationError>>()?;
+        let sumcheck = (0..self.num_variables - absorbed)
+            .map(|_| Ok([alloc_native_field(b)?, alloc_native_field(b)?]))
+            .collect::<Result<_, VerificationError>>()?;
+        let final_eval = alloc_native_field(b)?;
+        Ok(NativeBitRingProofTargets {
+            claims,
+            sumcheck,
+            final_eval,
+        })
+    }
+}
+
+impl NativeBinaryRingInput<BinaryField128> {
+    /// The native verifier's inputs, in allocation order.
+    ///
+    /// The native verifier runs every sumcheck round. Claims whose points open on one common
+    /// bit, inside the coordinates the released reduction may skip, leave it fewer rounds, so
+    /// they are refused here.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryRingInputShape<BinaryField128>,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary ring-switch input belongs to a different verifier",
+            ));
+        }
+        let absorbed = BinaryField128::RAW_BITS.ilog2() as usize;
+        let variables = expected.num_variables;
+        let high = variables - absorbed;
+        let mut cursor = 0;
+        let mut take = |count: usize| {
+            let fields = self
+                .fields
+                .get(cursor..cursor + count)
+                .ok_or_else(|| invalid("binary ring-switch native input is truncated"));
+            cursor += count;
+            fields
+        };
+        let mut firsts = Vec::with_capacity(expected.specs.len());
+        let mut values = Vec::new();
+        for spec in &expected.specs {
+            let point = take(variables)?;
+            firsts.push(point.first().copied());
+            take(usize::from(spec.current) + usize::from(spec.next_rows.is_some()))?;
+            let tensors = if spec.next_rows.is_some_and(|rows| rows > absorbed) {
+                3
+            } else {
+                1
+            };
+            values.extend(take(tensors * BinaryField128::RAW_BITS)?);
+        }
+        values.extend(take(2 * high + 1)?);
+        if cursor != self.fields.len() {
+            return Err(invalid(
+                "binary ring-switch native input has trailing fields",
+            ));
+        }
+        let limit = expected.specs.iter().fold(high, |limit, spec| {
+            spec.next_rows
+                .map_or(limit, |rows| limit.min(variables - rows))
+        });
+        if limit > 0
+            && matches!(firsts.first(), Some(&Some(first)) if first <= 1)
+            && firsts.iter().all(|first| first == &firsts[0])
+        {
+            return Err(invalid(
+                "native binary ring-switch verifier runs every round, but the claims share a Boolean prefix",
+            ));
+        }
+        Ok(values.into_iter().map(BinaryField128::from_repr).collect())
+    }
+}
+
+fn alloc_native_field(
+    b: &mut CircuitBuilder<BinaryField128>,
+) -> Result<NativeTower128Target, VerificationError> {
+    let value = b.alloc_private_input("native binary ring-switch field");
+    b.check_construction_limits()?;
+    Ok(b.native_tower128_from_expr(value))
+}
+
+fn alloc_native_tensor(
+    b: &mut CircuitBuilder<BinaryField128>,
+) -> Result<NativeBitTensorTarget, VerificationError> {
+    let rows = (0..BinaryField128::RAW_BITS)
+        .map(|_| alloc_native_field(b))
+        .collect::<Result<_, _>>()?;
+    Ok(NativeBitTensorTarget::from_rows(rows)?)
 }
 
 fn alloc_field<BF, EF>(
