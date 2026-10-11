@@ -456,6 +456,10 @@ where
     ///
     /// An [`ExprId`] handle to the addition expression.
     pub fn add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
+        // In characteristic two, identical addends cancel.
+        if F::TWO == F::ZERO && lhs == rhs {
+            return ExprId::ZERO;
+        }
         // x + 0 = x, 0 + x = x
         if self.is_const_zero(lhs) {
             return rhs;
@@ -743,6 +747,19 @@ where
     ///
     /// Lowers to a single MulAdd ALU op with no intermediate witnesses.
     pub fn add_mul_add(&mut self, a: ExprId, b: ExprId, c: ExprId, label: &'static str) -> ExprId {
+        if self.is_const_zero(a) || self.is_const_zero(b) {
+            return c;
+        }
+        if self.is_const_one(a) {
+            return self.add(b, c, label);
+        }
+        if self.is_const_one(b) {
+            return self.add(a, c, label);
+        }
+        if self.is_const_zero(c) {
+            return self.mul(a, b, label);
+        }
+
         // Constant folding: all operands const collapses to a single Const node.
         if let (Some(va), Some(vb), Some(vc)) = (
             self.get_const_value(a),
@@ -1159,6 +1176,52 @@ mod tests {
     use super::*;
     #[cfg(feature = "debugging")]
     use crate::alloc::string::ToString;
+
+    fn check_mul_add_identities<F: PrimeCharacteristicRing + Eq + Hash>() {
+        let mut builder = ExpressionBuilder::<F>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+        let one = builder.define_const(F::ONE, "one");
+        let sum = builder.add(a, b, "sum");
+        let product = builder.mul(a, b, "product");
+        let before = builder.graph().nodes().len();
+        assert_eq!(builder.add_mul_add(a, ExprId::ZERO, b, "zero right"), b);
+        assert_eq!(builder.add_mul_add(ExprId::ZERO, a, b, "zero left"), b);
+        assert_eq!(builder.add_mul_add(a, one, b, "one right"), sum);
+        assert_eq!(builder.add_mul_add(one, a, b, "one left"), sum);
+        assert_eq!(builder.add_mul_add(a, b, ExprId::ZERO, "zero sum"), product);
+        assert_eq!(builder.graph().nodes().len(), before);
+    }
+
+    #[test]
+    fn mul_add_identities_reuse_prime_field_expressions() {
+        check_mul_add_identities::<BabyBear>();
+    }
+
+    #[test]
+    fn mul_add_identities_reuse_binary_field_expressions() {
+        check_mul_add_identities::<p3_binary_field::BinaryField128>();
+        check_mul_add_identities::<p3_binary_field::Poly64>();
+    }
+
+    #[test]
+    fn repeated_binary_addend_cancels_without_an_operation() {
+        let mut builder = ExpressionBuilder::<p3_binary_field::BinaryField128>::new();
+        let a = builder.public(0, "a");
+        let before = builder.graph().nodes().len();
+        assert_eq!(builder.add(a, a, "cancel"), ExprId::ZERO);
+        assert_eq!(builder.graph().nodes().len(), before);
+    }
+
+    #[test]
+    fn repeated_prime_field_addend_is_not_cancelled() {
+        let mut builder = ExpressionBuilder::<BabyBear>::new();
+        let a = builder.public(0, "a");
+        let sum = builder.add(a, a, "double");
+        assert!(
+            matches!(builder.graph().nodes()[sum.0 as usize], Expr::Add { lhs, rhs } if lhs == a && rhs == a)
+        );
+    }
 
     #[test]
     fn test_new_builder_has_zero_constant() {
