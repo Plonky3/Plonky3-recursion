@@ -15,36 +15,59 @@
 
 use alloc::vec;
 
-use p3_binary_field::BinaryField128;
+use p3_binary_field::{BinaryField128, BitCoordinates, TowerLevel};
 use p3_binary_pcs::whir::{
     BinaryWhirDomain, BooleanWhirData, BooleanWhirError, BooleanWhirPcs, BooleanWhirProof,
 };
 use p3_binary_pcs::{
     BooleanTraceCommitment, BooleanTraceCommitmentData, BooleanTraceCommitmentError,
-    BooleanTraceCommitmentProof,
+    BooleanTraceCommitmentProof, Coordinates,
 };
+use p3_challenger::fs::TranscriptField;
 use p3_commit::MultilinearPcs;
-use p3_field::PrimeCharacteristicRing;
+use p3_field::Field;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::plan_stacked_layout;
 use p3_sumcheck::{
     OpeningEvals, OpeningProtocol, PrescribedOpeningSecurity, PrescribedPointPcs, TableSpec,
 };
-use p3_whir::{PcsProof, VerifierError, WhirConfigError, WhirProver, WhirProverData};
+use p3_whir::{
+    PcsProof, VerifierError, WhirConfig, WhirConfigError, WhirDomain, WhirProver, WhirProverData,
+};
 use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::pcs::binary::MerkleArity;
 
-type E = BinaryField128;
-type Cap = MerkleCap<E, [u8; 32]>;
-type Challenger = BinaryNativeChallenger<E>;
-type DensePcs = NativeWhirPcs<E, SuffixProver<E, E>>;
+type Cap<F> = MerkleCap<F, [u8; 32]>;
+type DensePcs<F, E> = WhirProver<
+    E,
+    F,
+    BinaryWhirDomain<F>,
+    NativeWhirMmcs<F>,
+    BinaryNativeChallenger<F>,
+    SuffixProver<F, E>,
+>;
+type DenseProof<F, E> = PcsProof<F, E, NativeWhirMmcs<F>>;
+type PackedPcs<F, E> = BooleanTraceCommitment<
+    E,
+    BooleanWhirPcs<F, E, BinaryWhirDomain<F>, NativeWhirMmcs<F>, BinaryNativeChallenger<F>>,
+>;
 type PackedError = BooleanTraceCommitmentError<BooleanWhirError>;
-type PackedData = BooleanTraceCommitmentData<E, BooleanWhirData<E, E, NativeWhirMmcs<E>>>;
-type PackedProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, E, NativeWhirMmcs<E>>>;
+type PackedData<F, E> = BooleanTraceCommitmentData<F, BooleanWhirData<F, E, NativeWhirMmcs<F>>>;
+type PackedProof<F, E> = BooleanTraceCommitmentProof<E, BooleanWhirProof<F, E, NativeWhirMmcs<F>>>;
 /// One part's share of an opening: its tables' batches, and their points in order.
-type Part = (OpeningProtocol, Vec<Point<E>>);
+type Part<E> = (OpeningProtocol, Vec<Point<E>>);
+
+/// The mixed commitment over Tower128 values and challenges.
+pub type MixedWhirPcs = NativeMixedWhirPcs<BinaryField128, BinaryField128>;
+/// The opening proof of a [`MixedWhirPcs`].
+pub type MixedWhirProof = NativeMixedWhirProof<BinaryField128, BinaryField128>;
+/// Mixed commitment parameters over Tower128 values and challenges.
+pub type BinaryNativeMixedWhirPcsParameters =
+    NativeMixedWhirPcsParameters<BinaryNativeWhirPcsParameters<BinaryField128>>;
+/// Mixed configuration over Tower128 values and challenges.
+pub type BinaryNativeMixedWhirConfig = NativeMixedWhirConfig<BinaryField128, BinaryField128>;
 
 /// Why the composite commitment refused a witness, an opening or a proof.
 #[derive(Debug, thiserror::Error)]
@@ -60,22 +83,49 @@ pub enum MixedWhirError<D> {
     Shape(&'static str),
 }
 
-/// Dense stacked WHIR over every table but one, and a bit commitment over that one table.
+/// Parameters of one part of a mixed commitment: a released WHIR configuration over `Val`
+/// cells with `Challenge` challenges, and the Merkle trees it commits on.
+pub trait MixedWhirPartParameters {
+    /// The committed cells, and the elements the packed part packs bits into.
+    type Val: TowerLevel;
+    /// The field every challenge is drawn from.
+    type Challenge: BitCoordinates + ExtensionField<Self::Val>;
+    /// The part's released WHIR configuration.
+    fn whir(&self) -> &WhirConfig<Self::Challenge, Self::Val, BinaryNativeChallenger<Self::Val>>;
+    /// The hash, tree arity and cap height of the part's Merkle trees.
+    fn trees(&self) -> (ByteHash, MerkleArity, usize);
+}
+
+impl MixedWhirPartParameters for BinaryNativeWhirPcsParameters<BinaryField128> {
+    type Val = BinaryField128;
+    type Challenge = BinaryField128;
+    fn whir(
+        &self,
+    ) -> &WhirConfig<BinaryField128, BinaryField128, BinaryNativeChallenger<BinaryField128>> {
+        &self.config
+    }
+    fn trees(&self) -> (ByteHash, MerkleArity, usize) {
+        (self.hash, self.arity, self.cap_height)
+    }
+}
+
+/// Dense stacked WHIR over every table but one, and a bit commitment over that one table, of
+/// `F` cells with `E` challenges.
 ///
 /// Both parts' Merkle trees have one hash, one arity and one cap height, which
 /// [`Self::from_parameters`] enforces, so each part contributes `cap_roots` roots to the
 /// shared commitment.
-pub struct MixedWhirPcs {
-    dense: DensePcs,
-    packed: Option<(NativeBooleanWhirTracePcs, usize)>,
+pub struct NativeMixedWhirPcs<F: Field, E: ExtensionField<F>> {
+    dense: DensePcs<F, E>,
+    packed: Option<(PackedPcs<F, E>, usize)>,
     cap_roots: usize,
 }
 
 /// Prover data of both parts, and where each instance's table is retained.
 #[derive(Clone)]
-pub struct MixedWhirData {
-    dense: WhirProverData<E, E, NativeWhirMmcs<E>, SuffixProver<E, E>>,
-    packed: Option<PackedData>,
+pub struct MixedWhirData<F: Field, E: ExtensionField<F>> {
+    dense: WhirProverData<F, E, NativeWhirMmcs<F>, SuffixProver<F, E>>,
+    packed: Option<PackedData<F, E>>,
     slots: Vec<Slot>,
 }
 
@@ -88,37 +138,42 @@ enum Slot {
 
 /// The dense opening, then the packed opening when a table is bit-committed.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct MixedWhirProof {
-    pub dense: PcsProof<E, E, NativeWhirMmcs<E>>,
-    pub packed: Option<PackedProof>,
+#[serde(bound(
+    serialize = "DenseProof<F, E>: Serialize, PackedProof<F, E>: Serialize",
+    deserialize = "DenseProof<F, E>: Deserialize<'de>, PackedProof<F, E>: Deserialize<'de>"
+))]
+pub struct NativeMixedWhirProof<F: Field, E: ExtensionField<F>> {
+    pub dense: DenseProof<F, E>,
+    pub packed: Option<PackedProof<F, E>>,
 }
 
 /// Trusted parameters of the mixed commitment: dense WHIR over every table but the packed one,
-/// and, when there is a packed table, a packed-bit WHIR commitment of it.
+/// and, when there is a packed table, a packed-bit WHIR commitment of it. Each part's
+/// parameters are a `P`.
 ///
 /// Both parts use one hash, one tree arity and one cap height, which
 /// [`Self::with_packed_table`] enforces.
 /// The preprocessing commitment holds no packed table.
 #[derive(Clone)]
-pub struct BinaryNativeMixedWhirPcsParameters {
-    pub(in crate::artifact::binary_native) dense: BinaryNativeWhirPcsParameters<E>,
-    pub(in crate::artifact::binary_native) packed: Option<PackedTableParameters>,
+pub struct NativeMixedWhirPcsParameters<P> {
+    pub(in crate::artifact::binary_native) dense: P,
+    pub(in crate::artifact::binary_native) packed: Option<PackedTableParameters<P>>,
 }
 
 /// The packed-bit part: the table it commits, the variable count of that table's bit stack,
 /// and WHIR parameters over seven variables fewer, the ones each field element absorbs.
 #[derive(Clone)]
-pub(in crate::artifact::binary_native) struct PackedTableParameters {
-    pub(in crate::artifact::binary_native) whir: BinaryNativeWhirPcsParameters<E>,
+pub(in crate::artifact::binary_native) struct PackedTableParameters<P> {
+    pub(in crate::artifact::binary_native) whir: P,
     pub(in crate::artifact::binary_native) table: usize,
     pub(in crate::artifact::binary_native) bit_variables: usize,
 }
 
-impl BinaryNativeMixedWhirPcsParameters {
+impl<P: MixedWhirPartParameters> NativeMixedWhirPcsParameters<P> {
     /// A dense commitment of every table: the preprocessing commitment's parameters. Setup
     /// refuses them for the main commitment, which bit-commits one table through
     /// [`Self::with_packed_table`].
-    pub const fn dense(dense: BinaryNativeWhirPcsParameters<E>) -> Self {
+    pub const fn dense(dense: P) -> Self {
         Self {
             dense,
             packed: None,
@@ -129,14 +184,12 @@ impl BinaryNativeMixedWhirPcsParameters {
     /// `bit_variables`-variable bit stack of `table`. Packed parameters naming another hash,
     /// tree arity or cap height than the dense ones are refused.
     pub fn with_packed_table(
-        dense: BinaryNativeWhirPcsParameters<E>,
-        packed: BinaryNativeWhirPcsParameters<E>,
+        dense: P,
+        packed: P,
         table: usize,
         bit_variables: usize,
     ) -> Result<Self, VerificationError> {
-        if (packed.hash, packed.arity, packed.cap_height)
-            != (dense.hash, dense.arity, dense.cap_height)
-        {
+        if packed.trees() != dense.trees() {
             return Err(super::super::invalid(
                 "binary native mixed WHIR parts differ in hash, tree arity or cap height",
             ));
@@ -152,29 +205,37 @@ impl BinaryNativeMixedWhirPcsParameters {
     }
 }
 
-impl MixedWhirPcs {
+impl<F, E> NativeMixedWhirPcs<F, E>
+where
+    F: TranscriptField + TowerLevel + Coordinates + Ord,
+    E: BitCoordinates + ExtensionField<F>,
+    BinaryWhirDomain<F>: WhirDomain<F, E>,
+    BinaryNativeChallenger<F>:
+        FieldChallenger<F> + GrindingChallenger<Witness = F> + CanSampleUniformBits<F>,
+{
     /// Build both parts from checked parameters, on Merkle trees of the dense part's hash, arity
     /// and cap height.
     ///
     /// `packed` holds the bit commitment's parameters, the table it commits and the table's
     /// bit arity. Parameters naming another hash, tree arity or cap height are refused.
-    pub(crate) fn from_parameters(
-        dense: &BinaryNativeWhirPcsParameters<E>,
-        packed: Option<(&BinaryNativeWhirPcsParameters<E>, usize, usize)>,
-    ) -> Result<Self, VerificationError> {
-        let (hash, arity, cap_height) = (dense.hash, dense.arity, dense.cap_height);
-        let whir = |parameters: &BinaryNativeWhirPcsParameters<E>| -> DensePcs {
+    pub(crate) fn from_parameters<P>(
+        dense: &P,
+        packed: Option<(&P, usize, usize)>,
+    ) -> Result<Self, VerificationError>
+    where
+        P: MixedWhirPartParameters<Val = F, Challenge = E>,
+    {
+        let (hash, arity, cap_height) = dense.trees();
+        let whir = |parameters: &P| -> DensePcs<F, E> {
             WhirProver::new(
-                parameters.config.clone(),
-                BinaryWhirDomain::<E>::default(),
+                parameters.whir().clone(),
+                BinaryWhirDomain::<F>::default(),
                 NativeWhirMmcs::new(hash, arity, cap_height),
             )
         };
         let packed = packed
             .map(|(parameters, table, bit_variables)| {
-                if (parameters.hash, parameters.arity, parameters.cap_height)
-                    != (hash, arity, cap_height)
-                {
+                if parameters.trees() != (hash, arity, cap_height) {
                     return Err(super::super::invalid(
                         "binary native mixed WHIR parts differ in hash, tree arity or cap height",
                     ));
@@ -193,8 +254,8 @@ impl MixedWhirPcs {
     /// Both parts' Merkle trees compress `arity` digests per node and have caps of
     /// `cap_height` levels.
     fn new(
-        dense: DensePcs,
-        packed: Option<(NativeBooleanWhirTracePcs, usize)>,
+        dense: DensePcs<F, E>,
+        packed: Option<(PackedPcs<F, E>, usize)>,
         arity: MerkleArity,
         cap_height: usize,
     ) -> Result<Self, VerificationError> {
@@ -258,7 +319,7 @@ impl MixedWhirPcs {
         &self,
         protocol: &OpeningProtocol,
         points: &[Point<E>],
-    ) -> Result<[Part; 2], &'static str> {
+    ) -> Result<[Part<E>; 2], &'static str> {
         if points.len() != protocol.num_openings() {
             return Err("one opening point per batch is required");
         }
@@ -305,9 +366,9 @@ impl MixedWhirPcs {
     ///
     /// Packed storage holds bits by construction; dense storage is scanned cell by cell.
     fn check_packed_table(
-        pcs: &NativeBooleanWhirTracePcs,
+        pcs: &PackedPcs<F, E>,
         index: usize,
-        table: &Table<E>,
+        table: &Table<F>,
     ) -> Result<(), PackedError> {
         let actual = plan_stacked_layout(&[table.shape()]).0;
         if actual != pcs.num_variables() {
@@ -319,7 +380,7 @@ impl MixedWhirPcs {
         if table.packed_bits().is_some() {
             return Ok(());
         }
-        let is_bit = |value: &E| *value == E::ZERO || *value == E::ONE;
+        let is_bit = |value: &F| *value == F::ZERO || *value == F::ONE;
         table
             .columns()
             .position(|column| !column.values().all(|value| is_bit(&value)))
@@ -345,25 +406,46 @@ fn is_complete_single_batch(protocol: &OpeningProtocol) -> bool {
     batch.current() == all.as_slice() && (batch.next().is_empty() || batch.next() == all.as_slice())
 }
 
-impl MultilinearPcs<E, Challenger> for MixedWhirPcs {
-    type Val = E;
-    type Commitment = Cap;
-    type ProverData = MixedWhirData;
-    type Proof = MixedWhirProof;
+impl<F, E> MultilinearPcs<E, BinaryNativeChallenger<F>> for NativeMixedWhirPcs<F, E>
+where
+    F: TranscriptField + TowerLevel + Coordinates + Ord,
+    E: BitCoordinates + ExtensionField<F>,
+    BinaryWhirDomain<F>: WhirDomain<F, E>,
+    BinaryNativeChallenger<F>: FieldChallenger<F>
+        + GrindingChallenger<Witness = F>
+        + CanSampleUniformBits<F>
+        + CanObserve<Cap<F>>,
+    PackedPcs<F, E>: PrescribedPointPcs<
+            E,
+            BinaryNativeChallenger<F>,
+            Val = F,
+            Commitment = Cap<F>,
+            ProverData = PackedData<F, E>,
+            Proof = PackedProof<F, E>,
+            Error = PackedError,
+            ProverError = PackedError,
+            Witness = Vec<Table<F>>,
+            OpeningProtocol = OpeningProtocol,
+        >,
+{
+    type Val = F;
+    type Commitment = Cap<F>;
+    type ProverData = MixedWhirData<F, E>;
+    type Proof = NativeMixedWhirProof<F, E>;
     type Error = MixedWhirError<VerifierError>;
     type ProverError = MixedWhirError<WhirConfigError>;
-    type Witness = Vec<Table<E>>;
+    type Witness = Vec<Table<F>>;
     type OpeningProtocol = OpeningProtocol;
 
     fn num_vars(&self) -> usize {
-        MultilinearPcs::<E, Challenger>::num_vars(&self.dense)
+        MultilinearPcs::<E, BinaryNativeChallenger<F>>::num_vars(&self.dense)
     }
 
     fn commit(
         &self,
-        witness: Vec<Table<E>>,
-        challenger: &mut Challenger,
-    ) -> Result<(Cap, MixedWhirData), Self::ProverError> {
+        witness: Vec<Table<F>>,
+        challenger: &mut BinaryNativeChallenger<F>,
+    ) -> Result<(Cap<F>, MixedWhirData<F, E>), Self::ProverError> {
         // Refusals of the witness precede the first binding, so they leave the transcript alone.
         let packed_table = self.packed_table();
         if let Some((pcs, index)) = &self.packed {
@@ -386,7 +468,7 @@ impl MultilinearPcs<E, Challenger> for MixedWhirPcs {
             return Err(MixedWhirError::Shape("the dense commitment holds no table"));
         }
         let dense_witness =
-            SuffixProver::<E, E>::new_witness(dense_tables, self.dense.round_folding_factor(0));
+            SuffixProver::<F, E>::new_witness(dense_tables, self.dense.round_folding_factor(0));
         if dense_witness.num_variables() != self.dense.num_variables() {
             return Err(MixedWhirError::Shape(
                 "the dense tables do not stack to the dense commitment's arity",
@@ -429,7 +511,7 @@ impl MultilinearPcs<E, Challenger> for MixedWhirPcs {
         Ok((cap, data))
     }
 
-    fn observe_commitment(&self, commitment: &Cap, challenger: &mut Challenger) {
+    fn observe_commitment(&self, commitment: &Cap<F>, challenger: &mut BinaryNativeChallenger<F>) {
         match &self.packed {
             Some((pcs, _)) if commitment.num_roots() == self.expected_roots() => {
                 let (dense, packed) = commitment.roots().split_at(self.cap_roots);
@@ -445,10 +527,10 @@ impl MultilinearPcs<E, Challenger> for MixedWhirPcs {
 
     fn open(
         &self,
-        _prover_data: MixedWhirData,
+        _prover_data: MixedWhirData<F, E>,
         _protocol: OpeningProtocol,
-        _challenger: &mut Challenger,
-    ) -> Result<MixedWhirProof, Self::ProverError> {
+        _challenger: &mut BinaryNativeChallenger<F>,
+    ) -> Result<NativeMixedWhirProof<F, E>, Self::ProverError> {
         Err(MixedWhirError::Shape(
             "the mixed commitment opens only at prescribed points",
         ))
@@ -456,9 +538,9 @@ impl MultilinearPcs<E, Challenger> for MixedWhirPcs {
 
     fn verify(
         &self,
-        _commitment: &Cap,
-        _proof: &MixedWhirProof,
-        _challenger: &mut Challenger,
+        _commitment: &Cap<F>,
+        _proof: &NativeMixedWhirProof<F, E>,
+        _challenger: &mut BinaryNativeChallenger<F>,
         _protocol: OpeningProtocol,
     ) -> Result<(), Self::Error> {
         Err(MixedWhirError::Shape(
@@ -467,7 +549,28 @@ impl MultilinearPcs<E, Challenger> for MixedWhirPcs {
     }
 }
 
-impl PrescribedPointPcs<E, Challenger> for MixedWhirPcs {
+impl<F, E> PrescribedPointPcs<E, BinaryNativeChallenger<F>> for NativeMixedWhirPcs<F, E>
+where
+    F: TranscriptField + TowerLevel + Coordinates + Ord,
+    E: BitCoordinates + ExtensionField<F>,
+    BinaryWhirDomain<F>: WhirDomain<F, E>,
+    BinaryNativeChallenger<F>: FieldChallenger<F>
+        + GrindingChallenger<Witness = F>
+        + CanSampleUniformBits<F>
+        + CanObserve<Cap<F>>,
+    PackedPcs<F, E>: PrescribedPointPcs<
+            E,
+            BinaryNativeChallenger<F>,
+            Val = F,
+            Commitment = Cap<F>,
+            ProverData = PackedData<F, E>,
+            Proof = PackedProof<F, E>,
+            Error = PackedError,
+            ProverError = PackedError,
+            Witness = Vec<Table<F>>,
+            OpeningProtocol = OpeningProtocol,
+        >,
+{
     /// The union of both parts' terms, over the product of their candidate sets.
     ///
     /// Every outer draw precedes both openings, so a prover holding a candidate list per
@@ -503,11 +606,11 @@ impl PrescribedPointPcs<E, Challenger> for MixedWhirPcs {
 
     fn open_at(
         &self,
-        prover_data: MixedWhirData,
+        prover_data: MixedWhirData<F, E>,
         protocol: &OpeningProtocol,
         points: &[Point<E>],
-        challenger: &mut Challenger,
-    ) -> Result<MixedWhirProof, Self::ProverError> {
+        challenger: &mut BinaryNativeChallenger<F>,
+    ) -> Result<NativeMixedWhirProof<F, E>, Self::ProverError> {
         let known = vec![None; protocol.num_openings()];
         self.open_at_known(prover_data, protocol, points, &known, challenger)
     }
@@ -516,12 +619,12 @@ impl PrescribedPointPcs<E, Challenger> for MixedWhirPcs {
     /// evaluating its columns. The dense part has no such path and evaluates its own batches.
     fn open_at_known(
         &self,
-        prover_data: MixedWhirData,
+        prover_data: MixedWhirData<F, E>,
         protocol: &OpeningProtocol,
         points: &[Point<E>],
         known: &[Option<OpeningEvals<E>>],
-        challenger: &mut Challenger,
-    ) -> Result<MixedWhirProof, Self::ProverError> {
+        challenger: &mut BinaryNativeChallenger<F>,
+    ) -> Result<NativeMixedWhirProof<F, E>, Self::ProverError> {
         let [
             (dense_protocol, dense_points),
             (packed_protocol, packed_points),
@@ -571,16 +674,16 @@ impl PrescribedPointPcs<E, Challenger> for MixedWhirPcs {
             })
             .transpose()
             .map_err(MixedWhirError::Packed)?;
-        Ok(MixedWhirProof { dense, packed })
+        Ok(NativeMixedWhirProof { dense, packed })
     }
 
     fn verify_at(
         &self,
-        commitment: &Cap,
-        proof: &MixedWhirProof,
+        commitment: &Cap<F>,
+        proof: &NativeMixedWhirProof<F, E>,
         protocol: &OpeningProtocol,
         points: &[Point<E>],
-        challenger: &mut Challenger,
+        challenger: &mut BinaryNativeChallenger<F>,
     ) -> Result<Vec<OpeningEvals<E>>, Self::Error> {
         if commitment.num_roots() != self.expected_roots() {
             return Err(MixedWhirError::Shape(
@@ -626,18 +729,19 @@ impl PrescribedPointPcs<E, Challenger> for MixedWhirPcs {
     }
 }
 
-/// Complete native mixed dense and packed-bit WHIR configuration, constructed by its owner.
+/// Complete native mixed dense and packed-bit WHIR configuration over `F` cells with `E`
+/// challenges, constructed by its owner.
 ///
 /// The preprocessing commitment is dense only.
-pub struct BinaryNativeMixedWhirConfig {
-    pub(crate) main: MixedWhirPcs,
-    pub(crate) preprocessed: Option<MixedWhirPcs>,
+pub struct NativeMixedWhirConfig<F: Field, E: ExtensionField<F>> {
+    pub(crate) main: NativeMixedWhirPcs<F, E>,
+    pub(crate) preprocessed: Option<NativeMixedWhirPcs<F, E>>,
 }
 
-impl BinaryNativeMixedWhirConfig {
+impl<F: Field, E: ExtensionField<F>> NativeMixedWhirConfig<F, E> {
     pub(crate) fn new(
-        main: MixedWhirPcs,
-        preprocessed: Option<MixedWhirPcs>,
+        main: NativeMixedWhirPcs<F, E>,
+        preprocessed: Option<NativeMixedWhirPcs<F, E>>,
     ) -> Result<Self, VerificationError> {
         if preprocessed.as_ref().is_some_and(|pp| pp.packed.is_some()) {
             return Err(super::super::invalid(
@@ -648,11 +752,32 @@ impl BinaryNativeMixedWhirConfig {
     }
 }
 
-impl MultiStarkConfig for BinaryNativeMixedWhirConfig {
-    type Val = E;
+impl<F, E> MultiStarkConfig for NativeMixedWhirConfig<F, E>
+where
+    F: TranscriptField + TowerLevel + Coordinates + Ord,
+    E: BitCoordinates + ExtensionField<F>,
+    BinaryWhirDomain<F>: WhirDomain<F, E>,
+    BinaryNativeChallenger<F>: FieldChallenger<F>
+        + GrindingChallenger<Witness = F>
+        + CanSampleUniformBits<F>
+        + CanObserve<Cap<F>>,
+    PackedPcs<F, E>: PrescribedPointPcs<
+            E,
+            BinaryNativeChallenger<F>,
+            Val = F,
+            Commitment = Cap<F>,
+            ProverData = PackedData<F, E>,
+            Proof = PackedProof<F, E>,
+            Error = PackedError,
+            ProverError = PackedError,
+            Witness = Vec<Table<F>>,
+            OpeningProtocol = OpeningProtocol,
+        >,
+{
+    type Val = F;
     type Challenge = E;
-    type Challenger = Challenger;
-    type Pcs = MixedWhirPcs;
+    type Challenger = BinaryNativeChallenger<F>;
+    type Pcs = NativeMixedWhirPcs<F, E>;
     fn pcs(&self) -> &Self::Pcs {
         &self.main
     }
@@ -667,10 +792,10 @@ impl MultiStarkConfig for BinaryNativeMixedWhirConfig {
     fn min_num_variables(&self) -> usize {
         self.main.dense.round_folding_factor(0)
     }
-    fn build_witness(&self, tables: Vec<Table<E>>) -> Vec<Table<E>> {
+    fn build_witness(&self, tables: Vec<Table<F>>) -> Vec<Table<F>> {
         tables
     }
-    fn committed_table<'a>(&self, data: &'a MixedWhirData, index: usize) -> &'a Table<E> {
+    fn committed_table<'a>(&self, data: &'a MixedWhirData<F, E>, index: usize) -> &'a Table<F> {
         match data.slots[index] {
             Slot::Dense(slot) => data.dense.table(slot),
             Slot::Packed(slot) => data

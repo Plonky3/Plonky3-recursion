@@ -4,6 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_binary_field::BinaryField128;
 use p3_binary_pcs::BooleanTraceCommitment;
 use p3_binary_pcs::whir::{BinaryWhirDomain, BooleanWhirPcs};
 use p3_challenger::CanSample;
@@ -38,6 +39,8 @@ const KECCAK: usize = 1;
 const POW_BITS: usize = 0;
 const TARGET_BITS: usize = 20;
 
+type E = BinaryField128;
+type Challenger = BinaryNativeChallenger<E>;
 type Config = BinaryNativeMixedWhirConfig;
 
 /// A degree-two recurrence reading the next row and one preprocessed weight column.
@@ -176,7 +179,7 @@ fn whir_parameters(num_variables: usize) -> BinaryNativeWhirPcsParameters<E> {
     BinaryNativeWhirPcsParameters::<E>::new(num_variables, parameters(), HASH, CAP_HEIGHT).unwrap()
 }
 
-fn whir(num_variables: usize) -> DensePcs {
+fn whir(num_variables: usize) -> DensePcs<E, E> {
     WhirProver::new(
         whir_parameters(num_variables).config,
         BinaryWhirDomain::<E>::default(),
@@ -210,7 +213,7 @@ fn packed_pcs() -> NativeBooleanWhirTracePcs {
     BooleanTraceCommitment::from_commitment(BooleanWhirPcs::new(whir(bits - 7), bits).unwrap())
 }
 
-fn dense_main_pcs() -> DensePcs {
+fn dense_main_pcs() -> DensePcs<E, E> {
     whir(dense_main_variables())
 }
 
@@ -335,7 +338,7 @@ impl Fixture {
     }
 }
 
-fn cap_halves(cap: &Cap) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
+fn cap_halves(cap: &Cap<E>) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
     let (dense, packed) = cap.roots().split_at(1 << CAP_HEIGHT);
     (dense.to_vec(), packed.to_vec())
 }
@@ -410,7 +413,7 @@ fn mixed_transcript_order_pin() {
     pcs.observe_commitment(&cap, &mut verifier);
     let after_observe: E = verifier.sample();
 
-    let replay = |order: [&Cap; 2]| -> E {
+    let replay = |order: [&Cap<E>; 2]| -> E {
         let mut challenger = challenger();
         dense_main_pcs().observe_commitment(order[0], &mut challenger);
         packed_pcs().observe_commitment(order[1], &mut challenger);
