@@ -244,9 +244,13 @@ impl BinaryProtocolPolicy<Poly64> for NativePoly64Relation {
         b: &mut CircuitBuilder<Poly64>,
         ch: &mut BinaryTower128Challenger,
     ) -> Result<NativePoly192Target, VerificationError> {
-        let value = ch.sample_poly192_with_host::<H, Poly64>(b)?;
-        let bits = core::array::from_fn(|i| value.coefficients()[i / 64].bits()[i % 64]);
-        Ok(b.native_poly192_from_bits(bits)?)
+        // Each coefficient reads eight drawn bytes as one little-endian cell.
+        let bytes = ch.sample_bytes_with_host::<H, Poly64>(b, 24)?;
+        let mut coefficients = [ExprId::ZERO; 3];
+        for (coefficient, bytes) in coefficients.iter_mut().zip(bytes.as_chunks::<8>().0) {
+            *coefficient = b.native_poly64_from_bytes(*bytes)?;
+        }
+        Ok(b.native_poly192_from_coefficients(coefficients))
     }
     fn assert_equal(
         b: &mut CircuitBuilder<Poly64>,
