@@ -4,7 +4,7 @@
 use p3_baby_bear::BabyBear;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
-use p3_circuit::{Circuit, CircuitBuilder};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits};
 use p3_field::PrimeCharacteristicRing;
 use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
@@ -51,6 +51,22 @@ impl Native {
     fn new() -> Self {
         Self {
             b: CircuitBuilder::new(),
+            public: Vec::new(),
+            private: Vec::new(),
+        }
+    }
+
+    /// A builder that rejects more than `nodes` expression nodes at its
+    /// construction checkpoints, and limits nothing else.
+    fn with_node_budget(nodes: usize) -> Self {
+        let limits = CircuitConstructionLimits {
+            max_expression_nodes: nodes,
+            max_pending_connects: usize::MAX,
+            max_non_primitive_calls: usize::MAX,
+            max_non_primitive_slots: usize::MAX,
+        };
+        Self {
+            b: CircuitBuilder::with_construction_limits(limits).unwrap(),
             public: Vec::new(),
             private: Vec::new(),
         }
@@ -500,4 +516,45 @@ fn malformed_shapes_return_errors() {
     assert!(closing_weight_native(&mut n.b, &[zero], &[zero], &batch[1..], None).is_err());
     assert!(closing_weight_native(&mut n.b, &[zero], &[zero], &batch, Some((0, &zero))).is_err());
     assert!(closing_weight_native(&mut n.b, &[zero], &[zero], &batch, Some((2, &zero))).is_err());
+}
+
+/// Column sums and the closing weight stop at their own construction
+/// checkpoints, a bounded number of nodes past the budget, instead of
+/// running on to the caller's next check.
+#[test]
+fn readings_stop_at_the_node_budget() {
+    let budget_error = |result| {
+        matches!(
+            result,
+            Err(CircuitBuilderError::ConstructionLimitExceeded { .. })
+        )
+    };
+    let mut sampler = Sampler(0xb0d6);
+    let rows = sampler.fields(128);
+    // The budget fits the row decomposition and the first column exactly, as
+    // an unlimited builder measures them, and no further column.
+    let mut n = Native::new();
+    let mut tensor = n.tensor(&rows);
+    tensor.column(&mut n.b, 0).unwrap();
+    let mut n = Native::with_node_budget(n.nodes());
+    let mut tensor = n.tensor(&rows);
+    tensor.column(&mut n.b, 0).unwrap();
+    assert!(budget_error(tensor.column(&mut n.b, 1)));
+
+    // The fixed-point closing weight adds about 40k nodes. No stretch between
+    // its checkpoints adds more than a few hundred.
+    let budget = 4096;
+    let mut n = Native::with_node_budget(budget);
+    let high = n.inputs(&sampler.fields(21));
+    let survivor = n.inputs(&sampler.fields(21));
+    let batch = n.inputs(&sampler.fields(ABSORBED));
+    let alpha = n.input(sampler.field());
+    assert!(budget_error(closing_weight_native(
+        &mut n.b,
+        &high,
+        &survivor,
+        &batch,
+        Some((10, &alpha))
+    )));
+    assert!(n.nodes() <= budget + 512);
 }

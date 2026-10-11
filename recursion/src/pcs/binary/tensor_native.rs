@@ -114,6 +114,7 @@ impl NativeBitTensorTarget {
             let weight = b.define_const(BinaryField128::from_repr(1 << u));
             sum = b.mul_add(row[v], weight, sum);
         }
+        b.check_construction_limits()?;
         let column = b.native_tower128_from_expr(sum);
         self.columns[v] = Some(column);
         Ok(column)
@@ -202,6 +203,7 @@ pub fn closing_weight_native(
         let previous = twisted.last().expect("the untwisted point is present");
         let next = previous.iter().map(|&a| b.mul(a, a)).collect();
         twisted.push(next);
+        b.check_construction_limits()?;
     }
     let selector = successor.map_or(high.len(), |(kept, _)| high.len() - kept);
     // Second-leg successor factors, folded from the last kept coordinate up.
@@ -245,6 +247,7 @@ pub fn closing_weight_native(
             image = b.mul(image, factor);
         }
         images.push(image);
+        b.check_construction_limits()?;
     }
     let weights = equality_table(b, batch);
     let mut duals = binary128_trace_dual_basis();
@@ -258,6 +261,7 @@ pub fn closing_weight_native(
             *dual = dual.square();
         }
         weight = b.mul_add(coefficient, image, weight);
+        b.check_construction_limits()?;
     }
     Ok(b.native_tower128_from_expr(weight))
 }
