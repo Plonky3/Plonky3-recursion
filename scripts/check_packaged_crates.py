@@ -118,7 +118,17 @@ def extract_archives(package_dir, packages, output):
     return roots
 
 
-def write_consumer(path, packages, roots, source):
+def git_pins(manifest):
+    """Workspace dependencies resolved from a git revision instead of the registry."""
+    dependencies = tomllib.loads(manifest.read_text()).get("workspace", {}).get("dependencies", {})
+    return {
+        name: {key: spec[key] for key in ("git", "rev", "branch", "tag") if key in spec}
+        for name, spec in dependencies.items()
+        if isinstance(spec, dict) and "git" in spec
+    }
+
+
+def write_consumer(path, packages, roots, source, pins):
     path.mkdir()
     (path / "src").mkdir()
     (path / "src/main.rs").write_text(source)
@@ -130,6 +140,10 @@ def write_consumer(path, packages, roots, source):
     lines.extend(['', '[patch.crates-io]'])
     for name, _ in packages:
         lines.append(f'{json.dumps(name)} = {{ path = {json.dumps(str(roots[name]))} }}')
+    # Archives name these by registry version; the consumer resolves them as the workspace does.
+    for name, pin in pins.items():
+        fields = ", ".join(f"{key} = {json.dumps(value)}" for key, value in pin.items())
+        lines.append(f'{json.dumps(name)} = {{ {fields} }}')
     (path / "Cargo.toml").write_text("\n".join(lines) + "\n")
 
 
@@ -173,7 +187,7 @@ def main():
         run(command, workspace)
         roots = extract_archives(target / "package", packages, scratch / "archives")
         consumer = scratch / "consumer"
-        write_consumer(consumer, packages, roots, source)
+        write_consumer(consumer, packages, roots, source, git_pins(manifest))
         env = os.environ.copy()
         env["CARGO_TARGET_DIR"] = str(target / "consumer")
         resolved = json.loads(run(["cargo", "metadata", "--format-version", "1", *offline], consumer, env).stdout)
