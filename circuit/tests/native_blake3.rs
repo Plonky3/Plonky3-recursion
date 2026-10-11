@@ -1,5 +1,6 @@
 //! Native BLAKE3 hashing of bytes and words equals the reference hash, and only
-//! compressions that depend on a circuit input become native calls.
+//! compressions whose chaining value and block are not constants below the limb
+//! width become native calls.
 
 use p3_binary_field::{BinaryField128, Poly64};
 use p3_blake3::Blake3;
@@ -239,14 +240,13 @@ fn constant_messages_have_constant_digests() {
 
 /// A constant word wider than sixteen coordinates in an otherwise constant
 /// message is never folded: its block stays a native call, which rejects it.
-#[test]
-fn wide_constant_words_stay_in_native_calls() {
-    let mut builder = CircuitBuilder::<BinaryField128>::new();
+fn wide_constant_word<F: BinaryCoordinateField>() {
+    let mut builder = CircuitBuilder::<F>::new();
     builder.enable_native_blake3_compress().unwrap();
     let mut words: Vec<_> = (0..64u16)
         .map(|i| builder.define_const(raw(i * 977 + 5)))
         .collect();
-    words[40] = builder.define_const(BinaryField128::from_raw_coordinates(0x1_0000).unwrap());
+    words[40] = builder.define_const(F::from_raw_coordinates(0x1_0000).unwrap());
     builder.native_blake3_words(&words).unwrap();
     let circuit = builder.build().unwrap();
     // Block 0 is folded; block 1 holds the wide word and is the only call.
@@ -256,6 +256,12 @@ fn wide_constant_words_stay_in_native_calls() {
         matches!(err, CircuitError::InvalidNonPrimitiveOpInput { .. }),
         "{err:?}"
     );
+}
+
+#[test]
+fn wide_constant_words_stay_in_native_calls() {
+    wide_constant_word::<BinaryField128>();
+    wide_constant_word::<Poly64>();
 }
 
 /// Bytes [0x00, 0x01] and [0x100, 0x00] pack to the same limb, so a byte
