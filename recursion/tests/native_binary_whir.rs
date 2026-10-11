@@ -2,7 +2,10 @@
 
 use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::whir::BinaryWhirDomain;
-use p3_challenger::FieldChallenger;
+use p3_challenger::{
+    CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, FieldChallenger,
+    GrindingChallenger, ResamplingError,
+};
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::{ByteHash, NativeTower128Target, bytes_to_limbs};
 use p3_circuit::{Circuit, CircuitBuilder};
@@ -324,4 +327,186 @@ fn native_sixteen_value_rows_authenticate_as_word_leaves() {
 fn native_grinding_beyond_one_sampled_byte_binds_every_witness() {
     let (_, config) = check!(F, SuffixProver, protocol(9, 1, true), 0, 12, 2, 16);
     assert!(config.max_pow_bits() > 8);
+}
+
+type Ch = keccak::LevelChallenger<F>;
+
+/// Grinds honestly except at one site, where it writes a witness short of its
+/// zero bits and still absorbs it, so the transcript continues from it as from
+/// an honest one. Its witness checks absorb without judging the witness.
+#[derive(Clone)]
+struct ShortGrind {
+    inner: Ch,
+    short: Option<usize>,
+    sites: usize,
+}
+impl<T> CanObserve<T> for ShortGrind
+where
+    Ch: CanObserve<T>,
+{
+    fn observe(&mut self, value: T) {
+        self.inner.observe(value);
+    }
+}
+impl<T> CanSample<T> for ShortGrind
+where
+    Ch: CanSample<T>,
+{
+    fn sample(&mut self) -> T {
+        self.inner.sample()
+    }
+}
+impl CanSampleBits<usize> for ShortGrind {
+    fn sample_bits(&mut self, bits: usize) -> usize {
+        self.inner.sample_bits(bits)
+    }
+}
+impl CanSampleUniformBits<F> for ShortGrind {
+    fn sample_uniform_bits<const RESAMPLE: bool>(
+        &mut self,
+        bits: usize,
+    ) -> Result<usize, ResamplingError> {
+        self.inner.sample_uniform_bits::<RESAMPLE>(bits)
+    }
+}
+impl FieldChallenger<F> for ShortGrind {}
+impl GrindingChallenger for ShortGrind {
+    type Witness = F;
+    fn grind(&mut self, bits: usize) -> F {
+        let site = self.sites;
+        self.sites += 1;
+        if self.short != Some(site) {
+            return self.inner.grind(bits);
+        }
+        let witness = (0..)
+            .map(F::from_repr)
+            .find(|&witness| !self.inner.clone().check_witness(bits, witness))
+            .unwrap();
+        assert!(!self.inner.check_witness(bits, witness));
+        witness
+    }
+    fn check_witness(&mut self, bits: usize, witness: F) -> bool {
+        let _ = self.inner.check_witness(bits, witness);
+        true
+    }
+}
+
+/// A witness short of its zero bits, followed by an honest continuation of
+/// the transcript, leaves every later draw, fold and opening consistent: the
+/// native verifier accepts it once witness checks are waived. Only the
+/// circuit's check that the bits drawn after the witness are zero refuses it.
+#[test]
+fn native_grinding_check_alone_refuses_a_witness_short_of_its_bits() {
+    type L = SuffixProver<F, F>;
+    let protocol = protocol(9, 1, true);
+    let n = p3_sumcheck::layout::plan_stacked_layout(&protocol.table_shapes()).0;
+    let domain = BinaryWhirDomain::<F>::default();
+    let config = WhirConfig::<F, F, ShortGrind>::new_with_domain(
+        n,
+        ProtocolParameters {
+            security_level: 8,
+            pow_bits: 2,
+            round_log_inv_rates: vec![],
+            folding_factor: FoldingFactor::Constant(2),
+            soundness_type: SecurityAssumption::JohnsonBound,
+            starting_log_inv_rate: 1,
+        },
+        &domain,
+    )
+    .unwrap();
+    let mmcs = keccak::mmcs();
+    let pcs = WhirProver::<F, F, _, _, ShortGrind, L>::new(config.clone(), domain, mmcs.clone());
+    let recursive = BinaryWhirVerifier::<F>::new(
+        &config,
+        protocol.clone(),
+        L::variable_order(),
+        ByteHash::Keccak256,
+        0,
+    )
+    .unwrap();
+    let shape = recursive.input_shape();
+    let make = |short| ShortGrind {
+        inner: Ch::from_hasher(vec![129, 9, 251], keccak::byte_hash()),
+        short,
+        sites: 0,
+    };
+    let dense = |i: usize| {
+        F::from_repr(0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i as u128 + 13))
+    };
+    let table = Table::new(RowMajorMatrix::new(
+        (0..1 << 9).map(dense).collect(),
+        1 << 9,
+    ));
+    let points = vec![Point::new((0..9).map(|j| dense(j + 71)).collect())];
+
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let cap = vec![
+        b.alloc_public_input_array::<16>("expected WHIR commitment")
+            .to_vec(),
+    ];
+    let point_targets: Vec<Vec<_>> = vec![(0..9).map(|_| scalar(&mut b)).collect()];
+    let targets = shape.allocate_native_targets(&mut b).unwrap();
+    let initial = [129, 9, 251].map(|byte| b.define_const(H::encode_u16(byte).unwrap()));
+    let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
+        &mut b,
+        ByteHash::Keccak256,
+        &initial,
+    )
+    .unwrap();
+    recursive
+        .observe_commitment_with_host::<H, F>(&mut b, &mut ch, &cap)
+        .unwrap();
+    let (evals, mut ch) = recursive
+        .verify_at_native(&mut b, ch, &cap, &point_targets, &targets)
+        .unwrap();
+    for value in evals
+        .iter()
+        .flat_map(|eval| eval.current().iter().chain(eval.next()))
+    {
+        bind(&mut b, value);
+    }
+    let bits = ch.sample_with_host::<H, F>(&mut b).unwrap();
+    let actual = b.native_tower128_from_bits(*bits.bits()).unwrap();
+    bind(&mut b, &actual);
+    let circuit = b.build().unwrap();
+
+    // Proves with the witness at `short` short of its bits, verifies natively
+    // with witness checks waived, and runs the circuit on the result.
+    let accepts = |short| {
+        let witness = L::new_witness(vec![table.clone()], config.round_folding_factor(0));
+        let mut prover = make(short);
+        let (commitment, data) = pcs.commit(witness, &mut prover).unwrap();
+        let proof = pcs.open_at(data, &protocol, &points, &mut prover).unwrap();
+        let mut native = make(None);
+        pcs.observe_commitment(&commitment, &mut native);
+        pcs.verify_at(&commitment, &proof, &protocol, &points, &mut native)
+            .unwrap();
+        let mut entry = make(None);
+        pcs.observe_commitment(&commitment, &mut entry);
+        let imported = recursive
+            .import_native(&config, &mmcs, &commitment, &points, &proof, &mut entry)
+            .unwrap();
+        let mut public: Vec<_> = bytes_to_limbs(&commitment.roots()[0])
+            .into_iter()
+            .map(|word| H::encode_u16(word).unwrap())
+            .collect();
+        public.extend(points[0].iter().copied());
+        public.extend(
+            proof
+                .evals
+                .iter()
+                .flat_map(|eval| eval.current().iter().chain(eval.next()).copied()),
+        );
+        public.push(native.sample_algebra_element::<F>());
+        let private = imported.private_native_values(&shape).unwrap();
+        (run(&circuit, &public, &private), prover.sites)
+    };
+    // Every site that grinds a nonzero number of bits is shorted in turn.
+    let (honest, sites) = accepts(None);
+    assert!(honest);
+    assert!(sites > 1);
+    for site in 0..sites {
+        assert!(!accepts(Some(site)).0);
+    }
 }
