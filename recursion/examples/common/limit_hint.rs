@@ -85,7 +85,10 @@ fn circuit_knob(component: &str) -> Knob {
     match component {
         "witnesses" | "public values" => Knob::Raise("--max-witnesses"),
         "operations" => Knob::Raise("--max-operations"),
-        "trace cells" => Knob::Raise("--max-trace-cells"),
+        "native bus traces, preprocessing and temporary cells"
+        | "native bus dense traces, preprocessing and temporary cells" => {
+            Knob::Raise("--max-trace-cells")
+        }
         _ => Knob::Fixed,
     }
 }
@@ -203,9 +206,10 @@ pub fn at_layer(depth: usize) -> impl Fn(VerificationError) -> Box<dyn Error> {
 
 #[cfg(test)]
 mod tests {
+    use p3_binary_field::Poly64;
     use p3_circuit::CircuitBuilder;
-    use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
-    use p3_goldilocks::Goldilocks;
+    use p3_circuit_prover::direct::DirectCircuitLimits;
+    use p3_circuit_prover::native_bus::NativeBusCircuit;
 
     use super::*;
 
@@ -274,7 +278,14 @@ mod tests {
             ("witnesses", "--max-witnesses"),
             ("public values", "--max-witnesses"),
             ("operations", "--max-operations"),
-            ("trace cells", "--max-trace-cells"),
+            (
+                "native bus traces, preprocessing and temporary cells",
+                "--max-trace-cells",
+            ),
+            (
+                "native bus dense traces, preprocessing and temporary cells",
+                "--max-trace-cells",
+            ),
         ] {
             assert!(text(&circuit(component)).contains(flag), "{component}");
         }
@@ -319,7 +330,7 @@ mod tests {
 
     #[test]
     fn upstream_circuit_strings_still_map_to_their_flags() {
-        let mut builder = CircuitBuilder::<Goldilocks>::new();
+        let mut builder = CircuitBuilder::<Poly64>::new();
         let a = builder.public_input();
         let b = builder.public_input();
         let sum = builder.add(a, b);
@@ -340,9 +351,18 @@ mod tests {
                 },
                 "--max-operations",
             ),
+            (
+                DirectCircuitLimits {
+                    max_trace_cells: 0,
+                    ..DirectCircuitLimits::default()
+                },
+                "--max-trace-cells",
+            ),
         ] {
-            let error = DirectCircuitAir::with_limits(&built, limits).unwrap_err();
-            let message = circuit_message("layer 1", &error).expect("a limit failure");
+            let error = NativeBusCircuit::with_limits(&built, "recursion", limits)
+                .err()
+                .expect("a limit failure");
+            let message = text(&VerificationError::NativeBusCircuit(error));
             assert!(message.contains(flag), "{message}");
         }
     }
