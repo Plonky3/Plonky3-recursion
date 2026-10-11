@@ -1,8 +1,14 @@
 //! Complete released Poly64/Poly192 WHIR MultiStark relations.
+mod mixed;
 mod relation;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+pub use mixed::{
+    BinaryPolyMixedWhirMultiStarkInputShape, BinaryPolyMixedWhirMultiStarkPreprocessing,
+    BinaryPolyMixedWhirMultiStarkProofTargets, BinaryPolyMixedWhirMultiStarkVerifier,
+    NativeBinaryPolyMixedWhirMultiStarkInput,
+};
 use p3_air::Air;
 use p3_binary_field::{Poly64, Poly192};
 use p3_bus::BusSymbolicBuilder;

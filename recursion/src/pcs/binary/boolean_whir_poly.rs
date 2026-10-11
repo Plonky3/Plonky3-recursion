@@ -56,6 +56,26 @@ pub struct BinaryPolyBooleanWhirInputShape {
 }
 
 impl BinaryPolyBooleanWhirInputShape {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> (
+        crate::artifact::binary_native::codec::RingDecode,
+        crate::artifact::binary_native::codec::WhirDecode,
+    ) {
+        (
+            self.reduction.native_decode_shape(),
+            self.opening.native_decode_shape(),
+        )
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        self.reduction.write_identity(w)?;
+        self.opening.write_identity(w)
+    }
+
     /// Native Poly64 inputs: the ring-switch elements and messages, then the packed opening.
     pub fn allocate_native_targets(
         &self,

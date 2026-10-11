@@ -59,6 +59,42 @@ pub struct BinaryPolyBooleanWhirTraceInputShape {
 }
 
 impl BinaryPolyBooleanWhirTraceInputShape {
+    pub(crate) fn native_decode_shape(
+        &self,
+    ) -> crate::artifact::binary_native::codec::BooleanTraceDecode<
+        crate::artifact::binary_native::codec::WhirDecode,
+    > {
+        let (ring, packed) = self.opening.native_decode_shape();
+        crate::artifact::binary_native::codec::BooleanTraceDecode {
+            value_count: self.value_count,
+            ring,
+            packed,
+        }
+    }
+
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        let shapes = self.protocol.table_shapes();
+        w.write_vec("binary WHIR trace tables", &shapes, |w, shape| {
+            w.write_count("binary WHIR trace table height", shape.num_variables())?;
+            w.write_count("binary WHIR trace table width", shape.width())
+        })?;
+        w.write_count("binary WHIR trace openings", self.protocol.num_openings())?;
+        for (table, batch) in self.protocol.iter_openings() {
+            w.write_count("binary WHIR trace opening table", table)?;
+            for columns in [batch.current(), batch.next()] {
+                w.write_vec(
+                    "binary WHIR trace opening columns",
+                    columns,
+                    |w, &column| w.write_count("binary WHIR trace opening column", column),
+                )?;
+            }
+        }
+        self.opening.write_identity(w)
+    }
+
     /// Three Poly64 inputs per opened value, then the packed opening's native inputs.
     pub fn allocate_native_targets(
         &self,
@@ -170,6 +206,12 @@ impl BinaryPolyBooleanWhirTraceVerifier {
 
     pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
+    }
+
+    /// The variables of the packed table's bit stack: the packed configuration's, and the six
+    /// one Poly64 element absorbs.
+    pub(crate) const fn bit_variables(&self) -> usize {
+        self.routing.plan.num_variables
     }
 
     pub fn input_shape(&self) -> BinaryPolyBooleanWhirTraceInputShape {

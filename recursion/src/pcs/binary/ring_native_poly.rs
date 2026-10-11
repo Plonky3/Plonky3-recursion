@@ -497,6 +497,33 @@ impl BinaryPolyBitRingVerifier {
 }
 
 impl BinaryPolyRingInputShape {
+    /// Each claim's successor elements, and a message for every high coordinate: the native
+    /// verifier runs every round.
+    pub(crate) fn native_decode_shape(&self) -> crate::artifact::binary_native::codec::RingDecode {
+        let rounds = self.num_variables - ABSORBED;
+        crate::artifact::binary_native::codec::RingDecode {
+            successor: self.specs.iter().map(sends_successor).collect(),
+            min_rounds: rounds,
+            max_rounds: rounds,
+        }
+    }
+
+    /// The bit variables and every claim's readings.
+    pub(crate) fn write_identity(
+        &self,
+        w: &mut crate::artifact::wire::Writer,
+    ) -> Result<(), crate::artifact::ArtifactError> {
+        w.write_count("binary ring variables", self.num_variables)?;
+        w.write_vec("binary ring claims", &self.specs, |w, spec| {
+            w.write_u8(u8::from(spec.current))?;
+            w.write_u8(u8::from(spec.next_rows.is_some()))?;
+            if let Some(rows) = spec.next_rows {
+                w.write_count("binary ring successor rows", rows)?;
+            }
+            Ok(())
+        })
+    }
+
     /// One Poly64 input per committed cell, in the native verifier's reading
     /// order: each claim's 192 tensor rows, then its carry and last rows, the
     /// three limbs of both values of every round's message, then the three

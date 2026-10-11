@@ -53,7 +53,7 @@ pub use config::{
         reason = "only the unit tests construct the mixed commitment directly"
     )
 )]
-pub(crate) use config::{MixedWhirError, MixedWhirPcs};
+pub(crate) use config::{MixedWhirError, MixedWhirPcs, NativeMixedWhirPcs};
 pub(crate) use config::{NativeMmcs, NativeWhirMmcs, tree};
 use family::{NativeFamily, RawFamily};
 use lifecycle::State;
