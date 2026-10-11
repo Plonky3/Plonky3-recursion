@@ -213,3 +213,71 @@ fn unchecked_poly64_words_split_and_bind_the_low_coefficients() {
     assert!(b.native_poly64_unchecked_words(input, 5).is_err());
     assert_eq!(b.construction_usage().unwrap(), before);
 }
+
+/// Eight bytes pack into `Poly64::from_le_bytes`, whose coefficients are
+/// their bits in order. A byte with an eighth coefficient is rejected even
+/// when its neighbour compensates, which leaves the packed cell unchanged.
+#[test]
+fn poly64_bytes_pack_into_their_coefficients_and_reject_wide_bytes() {
+    assert_shifts_without_reduction(8, (1..8).map(|k| 8 * k));
+    let value = 0x8912_3456_789a_bcdeu64;
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let bytes = b.alloc_public_input_array::<8>("bytes");
+    let expected = b.public_input();
+    let packed = b.native_poly64_from_bytes(bytes).unwrap();
+    b.connect(packed, expected);
+    let circuit = b.build().unwrap();
+    let runs = |public: &[Poly64]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let mut public: Vec<Poly64> = value
+        .to_le_bytes()
+        .map(|byte| Poly64::new(byte.into()))
+        .to_vec();
+    public.push(Poly64::from_le_bytes(value.to_le_bytes()));
+    assert!(runs(&public));
+    let mut wrong = public.clone();
+    wrong[8] += Poly64::new(1 << 37);
+    assert!(!runs(&wrong), "changed packed cell");
+    let mut wide = public;
+    wide[2] += Poly64::new(1 << 8);
+    wide[3] += Poly64::ONE;
+    assert_eq!(
+        (0..8)
+            .map(|k| wide[k] * Poly64::new(1 << (8 * k)))
+            .sum::<Poly64>(),
+        wide[8]
+    );
+    assert!(!runs(&wide), "byte with coefficient 8");
+}
+
+/// A packed cell keeps its bytes' coordinates, so a later decomposition adds
+/// nothing, and bytes that are already checked cost one `mul_add` each.
+#[test]
+fn packed_poly64_bytes_record_their_coordinates() {
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let bytes = b.alloc_public_input_array::<8>("bytes");
+    let packed = b.native_poly64_from_bytes(bytes).unwrap();
+    let before = b.construction_usage().unwrap();
+    let bits = b.binary_decompose_coordinates(packed, 64).unwrap();
+    for (k, &byte) in bytes.iter().enumerate() {
+        let byte_bits = b.binary_decompose_coordinates(byte, 8).unwrap();
+        assert_eq!(bits[8 * k..8 * k + 8], byte_bits[..]);
+    }
+    assert_eq!(b.construction_usage().unwrap(), before);
+    let checked: [_; 8] = bits
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|byte| b.binary_recompose_coordinates(byte).unwrap())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let before = b.construction_usage().unwrap().expression_nodes;
+    b.native_poly64_from_bytes(checked).unwrap();
+    assert_eq!(b.construction_usage().unwrap().expression_nodes - before, 7);
+}

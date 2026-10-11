@@ -100,6 +100,33 @@ impl CircuitBuilder<Poly64> {
         Ok(words)
     }
 
+    /// Packs eight low-first bytes into the cell `sum_k bytes[k] * x^(8k)`,
+    /// which is `Poly64::from_le_bytes` of the bytes.
+    ///
+    /// Every byte is constrained to eight coordinates, which costs nothing
+    /// when its coordinates are already known. A byte of degree below eight
+    /// times `x^(8k)` has degree below 64, so the product only shifts its
+    /// coefficients up by `8 * k`, and the packed cell's coordinates are the
+    /// bytes' bits in order; they are recorded for later decompositions. IDs
+    /// must belong to this builder's graph.
+    pub fn native_poly64_from_bytes(
+        &mut self,
+        bytes: [ExprId; 8],
+    ) -> Result<ExprId, CircuitBuilderError> {
+        let mut bits = Vec::with_capacity(64);
+        for &byte in &bytes {
+            bits.extend(self.binary_decompose_coordinates(byte, 8)?);
+        }
+        let mut sum = bytes[0];
+        for (k, &byte) in bytes.iter().enumerate().skip(1) {
+            let shift = self.define_const(Poly64::new(1 << (8 * k)));
+            sum = self.mul_add(byte, shift, sum);
+        }
+        self.check_construction_limits()?;
+        self.record_native_coordinates(sum, &bits);
+        Ok(sum)
+    }
+
     pub const fn native_poly192_from_coefficients(
         &self,
         coefficients: [ExprId; 3],
