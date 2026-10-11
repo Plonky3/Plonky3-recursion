@@ -437,7 +437,7 @@ where
     {
         self.check_native_structure(base_mmcs, round_mmcs, commitment, points, proof)?;
         let mut staged = challenger.clone();
-        let captured = route(
+        let captured = route::<E, E, _>(
             self.routing.plan.num_variables,
             &self.routing.plan.protocol,
             points,

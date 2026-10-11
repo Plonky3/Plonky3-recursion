@@ -97,7 +97,7 @@ where
                 .ok_or(VerificationError::ResourceArithmeticOverflow {
                     component: "binary trace values",
                 })?;
-        route(
+        route::<E, E, _>(
             num_variables,
             protocol,
             &points,

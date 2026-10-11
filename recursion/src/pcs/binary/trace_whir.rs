@@ -479,7 +479,7 @@ impl BinaryBooleanWhirTraceVerifier {
         )?;
         let mut ch = target_challenger.clone();
         let plan = &self.routing.plan;
-        let captured = route(
+        let captured = route::<BinaryField128, BinaryField128, _>(
             plan.num_variables,
             &plan.protocol,
             points,
@@ -609,7 +609,7 @@ mod tests {
             // Also isolate the Boolean wrapper's checkpoint, before ring replay.
             let mut entry = Ch::from_hasher(vec![7, 19, 13], keccak::byte_hash());
             pcs.observe_commitment(&cap, &mut entry);
-            let captured = route(
+            let captured = route::<E, E, _>(
                 recursive.routing.plan.num_variables,
                 &recursive.routing.plan.protocol,
                 &points,

@@ -5,19 +5,19 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::marker::PhantomData;
 
-use p3_binary_field::{PackedGf2, Underlier};
+use p3_binary_field::{BitCoordinates, PackedGf2, TowerLevel, Underlier};
 use p3_binary_pcs::{
     BitOpening, BitReadings, BooleanBackend, BooleanMultilinearPcs, BooleanTraceCommitment,
-    BooleanTraceCommitmentProof, ChallengeField, Coordinates, FoldAlphabet,
+    BooleanTraceCommitmentProof,
 };
+use p3_challenger::fs::TranscriptField;
 use p3_challenger::{CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_field::Field;
+use p3_field::{ExtensionField, Field};
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::{OpeningProtocol, PrescribedOpeningSecurity, PrescribedPointPcs};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::RecursiveBinaryChallengeField;
 use crate::verifier::VerificationError;
 
 pub(super) struct TraceReadings<E> {
@@ -25,10 +25,11 @@ pub(super) struct TraceReadings<E> {
     pub readings: Vec<BitReadings<E>>,
 }
 
-/// Captures routing and the column transcript through the released adapter.
+/// Captures routing and the column transcript through the released adapter,
+/// over packed values of `F` and challenges of `E`.
 /// Its recorder's success is NOT verification. The real child verifier must
 /// subsequently check every captured reading and the commitment opening.
-pub(super) fn route<E, Ch>(
+pub(super) fn route<F, E, Ch>(
     num_variables: usize,
     protocol: &OpeningProtocol,
     points: &[Point<E>],
@@ -36,16 +37,12 @@ pub(super) fn route<E, Ch>(
     challenger: &mut Ch,
 ) -> Result<TraceReadings<E>, VerificationError>
 where
-    E: RecursiveBinaryChallengeField
-        + ChallengeField<E>
-        + FoldAlphabet<E>
-        + Coordinates
-        + Serialize
-        + DeserializeOwned,
-    Ch: FieldChallenger<E> + CanSampleUniformBits<E> + GrindingChallenger<Witness = E>,
+    F: TranscriptField + TowerLevel + Serialize + DeserializeOwned,
+    E: BitCoordinates + ExtensionField<F>,
+    Ch: FieldChallenger<F> + CanSampleUniformBits<F> + GrindingChallenger<Witness = F>,
 {
     let captured = Rc::new(RefCell::new(None));
-    let backend = Recorder {
+    let backend = Recorder::<F, E> {
         num_variables,
         captured: captured.clone(),
         field: PhantomData,
@@ -53,7 +50,7 @@ where
     let wrapper = BooleanTraceCommitment::<E, _>::from_commitment(backend);
     wrapper
         .verify_at(
-            &E::ZERO,
+            &F::ZERO,
             &BooleanTraceCommitmentProof {
                 values: values.to_vec(),
                 opening: (),
@@ -73,15 +70,19 @@ where
     Ok(result)
 }
 
-struct Recorder<E> {
+/// A bit commitment over packed values of `F` that records the readings it is asked to verify.
+struct Recorder<F, E> {
     num_variables: usize,
     captured: Rc<RefCell<Option<TraceReadings<E>>>>,
-    field: PhantomData<E>,
+    field: PhantomData<F>,
 }
 
-impl<E: Field + Serialize + DeserializeOwned> BooleanBackend<E> for Recorder<E> {
-    type Val = E;
-    type Commitment = E;
+impl<F, E> BooleanBackend<E> for Recorder<F, E>
+where
+    F: Field + Serialize + DeserializeOwned,
+{
+    type Val = F;
+    type Commitment = F;
     type ProverData = ();
     type Proof = ();
     type Error = &'static str;
@@ -90,18 +91,19 @@ impl<E: Field + Serialize + DeserializeOwned> BooleanBackend<E> for Recorder<E> 
     }
 }
 
-impl<E, Ch> BooleanMultilinearPcs<E, Ch> for Recorder<E>
+impl<F, E, Ch> BooleanMultilinearPcs<E, Ch> for Recorder<F, E>
 where
-    E: Field + Serialize + DeserializeOwned,
+    F: Field + Serialize + DeserializeOwned,
+    E: Field,
 {
-    fn observe_commitment(&self, _: &E, _: &mut Ch) {
+    fn observe_commitment(&self, _: &F, _: &mut Ch) {
         panic!("a routing recorder cannot bind commitments");
     }
     fn commit_bits<U: Underlier>(
         &self,
         _: &[PackedGf2<U>],
         _: &mut Ch,
-    ) -> Result<(E, ()), Self::Error> {
+    ) -> Result<(F, ()), Self::Error> {
         Err("a routing recorder cannot commit")
     }
     fn open_readings(
@@ -114,7 +116,7 @@ where
     }
     fn verify_readings(
         &self,
-        _: &E,
+        _: &F,
         openings: &[BitOpening<E>],
         readings: &[BitReadings<E>],
         _: &(),
@@ -143,7 +145,7 @@ where
     }
     fn verify_at_points(
         &self,
-        _: &E,
+        _: &F,
         _: &[Point<E>],
         _: &[E],
         _: &(),
