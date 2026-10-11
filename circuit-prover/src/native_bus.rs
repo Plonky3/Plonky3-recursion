@@ -1,8 +1,9 @@
 //! Compact native binary circuits with a product-bus wiring argument.
 //!
 //! A frozen fanout table repeats each canonical witness once per declared read.
-//! Adjacent copies with the same fixed ID must agree. Gate, public and Keccak
-//! boundaries exchange exactly those occurrences through native product buses;
+//! Adjacent copies with the same fixed ID must agree. Gate, public, Keccak
+//! boundary and BLAKE3 rows exchange exactly those occurrences through native
+//! product buses;
 //! no integer multiplicities or indexed pushforward vectors are used. Supply
 //! every AIR and its preprocessing to one native multi-STARK authority. Local
 //! AIR checks alone do not establish bus balance. These proofs are not hiding.
@@ -14,12 +15,14 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_blake3_air::NUM_BLAKE3_BINARY_COLS;
 use p3_bus::{
     BusActivation, BusBoundary, BusDirection, BusInteractionBuilder, BusName, BusNameError,
 };
 use p3_circuit::Circuit;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::{KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, NpoTypeId};
+use p3_circuit::ops::native_blake3::NATIVE_BLAKE3_OUTPUT_LIMBS;
+use p3_circuit::ops::{BLAKE3_INPUT_LIMBS, KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, NpoTypeId};
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::types::WitnessId;
 use p3_field::PrimeCharacteristicRing;
@@ -32,6 +35,10 @@ use crate::indexed::{IndexedCircuitError, cells, gate, padded_height, variables}
 use crate::native_binary::{
     KeccakCall, NativeBinaryCircuitError, eval_keccak_bits, keccak_bit_trace, keccak_calls,
     keccak_limb_expression, keccak_packed_words,
+};
+use crate::native_blake3::{
+    BLAKE3_PP, Blake3Call, blake3_calls, blake3_packed_words, blake3_preprocessed, blake3_trace,
+    eval_blake3,
 };
 use crate::primitive_plan::PrimitivePlan;
 
@@ -63,9 +70,21 @@ pub enum NativeBusCircuitError {
     LabelCapacity { label: usize, bits: usize },
     #[error("expected {expected} circuit public values, got {actual}")]
     PublicLength { expected: usize, actual: usize },
+    #[error(
+        "a native bus circuit commits one hash table, so it cannot mix Keccak-f and BLAKE3 calls"
+    )]
+    MixedHashTables,
+    #[error(
+        "native BLAKE3 operation {operation} requires one input group of 56 limbs and an output group of 16 or 32"
+    )]
+    Blake3Layout { operation: usize },
+    #[error("native BLAKE3 requires 16 coordinates, got {bits}")]
+    Blake3CoordinateWidth { bits: usize },
+    #[error("native BLAKE3 witness {witness} is outside the 16-coordinate limb span")]
+    InvalidBlake3Limb { witness: usize },
 }
 
-/// How the Keccak table is committed.
+/// How the hash table, Keccak or BLAKE3, is committed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum KeccakCommitment {
     /// One field element per cell, with the booleanity constraints in the AIR.
@@ -122,6 +141,11 @@ enum Table<F> {
         bits: bool,
     },
     Bridge(Arc<RowMajorMatrix<F>>),
+    Blake3 {
+        pp: Arc<RowMajorMatrix<F>>,
+        weights: [F; 16],
+        bits: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +160,7 @@ pub struct NativeBusCircuit<F> {
     width: usize,
     public: Vec<usize>,
     calls: Vec<KeccakCall>,
+    blake3_calls: Vec<Blake3Call>,
     fanout: Arc<Fanout>,
     gates: Arc<Gates<F>>,
     airs: Vec<NativeBusCircuitAir<F>>,
@@ -180,10 +205,11 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         )
     }
 
-    /// As [`Self::with_min_log_height_and_limits`], committing the Keccak table as `keccak`.
-    /// In [`KeccakCommitment::Bits`] mode the Keccak table is left out of
+    /// As [`Self::with_min_log_height_and_limits`], committing the hash table as `keccak`.
+    /// In [`KeccakCommitment::Bits`] mode the hash table is left out of
     /// [`Self::main_variables`] and its trace is requested through [`Self::trace_tables`];
-    /// `limits` charge its packed words, at `F::COORDINATE_BITS` bits a cell.
+    /// `limits` charge its packed words, at `F::COORDINATE_BITS` bits a cell. The circuit's
+    /// native hash calls must be all Keccak-f or all BLAKE3 compressions.
     pub fn with_options(
         circuit: &Circuit<F>,
         namespace: &str,
@@ -215,10 +241,21 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let plan = PrimitivePlan::with_supported_npos(
             circuit,
             limits,
-            &[NpoTypeId::native_keccak_f1600()],
+            &[
+                NpoTypeId::native_keccak_f1600(),
+                NpoTypeId::native_blake3_compress(),
+            ],
         )?;
         let calls = keccak_calls(circuit, true)?;
+        let blake3_calls = blake3_calls(circuit)?;
+        if !calls.is_empty() && !blake3_calls.is_empty() {
+            return Err(NativeBusCircuitError::MixedHashTables);
+        }
         let swapped_calls = calls.iter().filter(|call| call.swapped.is_some()).count();
+        let blake3_swapped_calls = blake3_calls
+            .iter()
+            .filter(|call| call.swapped.is_some())
+            .count();
         let gate_occurrences = plan.constraints.iter().try_fold(0, |total, constraint| {
             let (_, selector, _) = gate(constraint);
             add(
@@ -231,8 +268,17 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let n = add(
             add(gate_occurrences, plan.public.len())?,
             add(
-                cells(calls.len(), 2 * KECCAK_STATE_LIMBS)?,
-                cells(swapped_calls, KECCAK256_DIGEST_LIMBS)?,
+                add(
+                    cells(calls.len(), 2 * KECCAK_STATE_LIMBS)?,
+                    cells(swapped_calls, KECCAK256_DIGEST_LIMBS)?,
+                )?,
+                add(
+                    cells(
+                        blake3_calls.len(),
+                        BLAKE3_INPUT_LIMBS + NATIVE_BLAKE3_OUTPUT_LIMBS,
+                    )?,
+                    cells(blake3_swapped_calls, NATIVE_BLAKE3_OUTPUT_LIMBS)?,
+                )?,
             )?,
         )?;
         let witness_height = padded_height(n.max(minimum_height))?;
@@ -241,10 +287,12 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         } else {
             padded_height(plan.constraints.len().max(minimum_height))?
         };
-        let hash_height = if calls.is_empty() {
-            0
-        } else {
+        let hash_height = if !calls.is_empty() {
             padded_height(cells(calls.len(), KECCAK_BINARY_ROWS_PER_PERM)?.max(minimum_height))?
+        } else if !blake3_calls.is_empty() {
+            padded_height(blake3_calls.len().max(minimum_height))?
+        } else {
+            0
         };
         let bridge_height = if calls.is_empty() {
             0
@@ -257,9 +305,19 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             }
             .into());
         }
+        if !blake3_calls.is_empty() && F::COORDINATE_BITS < 16 {
+            return Err(NativeBusCircuitError::Blake3CoordinateWidth {
+                bits: F::COORDINATE_BITS,
+            });
+        }
         // IDs and boundary tags, rather than fanout row numbers, are bus labels.
         label::<F>(plan.width.max(cells(calls.len(), 2)?))?;
-        let hash_cells = cells(hash_height, HASH_WIDTH)?;
+        let (hash_width, hash_pp) = if blake3_calls.is_empty() {
+            (HASH_WIDTH, 3)
+        } else {
+            (NUM_BLAKE3_BINARY_COLS, BLAKE3_PP)
+        };
+        let hash_cells = cells(hash_height, hash_width)?;
         let main_cells = add(
             add(witness_height, cells(gate_height, 5)?)?,
             add(
@@ -272,7 +330,10 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         )?;
         let pp_cells = add(
             add(cells(witness_height, 4)?, cells(gate_height, GATE_PP)?)?,
-            add(cells(hash_height, 3)?, cells(bridge_height, BRIDGE_PP)?)?,
+            add(
+                cells(hash_height, hash_pp)?,
+                cells(bridge_height, BRIDGE_PP)?,
+            )?,
         )?;
         // The bus uses the bit matrix, dense or packed, directly. Only an
         // enlarged minimum height needs an old allocation alongside the final one.
@@ -288,7 +349,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         };
         let hash_temporary = cells(temporary_height, NUM_KECCAK_BINARY_COLS)?;
         let field_cells = add(main_cells, pp_cells)?;
-        // `traces` builds the dense Keccak table in either mode.
+        // `traces` builds the dense hash table in either mode.
         let dense_cells = add(
             add(field_cells, if bits { hash_cells } else { 0 })?,
             hash_temporary,
@@ -297,7 +358,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             add(
                 field_cells,
                 add(
-                    packed_cells::<F>(hash_height, HASH_WIDTH)?,
+                    packed_cells::<F>(hash_height, hash_width)?,
                     packed_cells::<F>(temporary_height, HASH_WIDTH)?,
                 )?,
             )?
@@ -343,6 +404,9 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     .chain(swapped)
                     .map(|&w| w + 1),
             );
+        }
+        for call in &blake3_calls {
+            occurrences.extend(call.ids().map(|&w| w + 1));
         }
         occurrences.sort_unstable();
         let fanout = Arc::new(Fanout {
@@ -411,10 +475,22 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             )))));
             log_heights.push(bridge_height.ilog2() as usize);
         }
+        if !blake3_calls.is_empty() {
+            let weights = core::array::from_fn(|i| {
+                F::from_raw_coordinates(1 << i).expect("validated limb width")
+            });
+            airs.push(air(Table::Blake3 {
+                pp: Arc::new(blake3_preprocessed(&blake3_calls, hash_height, label::<F>)?),
+                weights,
+                bits,
+            }));
+            log_heights.push(hash_height.ilog2() as usize);
+        }
         Ok(Self {
             width: plan.width,
             public: plan.public,
             calls,
+            blake3_calls,
             fanout,
             gates,
             airs,
@@ -481,7 +557,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             .collect())
     }
 
-    /// Dense main traces of every table, including the Keccak table in either mode. The
+    /// Dense main traces of every table, including the hash table in either mode. The
     /// construction limits bound the dense geometry, which [`KeccakCommitment::Bits`] mode
     /// charges here rather than at construction.
     pub fn traces(
@@ -503,7 +579,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             .collect())
     }
 
-    /// Main traces of every table, with the Keccak table as packed bits in
+    /// Main traces of every table, with the hash table as packed bits in
     /// [`KeccakCommitment::Bits`] mode.
     pub fn trace_tables(
         &self,
@@ -539,6 +615,13 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             if packed && matches!(air.table, Table::Keccak { bits: true, .. }) {
                 traces.push(NativeBusTrace::PackedBits {
                     words: keccak_packed_words(&self.calls, witness, height)?,
+                    log_height: log,
+                });
+                continue;
+            }
+            if packed && matches!(air.table, Table::Blake3 { bits: true, .. }) {
+                traces.push(NativeBusTrace::PackedBits {
+                    words: blake3_packed_words(&self.blake3_calls, witness, height)?,
                     log_height: log,
                 });
                 continue;
@@ -592,6 +675,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     }
                     RowMajorMatrix::new(values, BRIDGE_WIDTH)
                 }
+                Table::Blake3 { .. } => blake3_trace(&self.blake3_calls, witness, height)?,
             };
             traces.push(NativeBusTrace::Dense(trace));
         }
@@ -691,10 +775,14 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Public(ids) => ids.len(),
             Table::Keccak { .. } => HASH_WIDTH,
             Table::Bridge(_) => BRIDGE_WIDTH,
+            Table::Blake3 { .. } => NUM_BLAKE3_BINARY_COLS,
         }
     }
     fn assumes_boolean_trace(&self) -> bool {
-        matches!(self.table, Table::Keccak { bits: true, .. })
+        matches!(
+            self.table,
+            Table::Keccak { bits: true, .. } | Table::Blake3 { bits: true, .. }
+        )
     }
     fn num_public_values(&self) -> usize {
         match &self.table {
@@ -709,13 +797,16 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Public(_) => 0,
             Table::Keccak { .. } => 3,
             Table::Bridge(_) => BRIDGE_PP,
+            Table::Blake3 { .. } => BLAKE3_PP,
         }
     }
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
         match &self.table {
             Table::Witness(fanout) => Some(fanout.preprocessed()),
             Table::Gates(gates) => Some(gates.preprocessed()),
-            Table::Bridge(pp) | Table::Keccak { pp, .. } => Some(pp.as_ref().clone()),
+            Table::Bridge(pp) | Table::Keccak { pp, .. } | Table::Blake3 { pp, .. } => {
+                Some(pp.as_ref().clone())
+            }
             Table::Public(_) => None,
         }
     }
@@ -834,6 +925,14 @@ where
                     BusActivation::Boolean(pp[BRIDGE_ACTIVE].into()),
                 );
             }
+            Table::Blake3 { weights, bits, .. } => eval_blake3(
+                b,
+                row,
+                pp,
+                weights,
+                *bits,
+                BusName::new(self.witness_bus.as_ref()),
+            ),
         }
     }
 }

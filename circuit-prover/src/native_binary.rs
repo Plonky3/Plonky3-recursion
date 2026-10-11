@@ -361,8 +361,12 @@ pub(crate) fn keccak_calls<F: Field>(
     let mut calls = Vec::new();
     for (operation, op) in circuit.ops.iter().enumerate() {
         if let Op::NonPrimitiveOpWithExecutor {
-            inputs, outputs, ..
+            inputs,
+            outputs,
+            executor,
+            ..
         } = op
+            && executor.op_type() == &NpoTypeId::native_keccak_f1600()
         {
             // The primitive plan has already rejected unrecognized identities
             // and validated all witness IDs. Validate the supported shape too.

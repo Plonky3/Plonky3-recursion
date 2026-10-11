@@ -944,6 +944,7 @@ dependencies = [
  "p3-poseidon2",
  "p3-poseidon2-air",
  "p3-poseidon2-circuit-air",
+ "p3-sumcheck",
  "p3-symmetric",
  "p3-test-utils",
  "p3-uni-stark",
