@@ -340,25 +340,36 @@ fn second_layer_is_bounded_and_refuses_forged_proof_fields(case: &Case) {
                 if op == NpoTypeId::native_keccak_f1600()
         ));
     }
-    // A cap limb reaches the transcript as a word. In a WHIR round cap it is
-    // a native Keccak lane of the next refill, which refuses a seventeenth
-    // coordinate; the commitment cap, absorbed after the odd-length initial
-    // bytes, is split into checked bytes. A flipped limb changes the draws.
+    // A cap limb reaches the transcript as a word, and a flipped limb changes
+    // the draws. In a WHIR round cap it is a native Keccak lane of the next
+    // refill, which refuses a seventeenth coordinate. The commitment cap,
+    // absorbed after the odd-length initial bytes, is split into checked
+    // bytes, which recompose only the limb's low sixteen coordinates and so
+    // conflict with a limb that has a seventeenth. The forged limb also has a
+    // changed low coordinate, which the cap's Merkle root does not have.
+    let commitment = targets.commitment[0][5];
     let round_cap = targets.opening.rounds[0].cap[0][5];
-    for (limb, lane) in [(targets.commitment[0][5], false), (round_cap, true)] {
+    for limb in [commitment, round_cap] {
         assert!(private[position(limb)].to_raw_coordinates() < 1 << 16);
         assert!(forge(limb, F::ONE).is_err());
-        let refused = forge(limb, wide);
-        assert!(refused.is_err());
-        assert!(
-            !lane
-                || matches!(
-                    refused,
-                    Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
-                        if op == NpoTypeId::native_keccak_f1600()
-                )
-        );
     }
+    assert!(matches!(
+        forge(round_cap, wide),
+        Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
+            if op == NpoTypeId::native_keccak_f1600()
+    ));
+    let delta = F::from_raw_coordinates((1 << 16) | 1).unwrap();
+    let forged = private[position(commitment)] + delta;
+    let low = F::from_raw_coordinates(forged.to_raw_coordinates() & 0xffff).unwrap();
+    let refused = forge(commitment, delta);
+    assert!(
+        matches!(
+            &refused,
+            Err(CircuitError::WitnessConflict { existing, new, .. })
+                if *existing == format!("{forged:?}") && *new == format!("{low:?}")
+        ),
+        "{refused:?}"
+    );
     // An opened Keccak column value changes the transcript and the claims.
     let opened = targets.opening.evals[keccak].current()[0].as_expr();
     assert!(forge(opened, F::ONE).is_err());
