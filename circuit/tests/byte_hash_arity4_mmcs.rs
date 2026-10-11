@@ -417,6 +417,22 @@ fn prime_openings_match_p3_arity_four_trees() {
     check_openings::<BabyBear, PrimeBinaryEncoding<BabyBear>>(&prime());
 }
 
+/// Every height ladder of up to sixteen rows, one index each: the root binds
+/// the level each shorter matrix is injected at, which the schedule parity
+/// tests do not compare.
+#[test]
+fn native_openings_match_p3_arity_four_trees_for_every_small_height_ladder() {
+    for max_height in 1..=16usize {
+        for mask in 0..1u64 << max_height.next_power_of_two().ilog2() {
+            let heights = ladder(max_height, mask);
+            let index = mask as usize % max_height;
+            for words in [false, true] {
+                check_opening::<Poly64, NativeBinaryEncoding>(&native(), &heights, 0, index, words);
+            }
+        }
+    }
+}
+
 /// Index bits are Boolean. The first four rows of a sixteen-row matrix are
 /// equal, so an opening of index 0 places the same digest in every slot of
 /// the first level whatever the flags of that level's two index bits: the
