@@ -53,7 +53,7 @@ use alloc::{format, vec};
 use p3_binary_field::{Poly64, Poly192};
 use p3_circuit::ops::NativePoly192Target;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{Field, PrimeCharacteristicRing};
 
 /// Rows of the tensor: the coordinates of one Poly192 element.
 const ROWS: usize = 192;
@@ -302,9 +302,9 @@ pub fn closing_weight_native_poly(
         })
         .transpose()?;
 
-    let (limb_weights, weights) = batch_tables(b, batch);
+    let limb_weights = equality_table(b, &batch[..BATCHED - ABSORBED]);
     b.check_construction_limits()?;
-    let g = poly64_coefficients(b, &weights)?;
+    let g = poly64_coefficients(b, &batch[BATCHED - ABSORBED..])?;
     let h = subfield_coefficients(b, &limb_weights[..LIMBS]);
     // The pair (m, r) is the map j with j mod 64 = m and j mod 3 = r, so the
     // pairs run over all 192 maps, and c_j = g_m * h_r.
@@ -440,25 +440,60 @@ fn batch_tables(
     (equality_table(b, outer), equality_table(b, inner))
 }
 
-/// `g_m = sum_i f_i * delta_i^(2^m)` for `m < 64`, with `f` the inner batching
-/// table and `delta` the Poly64 trace-dual basis.
+/// `g_m = sum_i eq(point, i) * delta_i^(2^m)` for the six inner batching coordinates.
+/// For `f(X) = X^64 + X^4 + X^3 + X + 1`, the dual of `X^i` is
+/// `(X^(63-i) + [i<=3] X^(3-i) + [i<=2] X^(2-i) + [i=0]) / f'(X)`.
+/// The leading powers factor over the six index bits; only four correction
+/// terms remain. All Frobenius powers here are constants in Poly64.
 fn poly64_coefficients(
     b: &mut CircuitBuilder<Poly64>,
-    weights: &[Limbs],
+    point: &[NativePoly192Target],
 ) -> Result<Vec<Limbs>, CircuitBuilderError> {
-    let mut duals = poly64_trace_dual_basis();
+    let one = one(b);
+    let mut prefix = one;
+    for r in &point[..ABSORBED - 2] {
+        let factor = add3(b, one, *r.coefficients());
+        prefix = mul3(b, prefix, factor);
+    }
+    let correction_weights: Vec<_> = equality_table(b, &point[ABSORBED - 2..])
+        .into_iter()
+        .map(|weight| mul3(b, prefix, weight))
+        .collect();
+    let mut powers = [Poly64::new(2); COLUMNS];
+    for j in 1..COLUMNS {
+        powers[j] = powers[j - 1].square();
+    }
+    // f'(X) = X² + 1, and the four residual numerators are
+    // X³ + X² + 1, X² + X, X + 1, and 1.
+    let mut inverse_derivative = Poly64::new(5).inverse();
+    let mut corrections = [13, 6, 3, 1].map(|raw| Poly64::new(raw) * inverse_derivative);
     let mut coefficients = Vec::with_capacity(COLUMNS);
-    for _ in 0..COLUMNS {
-        let mut coefficient = [ExprId::ZERO; LIMBS];
-        for (weight, dual) in weights.iter().zip(&mut duals) {
-            let constant = b.define_const(*dual);
-            for (sum, &weight) in coefficient.iter_mut().zip(weight) {
-                *sum = fma(b, weight, constant, *sum);
-            }
-            // Advance delta_i^(2^m) to the next power's constant.
-            *dual = dual.square();
+    for j in 0..COLUMNS {
+        let mut product = one;
+        for k in 0..ABSORBED {
+            let a = powers[(j + k) % COLUMNS];
+            let scale = if k == 0 {
+                inverse_derivative
+            } else {
+                Poly64::ONE
+            };
+            let slope = b.define_const((Poly64::ONE + a) * scale);
+            let intercept = b.define_const(a * scale);
+            let r = point[ABSORBED - 1 - k].coefficients();
+            let factor = [
+                b.mul_add(r[0], slope, intercept),
+                b.mul(r[1], slope),
+                b.mul(r[2], slope),
+            ];
+            product = mul3(b, product, factor);
         }
-        coefficients.push(coefficient);
+        for (weight, correction) in correction_weights.iter().zip(&mut corrections) {
+            let constant = b.define_const(*correction);
+            product = core::array::from_fn(|k| b.mul_add(weight[k], constant, product[k]));
+            *correction = correction.square();
+        }
+        coefficients.push(product);
+        inverse_derivative = inverse_derivative.square();
         b.check_construction_limits()?;
     }
     Ok(coefficients)

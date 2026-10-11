@@ -664,7 +664,7 @@ fn node_counts_at_the_native_fixed_point() {
     assert!(carry_and_last <= 29_947);
     assert!(first_rows <= 1_725);
     assert!(shared_rows <= 1_464);
-    assert!(closing <= 126_322);
+    assert!(closing <= 95_000, "closing weight uses {closing} nodes");
     // The later readings reuse the batching point's equality tables.
     assert!(shared_rows < first_rows);
     assert!(column_connects >= ROWS * CHECKED_ROW_CONNECTS);

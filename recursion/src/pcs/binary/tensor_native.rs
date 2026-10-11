@@ -249,21 +249,53 @@ pub fn closing_weight_native(
         images.push(image);
         b.check_construction_limits()?;
     }
-    let weights = equality_table(b, batch);
-    let mut duals = binary128_trace_dual_basis();
+    let coefficients = closing_coefficients(b, batch)?;
     let mut weight = ExprId::ZERO;
-    for image in images {
-        let mut coefficient = ExprId::ZERO;
-        for (&eq, dual) in weights.iter().zip(&mut duals) {
-            let constant = b.define_const(*dual);
-            coefficient = b.mul_add(eq, constant, coefficient);
-            // Advance delta_u^(2^j) to the next map's constant.
-            *dual = dual.square();
-        }
+    for (coefficient, image) in coefficients.into_iter().zip(images) {
         weight = b.mul_add(coefficient, image, weight);
         b.check_construction_limits()?;
     }
     Ok(b.native_tower128_from_expr(weight))
+}
+
+/// The absolute trace-dual factors through the seven quadratic extensions.
+/// For `X_k² + alpha_k X_k + 1 = 0`, the relative duals of `1, X_k` are
+/// `d0 = 1 + X_k / alpha_k` and `d1 = 1 / alpha_k`. Thus
+/// `c_j = product_k (d0^(2^j) + r_k (d0 + d1)^(2^j))`.
+/// Each partial product has Frobenius period `2^(k + 1)`, so compute it
+/// once per period. The batching point indexes the raw basis most-significant-bit first.
+fn closing_coefficients(
+    b: &mut CircuitBuilder<BinaryField128>,
+    batch: &[NativeTower128Target],
+) -> Result<Vec<ExprId>, CircuitBuilderError> {
+    let mut coefficients = vec![b.define_const(BinaryField128::ONE)];
+    for k in 0..LOG_DIMENSION {
+        let (mut d0, mut d1) = if k == 0 {
+            (BinaryField128::from_repr(3), BinaryField128::ONE)
+        } else {
+            // alpha_k = X_(k-1), whose inverse is X_(k-1) + alpha_(k-1).
+            let top = 1usize << k;
+            let alpha = 1usize << (k - 1);
+            let beta = if k == 1 { 0 } else { 1usize << (k - 2) };
+            (
+                BinaryField128::from_repr(1 | (1u128 << (top + alpha)) | (1u128 << (top + beta))),
+                BinaryField128::from_repr((1u128 << alpha) | (1u128 << beta)),
+            )
+        };
+        let period = 1usize << (k + 1);
+        let mut next = Vec::with_capacity(period);
+        for j in 0..period {
+            let intercept = b.define_const(d0);
+            let slope = b.define_const(d0 + d1);
+            let factor = b.mul_add(batch[LOG_DIMENSION - 1 - k].as_expr(), slope, intercept);
+            next.push(b.mul(coefficients[j % coefficients.len()], factor));
+            d0 = d0.square();
+            d1 = d1.square();
+        }
+        coefficients = next;
+        b.check_construction_limits()?;
+    }
+    Ok(coefficients)
 }
 
 /// The trace-dual of the raw Tower128 coordinate basis, `beta_w` being the

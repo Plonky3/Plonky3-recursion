@@ -485,6 +485,39 @@ fn closing_weight_matches_prime_weight_beyond_the_kept_block() {
     }
 }
 
+#[test]
+fn closing_weight_fits_the_factored_coefficient_budget() {
+    let mut sampler = Sampler(0xc0ef_facc);
+    let high = sampler.fields(10);
+    let survivor = sampler.fields(10);
+    let batch = sampler.fields(ABSORBED);
+    let low = sampler.fields(ABSORBED);
+    let alpha = sampler.field();
+    let expected = released_closing_weight(&high, &low, &survivor, &batch, Some((10, alpha)));
+    let mut n = Native::new();
+    let high = n.inputs(&high);
+    let survivor = n.inputs(&survivor);
+    let batch = n.inputs(&batch);
+    let alpha = n.input(alpha);
+    let actual =
+        closing_weight_native(&mut n.b, &high, &survivor, &batch, Some((10, &alpha))).unwrap();
+    n.expect(&actual, expected);
+    let (circuit, public, private) = n.build();
+    assert!(accepts(&circuit, &public, &private));
+    let operations = circuit
+        .ops
+        .iter()
+        .filter(|op| matches!(op, p3_circuit::Op::Alu { .. }))
+        .count();
+    assert!(
+        operations <= 8_300,
+        "closing weight uses {operations} ALU operations"
+    );
+    let mut wrong = public;
+    wrong[0] += F::ONE;
+    assert!(!accepts(&circuit, &wrong, &private));
+}
+
 /// Node counts at the native recursion fixed point: 21 high coordinates, ten
 /// kept row variables. Bounds are 1.2 times the measured counts.
 ///
@@ -582,7 +615,7 @@ fn readings_stop_at_the_node_budget() {
     tensor.column(&mut n.b, 0).unwrap();
     assert!(budget_error(tensor.column(&mut n.b, 1)));
 
-    // The fixed-point closing weight adds about 40k nodes. No stretch between
+    // The fixed-point closing weight adds about 13k nodes. No stretch between
     // its checkpoints adds more than a few hundred.
     let budget = 4096;
     let mut n = Native::with_node_budget(budget);
