@@ -363,6 +363,11 @@ fn n10_n15_final_phase_binds_field_queries_width_polynomial_and_required_sumchec
         proof.rounds[0].whir.final_sumcheck = Some(sumcheck(rounds, 0));
         fixture.assert_rejected(&proof, &fixture.caps, "final sumcheck");
     }
+    for rounds in [0, 1] {
+        let mut proof = fixture.proof.clone();
+        proof.rounds[1].whir.final_sumcheck = Some(sumcheck(rounds, 0));
+        fixture.assert_rejected(&proof, &fixture.caps, "final sumcheck");
+    }
 }
 
 #[test]

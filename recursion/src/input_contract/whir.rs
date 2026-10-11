@@ -289,8 +289,8 @@ where
         usage.add_scalar_elements(limits, 1)?;
         add_query_resources(&mut usage, limits, &proof.final_openings)?;
         if let Some(final_sumcheck) = &proof.final_sumcheck {
-            // Native WHIR may semantically ignore a present zero-round block;
-            // it still selects proof shape and therefore consumes its budget.
+            // A present block consumes budget whatever the schedule's round
+            // count; the context check rejects one that no closing round reads.
             add_sumcheck_resources(&mut usage, limits, final_sumcheck)?;
         }
     }
@@ -607,10 +607,13 @@ where
         "final",
     )?;
     match (&proof.whir.final_sumcheck, params.final_sumcheck_rounds) {
-        // Native WHIR returns before reading an optional payload when the
-        // configured final sumcheck has no rounds. Keep the payload in the
-        // retained allocation shape, but do not assign it semantic counts.
-        (Some(_), 0) => {}
+        // Native WHIR refuses final sumcheck data when the schedule plays no
+        // closing rounds.
+        (Some(_), 0) => {
+            return Err(VerificationError::InvalidProofShape(
+                "WHIR zero-round final sumcheck must be absent".into(),
+            ));
+        }
         (Some(sumcheck), rounds) => {
             validate_sumcheck(sumcheck, rounds, params.final_folding_pow_bits, "final")?;
         }
@@ -1247,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_whir_n10_n15_context_binds_last_argument_and_ignored_payload_shape() {
+    fn checked_whir_n10_n15_context_binds_last_argument_and_zero_round_final_payload() {
         let (proof, params, layout, caps) = canonical_two_argument_fixture();
         let cap_refs = caps.iter().collect::<Vec<_>>();
         let retained = <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_context(
@@ -1273,27 +1276,27 @@ mod tests {
             .is_err()
         );
 
-        let mut fresh_ignored = proof.clone();
-        fresh_ignored.rounds[1].whir.final_sumcheck = Some(sc(3, 5));
+        let mut zero_round_payload = proof.clone();
+        zero_round_payload.rounds[1].whir.final_sumcheck = Some(sc(3, 5));
         assert!(
             <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_context(
-                &fresh_ignored,
+                &zero_round_payload,
                 &params,
                 layout.opening_view(),
                 &cap_refs,
             )
-            .is_ok(),
-            "zero-round final payload is semantically ignored"
+            .is_err(),
+            "native WHIR refuses final sumcheck data that no closing round reads"
         );
         assert!(
             <Targets as CheckedWhirOpening<F, EF, CapTargets>>::validate_whir_replacement(
-                &fresh_ignored,
+                &zero_round_payload,
                 &retained,
                 layout.opening_view(),
                 &cap_refs,
             )
             .is_err(),
-            "a fresh-valid ignored payload still changes an existing circuit's allocation"
+            "a retained circuit refuses the same zero-round final payload"
         );
 
         let mut alternate_cap = proof.clone();
