@@ -53,7 +53,7 @@ pub(super) fn native_bus(circuit: &Circuit<F>, keccak: KeccakCommitment) -> Nati
 }
 
 /// Every table as proven: dense tables as field cells, the bit-committed one as packed bits.
-fn tables(traces: Vec<NativeBusTrace<F>>) -> Vec<Table<F>> {
+pub(super) fn tables(traces: Vec<NativeBusTrace<F>>) -> Vec<Table<F>> {
     traces
         .into_iter()
         .map(|trace| match trace {

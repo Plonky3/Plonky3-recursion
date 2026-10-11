@@ -1,17 +1,23 @@
 //! Native product buses bind every fixed circuit occurrence without pushforwards.
 
+use core::borrow::Borrow;
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use p3_air::{BaseAir, check_constraints};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
+use p3_blake3::Blake3;
+use p3_blake3_air::{Blake3BinaryCols, NUM_BLAKE3_BINARY_COLS};
 use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{
-    ByteHash, KECCAK_STATE_LIMBS, KECCAK256_RATE_BYTES, bytes_to_limbs, keccak_limbs_to_state,
-    keccak_state_to_limbs,
+    BLAKE3_INPUT_WORDS, ByteHash, KECCAK_STATE_LIMBS, KECCAK256_RATE_BYTES, NpoTypeId,
+    blake3_compress, bytes_to_limbs, keccak_limbs_to_state, keccak_state_to_limbs, limbs_to_words,
+    words_to_limbs,
 };
+use p3_circuit::tables::WitnessTrace;
 use p3_circuit::{AluOpKind, Circuit, CircuitBuilder, ExprId, Op, WitnessId};
 use p3_circuit_prover::native_bus::{NativeBusCircuit, NativeBusCircuitAir};
 use p3_field::{Field, PrimeCharacteristicRing};
@@ -1783,4 +1789,469 @@ fn sparse_poly_coordinate_proof_rejects_non_boolean_hints() {
         Poly64::new(1u64 << 61),
         poly64_accepts,
     );
+}
+
+fn limb_value<F: BinaryCoordinateField>(limb: u16) -> F {
+    F::from_raw_coordinates(limb.into()).unwrap()
+}
+
+/// `calls` chained BLAKE3 compressions of one public block: call `i` compresses it from the
+/// previous chaining value, the public one for the first call, with counter `i`. The last
+/// chaining value is bound to public values. Returns the circuit and its statement.
+fn blake3_chain<F: BinaryCoordinateField>(calls: usize) -> (Circuit<F>, Vec<F>) {
+    let tail = |call: usize| [call as u32, 0, 64, 0];
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let block = b.alloc_public_input_array::<32>("block");
+    let mut cv = b.alloc_public_input_array::<16>("chaining value");
+    for call in 0..calls {
+        let mut input: Vec<_> = block.iter().chain(&cv).copied().collect();
+        for limb in words_to_limbs(&tail(call)) {
+            input.push(b.define_const(limb_value(limb)));
+        }
+        cv = b.add_native_blake3_compress(&input).unwrap();
+    }
+    for actual in cv {
+        let expected = b.public_input();
+        b.connect(actual, expected);
+    }
+    let circuit = b.build().unwrap();
+
+    let block: [u32; 16] = core::array::from_fn(|j| (j as u32 + 1).wrapping_mul(0x9E37_79B1));
+    let mut cv: [u32; 8] =
+        core::array::from_fn(|j| 0x6A09_E667_u32.rotate_left(5 * j as u32) ^ j as u32);
+    let mut statement = words_to_limbs(&block);
+    statement.extend(words_to_limbs(&cv));
+    for call in 0..calls {
+        let mut input = [0; BLAKE3_INPUT_WORDS];
+        input[..16].copy_from_slice(&block);
+        input[16..24].copy_from_slice(&cv);
+        input[24..].copy_from_slice(&tail(call));
+        cv = core::array::from_fn(|j| blake3_compress(&input)[j]);
+    }
+    statement.extend(words_to_limbs(&cv));
+    (circuit, statement.into_iter().map(limb_value).collect())
+}
+
+/// The inputs and outputs of the native BLAKE3 compressions of a circuit, in call order.
+fn blake3_calls<F: Field>(circuit: &Circuit<F>) -> Vec<(Vec<WitnessId>, Vec<WitnessId>)> {
+    circuit
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor {
+                inputs,
+                outputs,
+                executor,
+                ..
+            } if executor.op_type() == &NpoTypeId::native_blake3_compress() => {
+                Some((inputs[0].clone(), outputs[0].clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The BLAKE3 table is the last AIR of a native bus circuit.
+fn blake3_table<F: BinaryCoordinateField>(prepared: &NativeBusCircuit<F>) -> usize {
+    assert_eq!(prepared.packed_table_index(), None);
+    prepared.airs().len() - 1
+}
+
+/// The column of `cell` in a row of the BLAKE3 table.
+fn blake3_column(cell: impl Fn(&Blake3BinaryCols<usize>) -> usize) -> usize {
+    let indices: Vec<usize> = (0..NUM_BLAKE3_BINARY_COLS).collect();
+    cell(indices.as_slice().borrow())
+}
+
+fn witness_values<F: BinaryCoordinateField>(witness: &WitnessTrace<F>) -> Vec<F> {
+    witness
+        .index
+        .iter()
+        .map(|&id| *witness.get_value(id).unwrap())
+        .collect()
+}
+
+#[test]
+fn native_blake3_chain_proves_over_tower128() {
+    let (circuit, statement) = blake3_chain::<F>(3);
+    let prepared = NativeBusCircuit::new(&circuit, "blake3").unwrap();
+    let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec(&prepared),
+        &VerifierLimits {
+            max_rounds: 256,
+            max_metadata_entries: 1 << 20,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let traces = prepared
+        .traces(&runner.run().unwrap().witness_trace)
+        .unwrap();
+    let proof = prover.prove(&public, traces).unwrap();
+    assert!(proof.indexed.is_none());
+    assert!(proof.bus.is_some());
+    authority.verify_native(&proof, &public).unwrap();
+    let mut wrong = public;
+    *wrong
+        .iter_mut()
+        .find(|v| !v.is_empty())
+        .unwrap()
+        .last_mut()
+        .unwrap() += F::ONE;
+    assert!(authority.verify_native(&proof, &wrong).is_err());
+}
+
+#[test]
+fn native_blake3_chain_proves_over_poly64() {
+    use p3_binary_field::Poly64;
+    let (circuit, statement) = blake3_chain::<Poly64>(2);
+    let prepared = NativeBusCircuit::new(&circuit, "blake3").unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let traces = prepared
+        .traces(&runner.run().unwrap().witness_trace)
+        .unwrap();
+    assert!(poly64_accepts(&prepared, public)(traces));
+}
+
+/// 3073 public bytes are four chunks, the last a single byte: forty-nine leaf compressions and
+/// three parents. The circuit's digest is the BLAKE3 digest of the bytes. Returns the prepared
+/// circuit, its public values and its dense traces.
+fn blake3_multi_chunk_bytes() -> (NativeBusCircuit<F>, Vec<Vec<F>>, Vec<RowMajorMatrix<F>>) {
+    const BYTES: usize = 3073;
+    let message: Vec<u8> = (0..BYTES).map(|i| (i * 31 + 7) as u8).collect();
+    let digest = Blake3.hash_iter(message.iter().copied());
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let input = b.alloc_public_inputs(BYTES, "message");
+    let expected = b.alloc_public_input_array::<32>("digest");
+    let actual = b.native_blake3_bytes(&input).unwrap();
+    for (&actual, &expected) in actual.iter().zip(&expected) {
+        b.connect(actual, expected);
+    }
+    let circuit = b.build().unwrap();
+    assert_eq!(blake3_calls(&circuit).len(), 52);
+    let statement: Vec<_> = message
+        .iter()
+        .chain(&digest)
+        .map(|&byte| F::from_raw_coordinates(byte.into()).unwrap())
+        .collect();
+    let prepared = NativeBusCircuit::new(&circuit, "bytes").unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let traces = prepared
+        .traces(&runner.run().unwrap().witness_trace)
+        .unwrap();
+    (prepared, public, traces)
+}
+
+/// The runner accepts the p3 digest of the multi-chunk message, and every table satisfies its
+/// local constraints over the circuit's traces.
+#[test]
+fn native_blake3_bytes_satisfy_every_table_for_a_multi_chunk_message() {
+    let (prepared, public, traces) = blake3_multi_chunk_bytes();
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+}
+
+#[test]
+#[ignore = "proves 3073 bytes in about 330 s in debug; run explicitly"]
+fn native_blake3_bytes_prove_the_digest_of_a_multi_chunk_message() {
+    let (prepared, public, traces) = blake3_multi_chunk_bytes();
+    assert!(tower_accepts(&prepared, public)(traces));
+}
+
+/// A message limb reaches the table as a block input. A limb with a seventeenth coordinate
+/// passes the fanout and gate rows; the table's bits cannot carry it, so the witness bus
+/// refuses the traces, and lifting the limb's lowest bit to carry it leaves a cell outside
+/// {0, 1}, which the dense table refuses. `LIMBS` private limbs span three blocks.
+#[test]
+fn native_blake3_blocks_range_check_message_limbs() {
+    const LIMBS: usize = 80;
+    let limbs: Vec<u16> = (0..LIMBS as u16)
+        .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
+        .collect();
+    let bytes: Vec<u8> = limbs.iter().flat_map(|limb| limb.to_le_bytes()).collect();
+    let digest = Blake3.hash_iter(bytes.iter().copied());
+
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let expected = b.alloc_public_input_array::<16>("digest");
+    let message = b.alloc_private_inputs(LIMBS, "message limbs");
+    let actual = b.native_blake3_words(&message).unwrap();
+    for (&actual, &expected) in actual.iter().zip(&expected) {
+        b.connect(actual, expected);
+    }
+    let circuit = b.build().unwrap();
+    let statement: Vec<F> = bytes_to_limbs(&digest)
+        .into_iter()
+        .map(limb_value)
+        .collect();
+    let private: Vec<F> = limbs.iter().map(|&limb| limb_value(limb)).collect();
+
+    let prepared = NativeBusCircuit::new(&circuit, "words").unwrap();
+    let table = blake3_table(&prepared);
+    let public = prepared.public_values(&statement).unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    runner.set_private_inputs(&private).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest = witness_values(&witness);
+    let honest_traces = prepared.traces(&witness).unwrap();
+    let accepts = tower_accepts(&prepared, public.clone());
+    assert!(accepts(honest_traces.clone()));
+
+    let calls = blake3_calls(&circuit);
+    assert_eq!(calls.len(), 3, "three blocks");
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    // Limb 5 is input 5 of the first block; limb 70 is input 6 of the third.
+    for (limb, call, index) in [(5, 0, 5), (70, 2, 6)] {
+        let mut forged_private = private.clone();
+        forged_private[limb] += wide;
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&statement).unwrap();
+        runner.set_private_inputs(&forged_private).unwrap();
+        assert!(runner.run().is_err(), "the runner refuses a wide limb");
+
+        let forged = replay(&circuit, &honest, &statement, &forged_private);
+        let changed: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .flat_map(|(c, (inputs, _))| {
+                inputs
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, id)| forged[id.0 as usize] != honest[id.0 as usize])
+                    .map(move |(i, _)| (c, i))
+            })
+            .collect();
+        assert_eq!(changed, [(call, index)], "limb {limb}");
+        let mut traces = honest_traces.clone();
+        let [fanout, _, bridge] =
+            patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
+        assert!(fanout > 0 && bridge == 0);
+        for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+            check_constraints(air, trace, public);
+        }
+        assert!(!accepts(traces.clone()), "the table carries a wide limb");
+
+        // The limb's bits are bits `16 * (index % 2)..` of block word `index / 2`.
+        let bit = |t: usize| {
+            call * NUM_BLAKE3_BINARY_COLS
+                + blake3_column(|cols| cols.block[index / 2][16 * (index % 2) + t])
+        };
+        let packed = (0..16).fold(F::ZERO, |sum, t| {
+            sum + traces[table].values[bit(t)] * F::from_raw_coordinates(1 << t).unwrap()
+        });
+        assert_eq!(packed, honest[calls[call].0[index].0 as usize]);
+        traces[table].values[bit(0)] += wide;
+        let local = catch_unwind(AssertUnwindSafe(|| {
+            check_constraints(&prepared.airs()[table], &traces[table], &[]);
+        }));
+        assert!(local.is_err(), "the lifted bit leaves a non-Boolean cell");
+        assert!(!accepts(traces), "the dense table carries a wide limb");
+    }
+}
+
+/// A prover who claims a different output limb of a call than the table computes is refused:
+/// the table pushes the true limb, which no reader of the claimed one matches.
+#[test]
+fn native_blake3_chain_refuses_a_wrong_output_limb() {
+    let (circuit, statement) = blake3_chain::<F>(3);
+    let prepared = NativeBusCircuit::new(&circuit, "blake3").unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let accepts = tower_accepts(&prepared, public);
+    assert!(accepts(prepared.traces(&witness).unwrap()));
+    let calls = blake3_calls(&circuit);
+    // The first call's output feeds the second call; the last call's output is the statement.
+    for (call, index) in [(0, 3), (2, 0), (2, 15)] {
+        let id = calls[call].1[index];
+        let mut values = witness_values(&witness);
+        values[id.0 as usize] += F::ONE;
+        let forged = WitnessTrace::new(values);
+        assert!(
+            !accepts(prepared.traces(&forged).unwrap()),
+            "output {index} of call {call}"
+        );
+    }
+}
+
+/// The constant inputs of a call are fixed by constant gates. A message whose first
+/// `prefix_words` limbs are circuit constants and whose last three are public starts its last
+/// blocks from precomputed chaining values and fixed counter, length and flags limbs. A prover
+/// who runs the circuit with one other constant and claims the digest that follows satisfies
+/// every table but that constant's gate, so the proof is refused. Each target is an input limb
+/// of a call, here the first nonzero one of `candidates`, read by no other operation.
+fn reject_forged_blake3_constants(
+    prefix_words: usize,
+    calls_expected: usize,
+    targets: &[(usize, &[usize])],
+) {
+    let units: Vec<u16> = (0..prefix_words as u16 + 3)
+        .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
+        .collect();
+    let message: Vec<u8> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+    let statement = |digest: &[u16]| -> Vec<F> {
+        units[prefix_words..]
+            .iter()
+            .chain(digest)
+            .map(|&limb| limb_value(limb))
+            .collect()
+    };
+    let build = || {
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_blake3_compress().unwrap();
+        let mut input: Vec<_> = units[..prefix_words]
+            .iter()
+            .map(|&unit| b.define_const(limb_value(unit)))
+            .collect();
+        input.extend(b.alloc_public_input_array::<3>("message suffix"));
+        for limb in b.native_blake3_words(&input).unwrap() {
+            let expected = b.public_input();
+            b.connect(limb, expected);
+        }
+        b.build().unwrap()
+    };
+
+    let circuit = build();
+    let prepared = NativeBusCircuit::new(&circuit, "prefix").unwrap();
+    let calls = blake3_calls(&circuit);
+    assert_eq!(calls.len(), calls_expected);
+    let honest_digest = bytes_to_limbs(&Blake3.hash_iter(message.iter().copied()));
+    let honest = statement(&honest_digest);
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&honest).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let accepts = tower_accepts(&prepared, prepared.public_values(&honest).unwrap());
+    assert!(accepts(prepared.traces(&witness).unwrap()));
+
+    let reads = |id: WitnessId| -> usize {
+        circuit
+            .ops
+            .iter()
+            .map(|op| match op {
+                Op::Alu {
+                    a,
+                    b,
+                    c,
+                    intermediate_out,
+                    ..
+                } => [Some(*a), Some(*b), *c, *intermediate_out]
+                    .into_iter()
+                    .filter(|&read| read == Some(id))
+                    .count(),
+                Op::Hint { inputs, .. } => inputs.iter().filter(|&&read| read == id).count(),
+                Op::NonPrimitiveOpWithExecutor { inputs, .. } => {
+                    inputs.iter().flatten().filter(|&&read| read == id).count()
+                }
+                _ => 0,
+            })
+            .sum()
+    };
+    let value = |id: WitnessId| *witness.get_value(id).unwrap();
+    let limb_of = |id: WitnessId| u16::try_from(value(id).to_raw_coordinates()).unwrap();
+    let gates = prepared
+        .airs()
+        .iter()
+        .position(|air| air.width() == 5)
+        .unwrap();
+
+    for &(call, candidates) in targets {
+        let index = *candidates
+            .iter()
+            .find(|&&index| {
+                let id = calls[call].0[index];
+                limb_of(id) != 0 && reads(id) == 1
+            })
+            .expect("a constant limb that no other operation reads");
+        let id = calls[call].0[index];
+        let forged_limb = limb_of(id) ^ 1;
+
+        // The digest that follows from the forged limb through every later call.
+        let mut forged_limbs = HashMap::from([(id, forged_limb)]);
+        for (inputs, outputs) in &calls {
+            let limbs: Vec<u16> = inputs
+                .iter()
+                .map(|id| {
+                    forged_limbs
+                        .get(id)
+                        .copied()
+                        .unwrap_or_else(|| limb_of(*id))
+                })
+                .collect();
+            let words: [u32; BLAKE3_INPUT_WORDS] = limbs_to_words(&limbs).try_into().unwrap();
+            let output = words_to_limbs(&blake3_compress(&words)[..8]);
+            forged_limbs.extend(outputs.iter().copied().zip(output));
+        }
+        let claimed_digest: Vec<u16> = calls
+            .last()
+            .unwrap()
+            .1
+            .iter()
+            .map(|id| forged_limbs[id])
+            .collect();
+        assert_ne!(claimed_digest, honest_digest);
+        let claimed = statement(&claimed_digest);
+
+        // The prover runs the same operations with that one constant changed, while
+        // `prepared` keeps the circuit's constant gate.
+        let mut forged_circuit = build();
+        let position = forged_circuit
+            .ops
+            .iter()
+            .position(|op| matches!(*op, Op::Const { out, .. } if out == id))
+            .unwrap();
+        forged_circuit.ops[position] = Op::Const {
+            out: id,
+            val: limb_value(forged_limb),
+        };
+        let mut runner = forged_circuit.runner();
+        runner.set_public_inputs(&claimed).unwrap();
+        let forged = runner.run().unwrap().witness_trace;
+
+        let public = prepared.public_values(&claimed).unwrap();
+        let traces = prepared.traces(&forged).unwrap();
+        for (table, ((air, trace), public)) in
+            prepared.airs().iter().zip(&traces).zip(&public).enumerate()
+        {
+            let local = catch_unwind(AssertUnwindSafe(|| check_constraints(air, trace, public)));
+            assert_eq!(local.is_err(), table == gates, "table {table}");
+        }
+        assert!(
+            !tower_accepts(&prepared, public)(traces),
+            "input {index} of call {call}"
+        );
+    }
+}
+
+/// The second block of a message with a constant first block starts from the precomputed
+/// chaining value, and carries the fixed block length and flags of its last block.
+#[test]
+fn native_product_buses_fix_the_precomputed_chaining_value_of_constant_blake3_words() {
+    // Input limbs 32..48 are the chaining value, 52 the block length and 54 the flags.
+    reject_forged_blake3_constants(
+        32,
+        1,
+        &[(0, &(32..48).collect::<Vec<_>>()), (0, &[52]), (0, &[54])],
+    );
+}
+
+/// A constant first chunk is a precomputed child of the parent compression, whose block words
+/// 0..16 are its chaining value; the second chunk's single block carries its chunk index.
+#[test]
+fn native_product_buses_fix_the_precomputed_child_and_counter_of_blake3_chunks() {
+    // Input limb 48 is the low counter limb.
+    reject_forged_blake3_constants(512, 2, &[(1, &(0..16).collect::<Vec<_>>()), (0, &[48])]);
 }

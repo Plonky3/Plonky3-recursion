@@ -1361,6 +1361,7 @@ dependencies = [
  "p3-binary-field",
  "p3-binary-pcs",
  "p3-blake3",
+ "p3-blake3-air",
  "p3-bus",
  "p3-challenger",
  "p3-circuit",

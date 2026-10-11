@@ -3,6 +3,8 @@
 //! Proofs come from `p3_multi_stark` over the composite commitment. Each statement's AIRs are
 //! one [`TestAir`] list: native bus tables, or small dense and Boolean tables.
 
+mod blake3_chain;
+mod blake3_forged_limb;
 mod forged_limb;
 mod forged_swapped;
 mod keccak_chain;
