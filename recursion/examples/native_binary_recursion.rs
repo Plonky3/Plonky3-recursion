@@ -2,40 +2,56 @@
 //! selects the polynomial commitment of the source proof and of every recursion layer. Under
 //! WHIR, `--keccak-commitment packed|dense` selects how every layer commits its Keccak table:
 //! as packed bits, 128 per field element, beside a dense commitment of every other table, or
-//! as field elements like every other table. With `--pcs folding`, which commits every table
-//! densely, `--leaves coset|symbol` selects whether each Merkle leaf is one fold coset or one
-//! codeword symbol.
+//! as field elements like every other table, and `--merkle-arity 4|2` selects four-digest or
+//! pairwise Merkle trees for every layer's commitments. With `--pcs folding`, which commits
+//! every table densely, `--leaves coset|symbol` selects whether each Merkle leaf is one fold
+//! coset or one codeword symbol.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_binary_recursion -- --layers 3
 //!
 //! The defaults (WHIR with packed Keccak tables at log inverse rate 3 and every other table at
-//! rate 1, PCS security level 32 with 24 grinding bits, Merkle cap height 4) keep every layer
-//! within the default limits. When a layer exceeds one anyway, the error names the flag that
-//! raises it and a value to start from.
+//! rate 1, PCS security level 32 with 24 grinding bits, four-digest Merkle trees under a cap of
+//! 2 levels) keep every layer within the default limits. When a layer exceeds one anyway, the
+//! error names the flag that raises it and a value to start from.
 //!
 //! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
-//! last layer; wall time, maximum resident set and peak memory footprint of the whole run):
+//! last layer; wall time, maximum resident set and peak memory footprint of the whole run;
+//! arity is `--merkle-arity`):
 //!
-//! | Command                                | witnesses | codeword cells |
-//! |----------------------------------------|-----------|----------------|
-//! | `--layers 2`                           | 745,548   | 58,720,256     |
-//! | `--layers 3`                           | 942,072   | 109,051,904    |
-//! | `--keccak-commitment dense --layers 3` | 792,174   | 335,544,320    |
-//! | `--pcs folding --layers 2`             | 956,788   | 603,979,776    |
-//! | `--log-inv-rate 2 --layers 2`          | 689,946   | 109,051,904    |
+//! | Command                                | arity | witnesses | codeword cells |
+//! |----------------------------------------|-------|-----------|----------------|
+//! | `--layers 2`                           | 4     | 541,479   | 58,720,256     |
+//! | `--layers 2`                           | 2     | 549,023   | 58,720,256     |
+//! | `--layers 3`                           | 4     | 746,649   | 58,720,256     |
+//! | `--layers 3`                           | 2     | 761,839   | 58,720,256     |
+//! | `--keccak-commitment dense --layers 3` | 4     | 690,872   | 301,989,888    |
+//! | `--keccak-commitment dense --layers 3` | 2     | 705,971   | 301,989,888    |
+//! | `--pcs folding --layers 2`             | 2     | 855,715   | 603,979,776    |
+//! | `--log-inv-rate 2 --layers 2`          | 4     | 492,193   | 104,857,600    |
+//! | `--log-inv-rate 2 --layers 2`          | 2     | 497,536   | 109,051,904    |
 //!
-//! | Command                                | last layer | wall   | resident | footprint |
-//! |----------------------------------------|------------|--------|----------|-----------|
-//! | `--layers 2`                           | 10.5 s     | 12.0 s | 4.1 GB   | 3.9 GB    |
-//! | `--layers 3`                           | 11.7 s     | 24.3 s | 6.5 GB   | 5.9 GB    |
-//! | `--keccak-commitment dense --layers 3` | 13.7 s     | 29.0 s | 16.7 GB  | 12.2 GB   |
-//! | `--pcs folding --layers 2`             | 20.3 s     | 21.9 s | 28.3 GB  | 27.4 GB   |
-//! | `--log-inv-rate 2 --layers 2`          | 10.1 s     | 12.0 s | 5.1 GB   | 5.0 GB    |
+//! | Command                                | arity | last layer | wall   | resident | footprint |
+//! |----------------------------------------|-------|------------|--------|----------|-----------|
+//! | `--layers 2`                           | 4     | 9.6 s      | 11.8 s | 4.0 GB   | 3.9 GB    |
+//! | `--layers 2`                           | 2     | 10.9 s     | 12.3 s | 4.0 GB   | 3.9 GB    |
+//! | `--layers 3`                           | 4     | 9.4 s      | 20.5 s | 4.3 GB   | 4.0 GB    |
+//! | `--layers 3`                           | 2     | 10.0 s     | 22.6 s | 4.3 GB   | 4.1 GB    |
+//! | `--keccak-commitment dense --layers 3` | 4     | 12.9 s     | 27.4 s | 16.1 GB  | 10.8 GB   |
+//! | `--keccak-commitment dense --layers 3` | 2     | 13.2 s     | 27.6 s | 16.5 GB  | 11.4 GB   |
+//! | `--pcs folding --layers 2`             | 2     | 22.1 s     | 23.3 s | 26.8 GB  | 27.8 GB   |
+//! | `--log-inv-rate 2 --layers 2`          | 4     | 6.6 s      | 8.1 s  | 4.0 GB   | 3.9 GB    |
+//! | `--log-inv-rate 2 --layers 2`          | 2     | 10.7 s     | 11.9 s | 5.0 GB   | 4.9 GB    |
 //!
-//! Layer 1 takes 0.9 s with 14,092 witnesses, and 0.9 s with 22,661 under `--pcs folding`. The
+//! Layer 1 takes 0.7 s with 7,819 witnesses, and 0.5 s with 16,285 under `--pcs folding`. The
 //! default codeword-cell limit is 2^29 at `--log-inv-rate 1`, doubled for each further rate bit
 //! and for `--pcs folding`, which multiplies every dense codeword.
+//!
+//! A four-digest node absorbs one Keccak-f block, as a pairwise node does, and an opening walks
+//! half as many levels. At layer 3, a packed layer takes 1,748 Keccak-f calls instead of 2,306
+//! and a dense one 1,864 instead of 2,411, its bridge table has 2^12 rows instead of 2^13, and
+//! its proof is 13 to 14% larger. At `--log-inv-rate 2`, layer 2 takes 1,170 calls instead of
+//! 1,372, few enough for a 2^15-row Keccak table.
 //!
 //! `--pcs folding` takes the same security level and grinding bits. Its coset leaves default to
 //! cap height 1.
@@ -84,7 +100,10 @@ use limit_hint::at_layer;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 type F = BinaryField128;
+/// Default cap height of pairwise trees, in levels: 16 roots.
 const DEFAULT_CAP_HEIGHT: usize = 4;
+/// Default cap height of four-digest trees, in levels: 16 roots.
+const DEFAULT_FOUR_DIGEST_CAP_HEIGHT: usize = 2;
 /// Composed security bits each recursive output statement requires without `--security-target`.
 const SECURITY_BITS: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -98,6 +117,15 @@ enum KeccakCommitment {
     Packed,
     /// Every table as field elements.
     Dense,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Arity {
+    /// Pairwise nodes.
+    #[value(name = "2")]
+    Two,
+    /// Four-digest nodes, each one Keccak-f block like a pairwise node, over half the levels.
+    #[value(name = "4")]
+    Four,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum Leaves {
@@ -120,6 +148,10 @@ struct Args {
     /// `--pcs whir` and `dense` with `--pcs folding`, which supports only `dense`.
     #[arg(long, value_enum)]
     keccak_commitment: Option<KeccakCommitment>,
+    /// Digests per Merkle tree node of every recursive output commitment. Defaults to `4` with
+    /// `--pcs whir` and `2` with `--pcs folding`, which supports only `2`.
+    #[arg(long, value_enum)]
+    merkle_arity: Option<Arity>,
     /// Log inverse rate of the packed Keccak commitment; ignored unless the Keccak commitment
     /// is packed.
     #[arg(long, default_value_t = 3)]
@@ -172,8 +204,10 @@ struct Args {
     /// of its commitments, whose composed security meets the target.
     #[arg(long, conflicts_with = "pcs_security_level")]
     security_target: Option<usize>,
-    /// Merkle cap height for the recursive output proofs. Defaults to 4, or
-    /// to at most `--log-inv-rate` with `--pcs folding --leaves coset`.
+    /// Merkle cap height of the recursive output proofs, in tree levels: `h` levels hold `2^h`
+    /// roots of pairwise trees or `4^h` of four-digest trees. Defaults to 16 roots, 2 levels at
+    /// `--merkle-arity 4` and 4 at `--merkle-arity 2`, or to at most `--log-inv-rate` with
+    /// `--pcs folding --leaves coset`.
     #[arg(long)]
     cap_height: Option<usize>,
     /// Grinding bits per recursive opening (both WHIR and folding); queries cover the rest
@@ -199,12 +233,24 @@ impl Args {
             Pcs::Folding => KeccakCommitment::Dense,
         })
     }
-    /// `--cap-height`, or the default for the selected commitment and leaves.
+    /// `--merkle-arity`, or the default for the selected commitment.
+    fn merkle_arity(&self) -> MerkleArity {
+        let arity = self.merkle_arity.unwrap_or(match self.pcs {
+            Pcs::Whir => Arity::Four,
+            Pcs::Folding => Arity::Two,
+        });
+        match arity {
+            Arity::Two => MerkleArity::Two,
+            Arity::Four => MerkleArity::Four,
+        }
+    }
+    /// `--cap-height`, or the default for the selected commitment, leaves and arity.
     fn cap_height(&self) -> usize {
         self.cap_height
-            .unwrap_or_else(|| match (self.pcs, self.leaves) {
-                (Pcs::Folding, Leaves::Coset) => DEFAULT_CAP_HEIGHT.min(self.log_inv_rate),
-                _ => DEFAULT_CAP_HEIGHT,
+            .unwrap_or_else(|| match (self.pcs, self.leaves, self.merkle_arity()) {
+                (Pcs::Folding, Leaves::Coset, _) => DEFAULT_CAP_HEIGHT.min(self.log_inv_rate),
+                (_, _, MerkleArity::Four) => DEFAULT_FOUR_DIGEST_CAP_HEIGHT,
+                (_, _, MerkleArity::Two) => DEFAULT_CAP_HEIGHT,
             })
     }
 }
@@ -262,7 +308,7 @@ fn options(depth: usize, args: &Args, security: Security) -> NativeBinaryRecursi
     NativeBinaryRecursionOptions {
         main: recursive_protocol(args, security.level),
         preprocessed: recursive_protocol(args, security.level),
-        arity: MerkleArity::Two,
+        arity: args.merkle_arity(),
         cap_height: args.cap_height(),
         initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
         sumcheck_pow_bits: 0,
@@ -362,6 +408,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     if args.pcs == Pcs::Folding && args.keccak_commitment() == KeccakCommitment::Packed {
         return Err("--keccak-commitment packed requires --pcs whir".into());
+    }
+    if args.pcs == Pcs::Folding && args.merkle_arity() == MerkleArity::Four {
+        return Err("--merkle-arity 4 requires --pcs whir".into());
     }
     if args.pcs == Pcs::Folding && args.security_target.is_some() {
         return Err("--security-target requires --pcs whir".into());
