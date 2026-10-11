@@ -7,7 +7,7 @@ use p3_field::{ExtensionField, Field, PrimeField64};
 
 use super::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding, PrimeBinaryEncoding};
 use super::binary_native::BinaryCoordinateField;
-use super::{ByteHash, NpoTypeId};
+use super::{ByteHash, KECCAK256_RATE_BYTES, NpoTypeId};
 use crate::{CircuitBuilder, CircuitBuilderError, ExprId};
 
 /// A byte-hash digest as sixteen low-first limbs, each also with its two bytes
@@ -140,7 +140,35 @@ pub trait BinaryCircuitHost<F: Field + Eq + Hash>: BinaryCircuitEncoding<F> + Si
         words.extend_from_slice(right);
         Self::hash_words(builder, hash, &words)
     }
+
+    /// Native `CompressionFunctionFromHasher<_, N, 32>` for `N = inputs.len()`:
+    /// hash the concatenated sixteen-word digests.
+    ///
+    /// `N` is two to four: under Keccak-256 the at most 128 message bytes and
+    /// their padding fill one rate block, so a node costs a single Keccak-f
+    /// call that absorbs every input word as a first-block lane.
+    fn compress_n(
+        builder: &mut CircuitBuilder<F>,
+        hash: ByteHash,
+        inputs: &[&[ExprId]],
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        Self::check_hash(hash)?;
+        if !(2..=MAX_COMPRESSION_ARITY).contains(&inputs.len())
+            || inputs.iter().any(|digest| digest.len() != 16)
+        {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "BinaryDigestCompression",
+                expected: "two to four sixteen-word digests".into(),
+                got: inputs.iter().map(|digest| digest.len()).sum(),
+            });
+        }
+        Self::hash_words(builder, hash, &inputs.concat())
+    }
 }
+
+/// The most 32-byte digests one node compression hashes: their concatenation
+/// leaves at least the one padding byte Keccak-256 needs in its rate block.
+const MAX_COMPRESSION_ARITY: usize = (KECCAK256_RATE_BYTES - 1) / 32;
 
 impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
     fn check_hash(hash: ByteHash) -> Result<(), CircuitBuilderError> {
