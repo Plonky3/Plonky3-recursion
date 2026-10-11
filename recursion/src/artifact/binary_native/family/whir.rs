@@ -31,9 +31,7 @@ where
     type Recursive = BinaryWhirMultiStarkVerifier<F>;
     type Input = NativeBinaryWhirMultiStarkInput<F>;
     type Decode = codec::MultiDecode<codec::WhirDecode>;
-    fn hash(p: &Self::Parameters) -> ByteHash {
-        p.hash
-    }
+    type Trees = NativeMmcs<F>;
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
     }
@@ -109,11 +107,13 @@ where
         recursive.retain_native_parameter_metadata(parameters_usage.metadata_entries, limits)?;
         Ok(recursive)
     }
+    fn trees(p: &Self::Parameters) -> Self::Trees {
+        tree(p.hash, p.cap_height)
+    }
     fn build_config(
         spec: &BinaryNativeVerifierSpec<Self::Parameters>,
-        base: &NativeMmcs<F>,
-        _round: &NativeMmcs<BinaryField128>,
-        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<BinaryField128>)>,
+        base: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
         Ok(BinaryNativeWhirConfig {
             main: WhirProver::new(
@@ -125,7 +125,7 @@ where
                 .preprocessed
                 .as_ref()
                 .zip(preprocessed)
-                .map(|(pp, (base, _))| {
+                .map(|(pp, base)| {
                     WhirProver::new(
                         pp.config.clone(),
                         BinaryWhirDomain::<F>::default(),
@@ -152,9 +152,8 @@ where
     fn import_native(
         recursive: &Self::Recursive,
         config: &Self::Config,
-        base: &NativeMmcs<F>,
-        _round: &NativeMmcs<BinaryField128>,
-        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<BinaryField128>)>,
+        base: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<F>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<F>,
@@ -166,7 +165,7 @@ where
                 .preprocessed
                 .as_ref()
                 .zip(preprocessed)
-                .map(|(pcs, (base, _))| (&**pcs, base)),
+                .map(|(pcs, base)| (&**pcs, base)),
             public,
             proof,
             ch,

@@ -32,9 +32,7 @@ impl NativeFamily<E, E> for MixedWhirFamily {
     type Recursive = MixedWhirRecursive;
     type Input = NativeBinaryMixedWhirMultiStarkInput;
     type Decode = codec::MultiDecode<codec::MixedWhirDecode>;
-    fn hash(p: &Self::Parameters) -> ByteHash {
-        p.dense.hash
-    }
+    type Trees = NativeMmcs<E>;
     fn cap_height(p: &Self::Parameters) -> usize {
         p.dense.cap_height
     }
@@ -152,11 +150,13 @@ impl NativeFamily<E, E> for MixedWhirFamily {
             preprocessed: spec.preprocessed.as_ref().map(|pp| pp.dense.clone()),
         })
     }
+    fn trees(p: &Self::Parameters) -> Self::Trees {
+        tree(p.dense.hash, p.dense.cap_height)
+    }
     fn build_config(
         spec: &BinaryNativeVerifierSpec<Self::Parameters>,
-        _base: &NativeMmcs<E>,
-        _round: &NativeMmcs<E>,
-        _preprocessed: Option<&(NativeMmcs<E>, NativeMmcs<E>)>,
+        _main: &Self::Trees,
+        _preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
         // Each commitment builds its trees from its dense parameters' hash and cap height, the
         // trees the lifecycle passes in and its native import replays.
@@ -191,9 +191,8 @@ impl NativeFamily<E, E> for MixedWhirFamily {
     fn import_native(
         recursive: &Self::Recursive,
         _config: &Self::Config,
-        base: &NativeMmcs<E>,
-        _round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<E>, NativeMmcs<E>)>,
+        base: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<E>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<E>,
@@ -206,7 +205,7 @@ impl NativeFamily<E, E> for MixedWhirFamily {
                 .preprocessed
                 .as_ref()
                 .zip(preprocessed)
-                .map(|(pp, (base, _))| (&pp.config, base)),
+                .map(|(pp, base)| (&pp.config, base)),
             public,
             proof,
             ch,

@@ -34,9 +34,8 @@ where
     pub(super) limits: ArtifactLimits,
     /// The statement's composed security, checked against `spec.security_bits` at setup.
     pub(super) security: MultiStarkSecurityReport,
-    base: NativeMmcs<F>,
-    round: NativeMmcs<E>,
-    preprocessed: Option<(NativeMmcs<F>, NativeMmcs<E>)>,
+    trees: K::Trees,
+    preprocessed_trees: Option<K::Trees>,
     pub(super) decode: K::Decode,
 }
 
@@ -112,15 +111,9 @@ where
             }
         }
     }
-    let base = tree(K::hash(&spec.main), K::cap_height(&spec.main));
-    let round = tree(K::hash(&spec.main), K::cap_height(&spec.main));
-    let preprocessed = spec.preprocessed.as_ref().map(|pp| {
-        (
-            tree(K::hash(pp), K::cap_height(pp)),
-            tree(K::hash(pp), K::cap_height(pp)),
-        )
-    });
-    let config = K::build_config(&spec, &base, &round, preprocessed.as_ref())?;
+    let trees = K::trees(&spec.main);
+    let preprocessed_trees = spec.preprocessed.as_ref().map(K::trees);
+    let config = K::build_config(&spec, &trees, preprocessed_trees.as_ref())?;
     let mut setup_ch = BinaryNativeChallenger::for_setup(roots, spec.transcript_hash);
     let (proving, verifying) = p3_multi_stark::setup(&config, &refs, &mut setup_ch)
         .map_err(|_| invalid("binary native setup rejected"))?;
@@ -159,9 +152,8 @@ where
         identity: Arc::from(identity),
         limits,
         security,
-        base,
-        round,
-        preprocessed,
+        trees,
+        preprocessed_trees,
         decode,
     });
     Ok((state, proving))
@@ -230,9 +222,8 @@ where
         let input = K::import_native(
             &self.binary,
             &self.config,
-            &self.base,
-            &self.round,
-            self.preprocessed.as_ref(),
+            &self.trees,
+            self.preprocessed_trees.as_ref(),
             expected,
             proof,
             &mut self.challenger(),
