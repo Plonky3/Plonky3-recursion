@@ -28,24 +28,24 @@ type F = BinaryField128;
 
 const CAP_HEIGHT: usize = 2;
 
-/// About 12% above the measured second-layer verifier: 689,978 expression
-/// nodes, 190,074 pending connections, 9,752 non-primitive calls and 880,848
+/// About 12% above the measured second-layer verifier: 670,091 expression
+/// nodes, 190,074 pending connections, 9,604 non-primitive calls and 821,648
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 775_000,
+    max_expression_nodes: 751_000,
     max_pending_connects: 213_000,
-    max_non_primitive_calls: 10_900,
-    max_non_primitive_slots: 987_000,
+    max_non_primitive_calls: 10_760,
+    max_non_primitive_slots: 921_000,
 };
-/// About 12% above the measured 612,992 witnesses and 395,161 operations.
+/// About 12% above the measured 593,253 witnesses and 390,074 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 687_000,
-    max_operations: 443_000,
+    max_witnesses: 665_000,
+    max_operations: 437_000,
     max_trace_cells: 1 << 27,
 };
-/// About 12% above the measured 1,696 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 1_900;
+/// About 12% above the measured 1,548 native Keccak-f calls.
+const MAX_KECCAK_CALLS: usize = 1_740;
 /// Measured padded witness, gate, public, Keccak and bridge table heights.
 /// One more row of growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [21, 19, 4, 16, 12];

@@ -28,24 +28,24 @@ type F = Poly64;
 
 const CAP_HEIGHT: usize = 2;
 
-/// About 12% above the measured second-layer verifier: 1,623,257 expression
-/// nodes, 219,042 pending connections, 19,257 non-primitive calls and
-/// 1,074,292 slots.
+/// About 12% above the measured second-layer verifier: 1,603,397 expression
+/// nodes, 219,042 pending connections, 19,109 non-primitive calls and
+/// 1,015,092 slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 1_820_000,
+    max_expression_nodes: 1_796_000,
     max_pending_connects: 246_000,
-    max_non_primitive_calls: 21_600,
-    max_non_primitive_slots: 1_204_000,
+    max_non_primitive_calls: 21_410,
+    max_non_primitive_slots: 1_137_000,
 };
-/// About 12% above the measured 1,519,038 witnesses and 1,258,638 operations.
+/// About 12% above the measured 1,499,326 witnesses and 1,253,578 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 1_702_000,
-    max_operations: 1_410_000,
+    max_witnesses: 1_680_000,
+    max_operations: 1_405_000,
     max_trace_cells: 1 << 28,
 };
-/// About 12% above the measured 2,015 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 2_260;
+/// About 12% above the measured 1,867 native Keccak-f calls.
+const MAX_KECCAK_CALLS: usize = 2_100;
 /// Measured padded witness, gate, public, Keccak and bridge table heights.
 /// One more row of growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [23, 21, 4, 16, 12];
