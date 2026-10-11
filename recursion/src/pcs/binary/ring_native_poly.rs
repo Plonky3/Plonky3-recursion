@@ -10,7 +10,8 @@
 //! skips none: points of `n` coordinates take `n - 6` rounds, the full-length
 //! reduction, whose soundness holds at every point. Its transcript is the
 //! released one whenever the claims' first coordinates are not one common bit,
-//! and the native import refuses claims whose first coordinates are. A
+//! and the native import refuses claims whose first coordinates are one common
+//! bit inside the coordinates the released reduction may skip. A
 //! column-batched trace of more than one column draws that coordinate after
 //! binding the opened values, so there the two transcripts differ with
 //! probability at most `2^-191`.
