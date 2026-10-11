@@ -1,25 +1,33 @@
 //! Native Poly64 proving and recursion with Poly192 challenges.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
-//!     --example native_poly_recursion -- --layers 1
+//!     --example native_poly_recursion -- --layers 3
 //!
-//! A tested two-layer configuration (large memory requirement):
-//! ./target/optimized/examples/native_poly_recursion --layers 2 \
-//!     --pcs-security-level 8 --cap-height 4 \
-//!     --max-witnesses 8388608 --max-operations 8388608 \
-//!     --max-expression-nodes 8388608 --max-pending-connects 8388608 \
-//!     --max-trace-cells 536870912 --max-pcs-codeword-cells 1073741824 \
-//!     --max-verifier-rounds 512
+//! The defaults (WHIR security level 32 with 24 grinding bits, Merkle cap
+//! height 4) keep every layer within the default limits. Layer 2 has 1.67M
+//! witnesses, 2,360 Keccak-f calls and 402,653,184 initial codeword cells. The
+//! recursive verifier levels off from layer 3: about 2.17M witnesses, 3,033
+//! Keccak-f calls and 671,088,640 initial codeword cells (5 GiB) per layer.
 //!
-//! On a 14-core Apple M-series machine with 48 GB, its second layer (4.63M
-//! witnesses, 1,073,741,824 initial codeword cells) proves and verifies in
-//! 89 s, with a 30 GB peak memory footprint and a 27 GB maximum resident set.
-//! `--pcs-security-level 32 --pow-bits 24` gives a second layer of the same
-//! size (71 s, 28.5 GB resident) at the cost of 1-14 s of grinding per layer.
+//! Measured with the defaults on a 14-core Apple M-series machine with 48 GB
+//! (fastest observed time of the last layer; peak memory footprint and maximum
+//! resident set of the whole run):
+//!
+//! | --layers | last layer | footprint | resident |
+//! |----------|------------|-----------|----------|
+//! | 1        | 0.7 s      | 0.3 GB    | 0.3 GB   |
+//! | 2        | 6.5 s      | 11.5 GB   | 15.3 GB  |
+//! | 3        | 11.3 s     | 20.8 GB   | 25.6 GB  |
+//! | 4        | 11.2 s     | 23.6 GB   | 25.7 GB  |
+//!
+//! From layer 3 on, more than 2,730 Keccak-f calls give the Keccak table 2^17
+//! rows, so a layer needs about 293M trace cells; hence the limits of 2^29
+//! trace cells and 2^30 codeword cells, 4 GiB and 8 GiB of Poly64 cells. With
+//! `--cap-height 0 --pow-bits 0`, layer 2 has 2.25M witnesses and needs
+//! 1,207,959,552 codeword cells.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits
-//! count field cells or graph entries, not bytes. The second layer's initial
-//! codewords alone occupy 8 GiB; traces, trees, and workspaces require more.
+//! count field cells or graph entries, not bytes.
 
 use std::error::Error;
 use std::time::Instant;
@@ -59,10 +67,10 @@ struct Args {
     #[arg(long, default_value_t = 1 << 22)]
     max_pending_connects: usize,
     /// Maximum combined trace, preprocessing, and temporary field cells.
-    #[arg(long, default_value_t = 1 << 27)]
+    #[arg(long, default_value_t = 1 << 29)]
     max_trace_cells: usize,
     /// Maximum combined initial main and preprocessing codeword cells.
-    #[arg(long, default_value_t = 1 << 27)]
+    #[arg(long, default_value_t = 1 << 30)]
     max_pcs_codeword_cells: usize,
     /// Maximum aggregate verifier rounds in each recursive output authority. It bounds the
     /// work of verifying an untrusted output proof, not prover memory.
@@ -72,10 +80,10 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
     /// Merkle cap height for the recursive output proofs.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 4)]
     cap_height: usize,
     /// WHIR grinding bits per recursive opening; queries cover the rest of the security level.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 24)]
     pow_bits: usize,
 }
 struct SquaringAir;
