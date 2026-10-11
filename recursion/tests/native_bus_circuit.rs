@@ -842,6 +842,57 @@ fn tower_accepts(prepared: &NativeBusCircuit<F>, public: Vec<Vec<F>>) -> Accepts
     })
 }
 
+/// Proves Poly64 traces under a native Poly64 WHIR authority for `prepared`.
+fn poly64_accepts(
+    prepared: &NativeBusCircuit<p3_binary_field::Poly64>,
+    public: Vec<Vec<p3_binary_field::Poly64>>,
+) -> Accepts<p3_binary_field::Poly64> {
+    use p3_recursion::artifact::{
+        BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
+    };
+    use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+    let parameters = |variables| {
+        BinaryNativePolyWhirPcsParameters::new(
+            variables,
+            ProtocolParameters {
+                starting_log_inv_rate: 2,
+                round_log_inv_rates: vec![],
+                folding_factor: FoldingFactor::Constant(1),
+                soundness_type: SecurityAssumption::JohnsonBound,
+                security_level: 24,
+                pow_bits: 0,
+            },
+            ByteHash::Keccak256,
+            0,
+        )
+        .unwrap()
+    };
+    let spec = BinaryNativeVerifierSpec {
+        main: parameters(prepared.main_variables()),
+        preprocessed: prepared.preprocessed_variables().map(parameters),
+        transcript_hash: ByteHash::Keccak256,
+        initial_bytes: b"native-bus-circuit-v1".to_vec(),
+        sumcheck_pow_bits: 0,
+        max_tau_draws: 32,
+        security_bits: 16,
+    };
+    let (prover, authority) = BinaryNativePolyWhirAuthority::<_>::setup(
+        prepared.airs().to_vec(),
+        prepared.log_heights().to_vec(),
+        spec,
+        &VerifierLimits {
+            max_rounds: 256,
+            max_metadata_entries: 1 << 20,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    Box::new(move |traces| {
+        let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
+        matches!(attempt, Ok(Ok(proof)) if authority.verify_native(&proof, &public).is_ok())
+    })
+}
+
 /// Sixteen Tower128 values form a 256-byte leaf absorbed in two Keccak
 /// blocks, whose first lanes are words 0 and 68.
 #[test]
@@ -886,10 +937,6 @@ fn native_keccak_lanes_range_check_tower32_leaf_words() {
 #[test]
 fn native_keccak_lanes_range_check_poly64_leaf_words_in_both_blocks() {
     use p3_binary_field::Poly64;
-    use p3_recursion::artifact::{
-        BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
-    };
-    use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
     let values: Vec<Poly64> = (0..24)
         .map(|i| Poly64::new(0x9bfa_3e51_4379_dc5bu64.wrapping_mul(i + 13)))
         .collect();
@@ -904,48 +951,7 @@ fn native_keccak_lanes_range_check_poly64_leaf_words_in_both_blocks() {
             (18, 1, 40, 1, 5),
         ],
         |b, value, count| b.native_poly64_unchecked_words(value, count).unwrap(),
-        |prepared, public| {
-            let parameters = |variables| {
-                BinaryNativePolyWhirPcsParameters::new(
-                    variables,
-                    ProtocolParameters {
-                        starting_log_inv_rate: 2,
-                        round_log_inv_rates: vec![],
-                        folding_factor: FoldingFactor::Constant(1),
-                        soundness_type: SecurityAssumption::JohnsonBound,
-                        security_level: 24,
-                        pow_bits: 0,
-                    },
-                    ByteHash::Keccak256,
-                    0,
-                )
-                .unwrap()
-            };
-            let spec = BinaryNativeVerifierSpec {
-                main: parameters(prepared.main_variables()),
-                preprocessed: prepared.preprocessed_variables().map(parameters),
-                transcript_hash: ByteHash::Keccak256,
-                initial_bytes: b"native-bus-circuit-v1".to_vec(),
-                sumcheck_pow_bits: 0,
-                max_tau_draws: 32,
-                security_bits: 16,
-            };
-            let (prover, authority) = BinaryNativePolyWhirAuthority::<_>::setup(
-                prepared.airs().to_vec(),
-                prepared.log_heights().to_vec(),
-                spec,
-                &VerifierLimits {
-                    max_rounds: 256,
-                    max_metadata_entries: 1 << 20,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            Box::new(move |traces| {
-                let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
-                matches!(attempt, Ok(Ok(proof)) if authority.verify_native(&proof, &public).is_ok())
-            })
-        },
+        poly64_accepts,
     );
 }
 
