@@ -196,6 +196,13 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
   bounds and cap selection. Native tests cover odd-width rows, non-power-of-two
   heights, tower/polynomial carriers and a cap at the leaf layer. The caller
   still supplies trusted row widths, heights and serialization rules.
+  `verify_byte_hash_mmcs_opening_bytes_with_host_arity::<_, 4>` opens trees
+  whose nodes compress four digests, in the level order of p3's
+  `MerkleTreeMmcs`. A four-digest node hashes 128 bytes, one Keccak-f block like a
+  pairwise node, so a path takes about half the Keccak-f calls. A native WHIR
+  recursion layer chooses its output trees' arity in
+  `NativeBinaryRecursionOptions::arity`; both native recursion examples use four
+  digests unless given `--merkle-arity 2`.
 - **Binary hash configurations.** `p3_test_utils::binary_field_params` provides the
   configuration `p3-binary-pcs` tests with, once per hash (`keccak` and `blake3` submodules
   with identical item names):
@@ -266,4 +273,4 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
 - Efficient bounded-size composition across many native layers. Output
   authorities can prepare subsequent layers, but dense Keccak oracle openings
   currently make those verifier circuits grow substantially.
-- MMCS trees of arity above two.
+- Folding-PCS MMCS trees of arity above two.

@@ -44,13 +44,17 @@ retains the trusted child authority and
 binds the recursive proof to the caller's original expected public values. Its
 output authority can prepare another binary layer. The example uses development
 security parameters, non-hiding proofs and explicit allocation limits; its
-recursive verifier levels off from layer 4.
+recursive verifier levels off from layer 4. Under WHIR its layers commit with
+four-digest Keccak Merkle trees, each node one Keccak-f block like a pairwise
+node over half the levels; `--merkle-arity 2` selects pairwise trees.
 
 The [native polynomial recursion example](examples/native_poly_recursion.rs) proves
 and verifies a Poly64 verifier circuit over Poly64 with Poly192 challenges:
 `cargo run -p p3-recursion --profile optimized --features parallel --example native_poly_recursion -- --layers 1`.
 `prepared::PreparedNativeBinaryPolyWhirLayer` retains the Poly64 child authority
 and preserves the caller's expected public values in native Poly64 cells.
+Its layers also commit with four-digest Keccak Merkle trees unless given
+`--merkle-arity 2`.
 Both prepared owners offer `from_native_authority_with_construction_limits`.
 The examples use it to check expression, connection and non-primitive entry
 counts during construction, before lowering and the separate circuit, trace
