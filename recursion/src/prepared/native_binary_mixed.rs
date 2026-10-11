@@ -43,7 +43,7 @@ type OutputAir = NativeBusCircuitAir<F>;
 pub type NativeBinaryMixedRecursiveProof = MultiStarkProof<BinaryNativeMixedWhirConfig>;
 
 /// Row variables one field element of the packed commitment absorbs.
-const ABSORBED_VARIABLES: usize = 7;
+const ABSORBED_VARIABLES: usize = BinaryNativeMixedWhirPcsParameters::ABSORBED_VARIABLES;
 
 /// The ordinary native output options plus the packed commitment's protocol. The packed
 /// commitment uses the base options' hash and cap height.

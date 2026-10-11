@@ -28,6 +28,7 @@ use p3_commit::MultilinearPcs;
 use p3_field::Field;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::plan_stacked_layout;
+use p3_sumcheck::ring_switch::bits::BitRingSwitch;
 use p3_sumcheck::{
     OpeningEvals, OpeningProtocol, PrescribedOpeningSecurity, PrescribedPointPcs, TableSpec,
 };
@@ -161,7 +162,8 @@ pub struct NativeMixedWhirPcsParameters<P> {
 }
 
 /// The packed-bit part: the table it commits, the variable count of that table's bit stack,
-/// and WHIR parameters over seven variables fewer, the ones each field element absorbs.
+/// and WHIR parameters over [`NativeMixedWhirPcsParameters::ABSORBED_VARIABLES`] variables
+/// fewer, the ones each field element absorbs.
 #[derive(Clone)]
 pub(in crate::artifact::binary_native) struct PackedTableParameters<P> {
     pub(in crate::artifact::binary_native) whir: P,
@@ -170,6 +172,10 @@ pub(in crate::artifact::binary_native) struct PackedTableParameters<P> {
 }
 
 impl<P: MixedWhirPartParameters> NativeMixedWhirPcsParameters<P> {
+    /// Row variables one packed field element absorbs: seven for a Tower128 element, six for a
+    /// Poly64 one.
+    pub const ABSORBED_VARIABLES: usize = BitRingSwitch::<P::Val, P::Challenge>::ABSORBED;
+
     /// A dense commitment of every table: the preprocessing commitment's parameters. Setup
     /// refuses them for the main commitment, which bit-commits one table through
     /// [`Self::with_packed_table`].
