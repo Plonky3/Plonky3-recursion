@@ -386,10 +386,9 @@ fn tampered_rows_fail_the_bound_readings() {
 
 /// Every high length up to the native fixed point's 21, without a successor
 /// and with every kept row count, against the released closing weight. The
-/// prime-host gadget's BabyBear circuit is slow in debug builds (about ten
-/// seconds at one high coordinate, thirty at two), so two cases also run it:
-/// the identity tensor, and one coordinate with a successor, which exercises
-/// the equality factor and both exterior products.
+/// prime-host gadget's BabyBear circuit is slow in debug builds, so two cases
+/// also run it: the identity tensor, and one coordinate with a successor,
+/// which exercises the equality factor and both exterior products.
 #[test]
 fn closing_weight_matches_released_and_prime_weights() {
     const PRIME_CASES: [(usize, Option<usize>); 2] = [(0, None), (1, Some(1))];
