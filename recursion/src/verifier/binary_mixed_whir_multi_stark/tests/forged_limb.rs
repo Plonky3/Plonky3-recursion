@@ -1,7 +1,5 @@
 //! A forged sixteen-bit limb with its seventeenth coordinate lifted into the Keccak state.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-
 use p3_binary_pcs::BooleanTraceCommitmentError;
 use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::{AluOpKind, Op, WitnessId};
@@ -9,6 +7,7 @@ use p3_circuit_prover::native_bus::KeccakCommitment;
 use p3_keccak::Keccak256Hash;
 use p3_keccak_air::NUM_KECCAK_BINARY_COLS;
 use p3_multi_stark::ProvingError;
+use p3_multi_stark::zerocheck::ZerocheckError;
 use p3_symmetric::CryptographicHasher;
 use p3_whir::WhirConfigError;
 
@@ -124,9 +123,11 @@ fn patch_witness_cells(
 
 /// A word with a seventeenth coordinate absorbed in the second Keccak block passes the fanout,
 /// gate and bridge rows. Lifting the matching Keccak state bit to carry it leaves a state cell
-/// outside {0, 1}. Under the dense commitment the Keccak AIR's booleanity constraints refuse
-/// it; under the bit commitment the commitment itself refuses the cell before the transcript
-/// moves.
+/// outside {0, 1}, and the forged traces are refused in both modes. Under the dense commitment
+/// they prove, and the zerocheck refuses the proof; the lifted cell breaks the Keccak AIR's
+/// constraints, booleanity and the round transition alike, so this does not show which of them
+/// refuses it. Under the bit commitment the commitment refuses the cell before the transcript
+/// moves, so nothing is bound.
 #[test]
 fn forged_sixteen_bit_limb_is_refused_in_both_modes() {
     const WORDS: usize = 70;
@@ -186,47 +187,47 @@ fn forged_sixteen_bit_limb_is_refused_in_both_modes() {
             .collect::<Vec<_>>()
     };
 
-    // Dense: the proof is refused at proving or at verification.
+    // Dense: the forged traces prove, and the zerocheck refuses the proof.
     let config = Parameters::new(dense.airs(), dense.log_heights(), None).config();
     let airs = dense.airs().iter().collect::<Vec<_>>();
     let (proving, verifying) = setup(&config, &airs, &mut challenger()).unwrap();
-    let attempt = catch_unwind(AssertUnwindSafe(|| {
-        prove(
-            &config,
-            ProverInstances::new(
-                airs.iter()
-                    .zip(forged_tables())
-                    .zip(&public)
-                    .map(|((air, table), public)| {
-                        ProverInstance::new(*air, table, &proving, public)
-                    })
-                    .collect(),
-            ),
-            0,
-            &mut challenger(),
-        )
-    }));
-    if let Ok(Ok(proof)) = attempt {
-        let verified = verify(
-            &config,
-            VerifierInstances::new(
-                airs.iter()
-                    .zip(dense.log_heights())
-                    .zip(&public)
-                    .map(|((air, &height), public)| {
-                        VerifierInstance::new(*air, &verifying, height, public)
-                    })
-                    .collect(),
-            ),
-            &proof,
-            0,
-            &mut challenger(),
-        );
-        assert!(
-            verified.is_err(),
-            "the dense commitment accepted the lifted cell"
-        );
-    }
+    let proof = prove(
+        &config,
+        ProverInstances::new(
+            airs.iter()
+                .zip(forged_tables())
+                .zip(&public)
+                .map(|((air, table), public)| ProverInstance::new(*air, table, &proving, public))
+                .collect(),
+        ),
+        0,
+        &mut challenger(),
+    )
+    .unwrap();
+    let verified = verify(
+        &config,
+        VerifierInstances::new(
+            airs.iter()
+                .zip(dense.log_heights())
+                .zip(&public)
+                .map(|((air, &height), public)| {
+                    VerifierInstance::new(*air, &verifying, height, public)
+                })
+                .collect(),
+        ),
+        &proof,
+        0,
+        &mut challenger(),
+    );
+    assert!(
+        matches!(
+            verified,
+            Err(p3_multi_stark::VerificationError::Zerocheck(
+                ZerocheckError::FinalSumMismatch
+            ))
+        ),
+        "{verified:?}"
+    );
 
     // Bits: the commitment refuses the cell before binding anything, and so does the prover.
     let config = Parameters::new(bits.airs(), bits.log_heights(), Some(keccak)).config();
