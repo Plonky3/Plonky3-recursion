@@ -6,9 +6,10 @@ use alloc::vec::Vec;
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusTrace};
 use p3_field::PrimeCharacteristicRing;
+use p3_multi_stark::config::PcsError;
 use p3_multi_stark::{
     MultiStarkProof, ProverInstance, ProverInstances, VerificationError as StarkError,
-    VerifierInstance, VerifierInstances, prove_with_security, verify_with_security,
+    VerifierInstance, VerifierInstances, VerifyingKey, prove_with_security, verify_with_security,
 };
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
@@ -33,6 +34,14 @@ fn challenger() -> BinaryNativeChallenger<F> {
 }
 
 fn whir(num_variables: usize, arity: MerkleArity) -> BinaryNativePolyWhirPcsParameters {
+    whir_with_cap(num_variables, arity, CAP_HEIGHT)
+}
+
+fn whir_with_cap(
+    num_variables: usize,
+    arity: MerkleArity,
+    cap_height: usize,
+) -> BinaryNativePolyWhirPcsParameters {
     BinaryNativePolyWhirPcsParameters::with_limits(
         num_variables,
         ProtocolParameters {
@@ -45,7 +54,7 @@ fn whir(num_variables: usize, arity: MerkleArity) -> BinaryNativePolyWhirPcsPara
         },
         HASH,
         arity,
-        CAP_HEIGHT,
+        cap_height,
         &VerifierLimits::default(),
     )
     .unwrap()
@@ -99,6 +108,33 @@ fn config(bus: &NativeBusCircuit<F>, arity: MerkleArity) -> Config {
     Config::new(main, Some(preprocessed)).unwrap()
 }
 
+/// Verifies a proof of the chain under `config` and its verifying key.
+fn verify_chain(
+    bus: &NativeBusCircuit<F>,
+    public: &[Vec<F>],
+    config: &Config,
+    verifying: &VerifyingKey<Config>,
+    proof: &MultiStarkProof<Config>,
+) -> Result<(), StarkError<PcsError<Config>>> {
+    verify_with_security(
+        config,
+        VerifierInstances::new(
+            bus.airs()
+                .iter()
+                .zip(bus.log_heights())
+                .zip(public)
+                .map(|((air, &height), public)| {
+                    VerifierInstance::new(air, verifying, height, public)
+                })
+                .collect(),
+        ),
+        proof,
+        POW_BITS,
+        TARGET_BITS,
+        &mut challenger(),
+    )
+}
+
 /// A packed element absorbs the base-two logarithm of its bit count in row variables, so the
 /// packed WHIR of a Poly64 table runs over one variable more than a Tower128 table's would.
 #[test]
@@ -112,11 +148,15 @@ fn absorbed_variables_follow_the_packing_field() {
 
 /// The Keccak table travels as packed bits at either tree arity: each part's cap holds
 /// `arity^c` roots, the dense opening carries every other table, and the packed opening
-/// authenticates the Keccak values on its own.
+/// authenticates the Keccak values on its own. A proof on trees of one arity carries caps of
+/// the other's length, which the configuration at the other arity binds whole: every challenge
+/// after the cap parts from the prover's, and the bus argument refuses the proof before the
+/// opening is read.
 #[test]
 fn poly_nativebus_bits_round_trip_at_both_arities() {
     let (bus, public, tables) = bus();
     let airs = bus.airs().iter().collect::<Vec<_>>();
+    let mut runs = Vec::new();
     for arity in [MerkleArity::Two, MerkleArity::Four] {
         let config = config(&bus, arity);
         let (proving, verifying) =
@@ -138,22 +178,7 @@ fn poly_nativebus_bits_round_trip_at_both_arities() {
         )
         .unwrap();
         let verify = |proof: &MultiStarkProof<Config>| {
-            verify_with_security(
-                &config,
-                VerifierInstances::new(
-                    airs.iter()
-                        .zip(bus.log_heights())
-                        .zip(&public)
-                        .map(|((air, &height), public)| {
-                            VerifierInstance::new(*air, &verifying, height, public)
-                        })
-                        .collect(),
-                ),
-                proof,
-                POW_BITS,
-                TARGET_BITS,
-                &mut challenger(),
-            )
+            verify_chain(&bus, &public, &config, &verifying, proof)
         };
         verify(&proof).unwrap();
 
@@ -167,6 +192,19 @@ fn poly_nativebus_bits_round_trip_at_both_arities() {
             matches!(
                 verify(&tampered),
                 Err(StarkError::Opening(MixedWhirError::Packed(_)))
+            ),
+            "{arity:?}"
+        );
+        runs.push((arity, config, verifying, proof));
+    }
+
+    for ((arity, config, verifying, _), (_, _, _, proof)) in
+        [(&runs[0], &runs[1]), (&runs[1], &runs[0])]
+    {
+        assert!(
+            matches!(
+                verify_chain(&bus, &public, config, verifying, proof),
+                Err(StarkError::BusArgument(_))
             ),
             "{arity:?}"
         );
@@ -193,6 +231,14 @@ fn poly_parts_on_other_trees_are_refused() {
 
     assert!(with_packed(whir(packed_variables, MerkleArity::Four)).is_ok());
     assert!(with_packed(whir(packed_variables, MerkleArity::Two)).is_err());
+    assert!(
+        with_packed(whir_with_cap(
+            packed_variables,
+            MerkleArity::Four,
+            CAP_HEIGHT + 1
+        ))
+        .is_err()
+    );
     let blake3 = BinaryNativePolyWhirPcsParameters::with_limits(
         packed_variables,
         dense.configuration().params().clone(),
@@ -211,4 +257,11 @@ fn poly_parts_on_other_trees_are_refused() {
     assert!(build(&packed, bits).is_ok());
     assert!(build(&packed, bits + 1).is_err());
     assert!(build(&whir(packed_variables, MerkleArity::Two), bits).is_err());
+    assert!(
+        build(
+            &whir_with_cap(packed_variables, MerkleArity::Four, CAP_HEIGHT + 1),
+            bits
+        )
+        .is_err()
+    );
 }
