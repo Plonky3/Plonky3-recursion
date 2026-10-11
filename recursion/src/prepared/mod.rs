@@ -22,8 +22,8 @@ pub use binary::{
     BinaryPolyStatementLayout, BinaryStatementLayout, PreparedBinaryBooleanTraceMultiStarkLayer,
     PreparedBinaryBooleanWhirTraceMultiStarkLayer,
     PreparedBinaryGroupedBooleanTraceMultiStarkLayer, PreparedBinaryGroupedMultiStarkLayer,
-    PreparedBinaryMultiStarkLayer, PreparedBinaryPolyWhirMultiStarkLayer,
-    PreparedBinaryWhirMultiStarkLayer,
+    PreparedBinaryMixedWhirMultiStarkLayer, PreparedBinaryMultiStarkLayer,
+    PreparedBinaryPolyWhirMultiStarkLayer, PreparedBinaryWhirMultiStarkLayer,
 };
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;

@@ -5,6 +5,8 @@ mod boolean_whir;
 pub use boolean_whir::PreparedBinaryBooleanWhirTraceMultiStarkLayer;
 mod grouped_boolean;
 mod lifecycle;
+mod mixed_whir;
+pub use mixed_whir::PreparedBinaryMixedWhirMultiStarkLayer;
 mod statement;
 pub use statement::BinaryPolyStatementLayout;
 mod poly_whir;

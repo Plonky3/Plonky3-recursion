@@ -83,6 +83,9 @@ impl<A: VerifierAir<E, E>> BinaryNativeMixedWhirAuthority<A> {
     pub fn canonical_verifier_bytes(&self) -> &[u8] {
         &self.state.identity
     }
+    pub(crate) fn shared_identity(&self) -> Arc<[u8]> {
+        self.state.identity.clone()
+    }
     pub fn artifact_limits(&self) -> &ArtifactLimits {
         &self.state.limits
     }
