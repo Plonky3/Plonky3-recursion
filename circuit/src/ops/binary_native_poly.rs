@@ -156,18 +156,20 @@ impl CircuitBuilder<Poly64> {
         a: &NativePoly192Target,
         b: &NativePoly192Target,
     ) -> NativePoly192Target {
-        let products: [[ExprId; 3]; 3] = core::array::from_fn(|i| {
-            core::array::from_fn(|j| self.mul(a.coefficients[i], b.coefficients[j]))
-        });
-        let z1 = self.add(products[0][1], products[1][0]);
-        let z2_cross = self.add(products[0][2], products[2][0]);
-        let z2 = self.add(z2_cross, products[1][1]);
-        let z3 = self.add(products[1][2], products[2][1]);
-        // y³ = y + 1 and y⁴ = y² + y.
-        let out0 = self.add(products[0][0], z3);
-        let out1_cross = self.add(z1, z3);
-        let out1 = self.add(out1_cross, products[2][2]);
-        let out2 = self.add(z2, products[2][2]);
+        let [a0, a1, a2] = a.coefficients;
+        let [b0, b1, b2] = b.coefficients;
+        let cross = self.mul(a1, b2);
+        let cross = self.mul_add(a2, b1, cross);
+        let high = self.mul(a2, b2);
+        // y³ = y + 1 and y⁴ = y² + y. Share their contributions and
+        // accumulate the remaining products with one ALU operation each.
+        let out0 = self.mul_add(a0, b0, cross);
+        let out1 = self.add(cross, high);
+        let out1 = self.mul_add(a0, b1, out1);
+        let out1 = self.mul_add(a1, b0, out1);
+        let out2 = self.mul_add(a0, b2, high);
+        let out2 = self.mul_add(a1, b1, out2);
+        let out2 = self.mul_add(a2, b0, out2);
         NativePoly192Target {
             coefficients: [out0, out1, out2],
         }

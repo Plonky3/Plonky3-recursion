@@ -107,6 +107,46 @@ fn native_cubic_arithmetic_matches_the_released_field() {
 }
 
 #[test]
+fn native_cubic_product_fits_ten_alu_operations() {
+    let mut builder = CircuitBuilder::<Poly64>::new();
+    let a = builder.alloc_public_input_array::<3>("a");
+    let b = builder.alloc_public_input_array::<3>("b");
+    let expected = builder.alloc_public_input_array::<3>("product");
+    let a = builder.native_poly192_from_coefficients(a);
+    let b = builder.native_poly192_from_coefficients(b);
+    let product = builder.native_poly192_mul(&a, &b);
+    for (&actual, &expected) in product.coefficients().iter().zip(&expected) {
+        builder.connect(actual, expected);
+    }
+    let circuit = builder.build().unwrap();
+    let alu_count = circuit
+        .ops
+        .iter()
+        .filter(|op| matches!(op, p3_circuit::Op::Alu { .. }))
+        .count();
+    assert!(
+        alu_count <= 10,
+        "cubic product uses {alu_count} ALU operations"
+    );
+    // y^4 = y^2 + y exercises both reductions of the high product.
+    let public = [0, 0, 1, 0, 0, 1, 0, 1, 1].map(Poly64::new);
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    runner.run().unwrap();
+    for index in 6..9 {
+        let mut wrong = public;
+        wrong[index] += Poly64::ONE;
+        let mut runner = circuit.runner();
+        assert!(
+            runner
+                .set_public_inputs(&wrong)
+                .and_then(|()| runner.run())
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn native_inverse_candidate_and_raw_constants_are_constrained() {
     let mut builder = CircuitBuilder::<Poly64>::new();
     let value = builder.alloc_public_input_array("value");
