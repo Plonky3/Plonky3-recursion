@@ -30,24 +30,24 @@ type F = BinaryField128;
 
 const CAP_HEIGHT: usize = 2;
 
-/// About 12% above the measured second-layer verifier: 670,091 expression
-/// nodes, 190,074 pending connections, 9,604 non-primitive calls and 821,648
+/// About 12% above the measured second-layer verifier: 518,114 expression
+/// nodes, 48,550 pending connections, 6,925 non-primitive calls and 741,288
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 751_000,
-    max_pending_connects: 213_000,
-    max_non_primitive_calls: 10_760,
-    max_non_primitive_slots: 921_000,
+    max_expression_nodes: 581_000,
+    max_pending_connects: 54_400,
+    max_non_primitive_calls: 7_760,
+    max_non_primitive_slots: 831_000,
 };
-/// About 12% above the measured 593,253 witnesses and 390,074 operations.
+/// About 12% above the measured 489,991 witnesses and 276,482 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 665_000,
-    max_operations: 437_000,
+    max_witnesses: 549_000,
+    max_operations: 310_000,
     max_trace_cells: 1 << 27,
 };
-/// About 12% above the measured 1,548 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 1_740;
+/// About 12% above the measured 1,561 native Keccak-f calls.
+const MAX_KECCAK_CALLS: usize = 1_750;
 /// About 12% above the measured 53 calls of the first transcript refill,
 /// whose 148 constant leading blocks take none.
 const MAX_FIRST_REFILL_CALLS: usize = 60;
