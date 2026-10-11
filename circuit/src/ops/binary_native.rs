@@ -230,3 +230,60 @@ impl<F: BinaryCoordinateField> HintExecutor<F> for CoordinateDecompositionHint {
         Box::new(self.clone())
     }
 }
+
+/// Writes the low-first raw sixteen-coordinate words of one scalar.
+#[derive(Clone, Debug)]
+pub(crate) struct WordSplitHint;
+
+impl<F: BinaryCoordinateField> HintExecutor<F> for WordSplitHint {
+    fn execute(
+        &self,
+        inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        witness: &mut [Option<F>],
+    ) -> Result<(), CircuitError> {
+        if inputs.len() != 1 {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "WordSplitHint".into(),
+                expected: 1,
+                got: inputs.len(),
+            });
+        }
+        if outputs.len() > F::COORDINATE_BITS / 16 {
+            return Err(CircuitError::BinaryDecompositionTooManyBits {
+                expected: F::COORDINATE_BITS,
+                n_bits: outputs.len().saturating_mul(16),
+            });
+        }
+        let input = inputs[0];
+        let value = witness
+            .get(input.0 as usize)
+            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: input })?
+            .ok_or(CircuitError::WitnessNotSet { witness_id: input })?
+            .to_raw_coordinates();
+        for (j, &output) in outputs.iter().enumerate() {
+            let word = F::from_raw_coordinates(value >> (16 * j) & 0xffff)
+                .expect("a sixteen-coordinate word fits every carrier with a word");
+            let slot = witness
+                .get_mut(output.0 as usize)
+                .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: output })?;
+            if let Some(existing) = slot {
+                if *existing != word {
+                    return Err(CircuitError::WitnessConflict {
+                        witness_id: output,
+                        existing: format!("{existing:?}"),
+                        new: format!("{word:?}"),
+                        expr_ids: vec![],
+                    });
+                }
+            } else {
+                *slot = Some(word);
+            }
+        }
+        Ok(())
+    }
+
+    fn boxed(&self) -> Box<dyn HintExecutor<F>> {
+        Box::new(self.clone())
+    }
+}

@@ -4,14 +4,13 @@
 //! materialized, constrained and reconstructed only at serialization boundaries.
 //! GHASH and polynomial carriers must not use this field's multiplication.
 
-use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
-use alloc::{format, vec};
 
 use p3_binary_field::{BinaryField128, TowerLevel};
 
-use crate::ops::HintExecutor;
-use crate::{CircuitBuilder, CircuitBuilderError, CircuitError, ExprId, WitnessId};
+use super::binary_native::WordSplitHint;
+use crate::{CircuitBuilder, CircuitBuilderError, ExprId};
 
 /// A native Tower128 scalar belonging to one builder's expression graph.
 ///
@@ -190,61 +189,5 @@ impl CircuitBuilder<BinaryField128> {
         self.connect(value.value, sum);
         self.check_construction_limits()?;
         Ok(words)
-    }
-}
-
-/// Writes the low-first raw sixteen-coordinate words of one tower scalar.
-#[derive(Clone, Debug)]
-struct WordSplitHint;
-
-impl HintExecutor<BinaryField128> for WordSplitHint {
-    fn execute(
-        &self,
-        inputs: &[WitnessId],
-        outputs: &[WitnessId],
-        witness: &mut [Option<BinaryField128>],
-    ) -> Result<(), CircuitError> {
-        if inputs.len() != 1 {
-            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
-                op: "WordSplitHint".into(),
-                expected: 1,
-                got: inputs.len(),
-            });
-        }
-        if outputs.len() > 8 {
-            return Err(CircuitError::BinaryDecompositionTooManyBits {
-                expected: 128,
-                n_bits: outputs.len().saturating_mul(16),
-            });
-        }
-        let input = inputs[0];
-        let value = witness
-            .get(input.0 as usize)
-            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: input })?
-            .ok_or(CircuitError::WitnessNotSet { witness_id: input })?
-            .to_repr();
-        for (j, &output) in outputs.iter().enumerate() {
-            let word = BinaryField128::from_repr(value >> (16 * j) & 0xffff);
-            let slot = witness
-                .get_mut(output.0 as usize)
-                .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: output })?;
-            if let Some(existing) = slot {
-                if *existing != word {
-                    return Err(CircuitError::WitnessConflict {
-                        witness_id: output,
-                        existing: format!("{existing:?}"),
-                        new: format!("{word:?}"),
-                        expr_ids: vec![],
-                    });
-                }
-            } else {
-                *slot = Some(word);
-            }
-        }
-        Ok(())
-    }
-
-    fn boxed(&self) -> Box<dyn HintExecutor<BinaryField128>> {
-        Box::new(self.clone())
     }
 }
