@@ -17,7 +17,7 @@ use super::*;
 use crate::artifact::binary_native::MixedWhirError;
 
 /// The assignment reached by replaying `circuit` from `public` and `private` as the runner
-/// does, except that hints and native Keccak calls keep their `honest` outputs: the witness of
+/// does, except that hints and native hash calls keep their `honest` outputs: the witness of
 /// a prover who claims the honest digests.
 pub(super) fn replay(circuit: &Circuit<F>, honest: &[F], public: &[F], private: &[F]) -> Vec<F> {
     fn assign(w: &mut [Option<F>], id: WitnessId, value: F) {
@@ -91,7 +91,7 @@ pub(super) fn replay(circuit: &Circuit<F>, honest: &[F], public: &[F], private: 
 
 /// Writes `forged` into every fanout, gate and bridge cell whose fixed label names a witness
 /// that differs from `honest`, and returns how many cells of each of those three tables
-/// changed. Keccak bit rows are left as they are.
+/// changed. Hash-table bit rows are left as they are.
 pub(super) fn patch_witness_cells(
     airs: &[NativeBusCircuitAir<F>],
     traces: &mut [RowMajorMatrix<F>],

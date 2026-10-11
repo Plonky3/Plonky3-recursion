@@ -459,7 +459,7 @@ fn native_product_buses_fix_the_precomputed_state_of_constant_poly64_bytes() {
 }
 
 /// The assignment reached by replaying `circuit` from `public` and `private`
-/// as the runner does, except that hints and native Keccak calls keep their
+/// as the runner does, except that hints and native hash calls keep their
 /// `honest` outputs: the witness of a prover who claims the honest digests.
 fn replay<F: Field>(circuit: &Circuit<F>, honest: &[F], public: &[F], private: &[F]) -> Vec<F> {
     fn assign<F: Field>(w: &mut [Option<F>], id: WitnessId, value: F) {
@@ -533,7 +533,7 @@ fn replay<F: Field>(circuit: &Circuit<F>, honest: &[F], public: &[F], private: &
 
 /// Writes `forged` into every fanout, gate and bridge cell whose fixed label
 /// names a witness that differs from `honest`, and returns how many cells of
-/// each of those three tables changed. Keccak bit rows are left as they are.
+/// each of those three tables changed. Hash-table bit rows are left as they are.
 fn patch_witness_cells<F: BinaryCoordinateField>(
     airs: &[NativeBusCircuitAir<F>],
     traces: &mut [RowMajorMatrix<F>],
