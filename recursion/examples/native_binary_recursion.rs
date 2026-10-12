@@ -5,9 +5,9 @@
 //! commits its hash table: as packed bits, 128 per field element, beside a dense commitment of
 //! every other table, or as field elements like every other table, and `--merkle-arity 4|2`
 //! selects four-digest or pairwise Merkle trees for every layer's commitments (default 4 under
-//! Keccak and 2 under Blake3, whose four-digest node costs two compressions). With `--pcs folding`, which commits
-//! every table densely, `--leaves coset|symbol` selects whether each Merkle leaf is one fold
-//! coset or one codeword symbol.
+//! Keccak and 2 under Blake3, whose four-digest node costs two compressions). With
+//! `--pcs folding`, which commits every table densely, `--leaves coset|symbol` selects whether
+//! each Merkle leaf is one fold coset or one codeword symbol.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_binary_recursion -- --layers 3
@@ -240,7 +240,7 @@ impl Args {
                 .unwrap_or(usize::MAX)
         })
     }
-    /// `--keccak-commitment`, or the default for the selected commitment.
+    /// `--hash-commitment`, or the default for the selected commitment.
     fn hash_commitment(&self) -> HashCommitment {
         self.hash_commitment.unwrap_or(match self.pcs {
             Pcs::Whir => HashCommitment::Packed,
@@ -431,7 +431,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("--hash blake3 requires --pcs whir".into());
     }
     if args.pcs == Pcs::Folding && args.hash_commitment() == HashCommitment::Packed {
-        return Err("--keccak-commitment packed requires --pcs whir".into());
+        return Err("--hash-commitment packed requires --pcs whir".into());
     }
     if args.pcs == Pcs::Folding && args.merkle_arity() == MerkleArity::Four {
         return Err("--merkle-arity 4 requires --pcs whir".into());
