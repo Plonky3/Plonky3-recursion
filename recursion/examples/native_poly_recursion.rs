@@ -21,20 +21,21 @@
 //!
 //! | hash   | arity | witnesses | codeword cells | last layer | wall   | resident | footprint |
 //! |--------|-------|-----------|----------------|------------|--------|----------|-----------|
-//! | blake3 | 2     | 1,387,129 | 184,549,376    | 3.0 s      | 7.4 s  | 9.2 GB   | 7.8 GB    |
-//! | keccak | 4     | 954,320   | 117,440,512    | 4.3 s      | 9.3 s  | 6.4 GB   | 5.9 GB    |
-//! | blake3 | 4     | 1,451,316 | 218,103,808    | 3.6 s      | 8.5 s  | 9.7 GB   | 8.1 GB    |
+//! | blake3 | 2     | 1,364,308 | 117,440,512    | 2.4 s      | 7.4 s  | 5.5 GB   | 5.0 GB    |
+//! | keccak | 4     | 941,657   | 117,440,512    | 4.2 s      | 9.1 s  | 6.6 GB   | 5.9 GB    |
+//! | blake3 | 4     | 1,437,012 | 117,440,512    | 2.3 s      | 7.5 s  | 6.1 GB   | 5.0 GB    |
 //!
-//! Blake3 proves the last layer in less time than Keccak but needs about 45% more witnesses,
-//! 57% more codeword cells and 43% more resident memory. A four-digest node costs two Blake3
-//! compressions, so under Blake3 a four-digest tree saves no compressions over half the levels
-//! while it opens three siblings per level, and arity 2 is faster. Layer 1 has
-//! 4,778 witnesses and 524,288 codeword cells and takes 0.65 s under the default, and 8,264
-//! witnesses and 1,048,576 cells under `--hash keccak`.
+//! Blake3 proves the last layer in less time than Keccak with as many codeword cells and less
+//! resident memory, although it needs about 45% more witnesses. A four-digest node costs two
+//! Blake3 compressions, so under Blake3 a four-digest tree saves no compressions over half the
+//! levels while it opens three siblings per level: it takes about as long as arity 2, with 5%
+//! more witnesses and more resident memory. Layer 1 has 4,778 witnesses and 524,288 codeword
+//! cells and takes 0.4 s under the default, and 8,264 witnesses and 1,048,576 cells under
+//! `--hash keccak`.
 //!
 //! Other jobs shared the machine, so wall times are noisy. The user CPU time of a whole run
-//! was 64 s for the default against 72 s for `--hash keccak`. Under Keccak, a four-digest node
-//! absorbs one Keccak-f block, as a pairwise node does, and an opening walks half as many
+//! was 60 s for the default against 75 to 79 s for `--hash keccak`. Under Keccak, a four-digest
+//! node absorbs one Keccak-f block, as a pairwise node does, and an opening walks half as many
 //! levels.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits count field cells

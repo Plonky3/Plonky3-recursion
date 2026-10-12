@@ -26,25 +26,25 @@
 //!
 //! | Command                       | arity | witnesses | codeword cells | proof bytes |
 //! |-------------------------------|-------|-----------|----------------|-------------|
-//! | `--layers 3`                  | 2     | 645,589   | 58,720,256     | 266,367     |
-//! | `--hash keccak --layers 3`    | 4     | 606,399   | 58,720,256     | 158,847     |
-//! | `--merkle-arity 4 --layers 3` | 4     | 705,307   | 58,720,256     | 284,575     |
+//! | `--layers 3`                  | 2     | 621,964   | 58,720,256     | 266,047     |
+//! | `--hash keccak --layers 3`    | 4     | 588,488   | 50,331,648     | 155,387     |
+//! | `--merkle-arity 4 --layers 3` | 4     | 689,680   | 58,720,256     | 284,671     |
 //!
 //! | Command                       | arity | last layer | wall   | resident | footprint |
 //! |-------------------------------|-------|------------|--------|----------|-----------|
-//! | `--layers 3`                  | 2     | 4.3 s      | 9.9 s  | 3.8 GB   | 3.3 GB    |
-//! | `--hash keccak --layers 3`    | 4     | 9.9 s      | 21.5 s | 4.2 GB   | 4.0 GB    |
-//! | `--merkle-arity 4 --layers 3` | 4     | 5.0 s      | 12.4 s | 3.5 GB   | 3.2 GB    |
+//! | `--layers 3`                  | 2     | 4.4 s      | 11.7 s | 3.9 GB   | 3.3 GB    |
+//! | `--hash keccak --layers 3`    | 4     | 9.7 s      | 21.1 s | 3.9 GB   | 3.7 GB    |
+//! | `--merkle-arity 4 --layers 3` | 4     | 4.9 s      | 10.3 s | 3.6 GB   | 3.2 GB    |
 //!
 //! Blake3 proves the last layer in under half the time of Keccak with less memory, and its
-//! proofs are 68% larger. A four-digest node costs two Blake3 compressions, so under Blake3 a
+//! proofs are 71% larger. A four-digest node costs two Blake3 compressions, so under Blake3 a
 //! four-digest tree saves no compressions over half the levels while it opens three siblings
-//! per level, and arity 2 is faster.
+//! per level, and arity 2 proves the last layer faster with smaller proofs.
 //!
 //! Other jobs shared the machine, so wall times are noisy. The user CPU time of a whole run
-//! varied far less: 94 to 97 s for the default against 195 to 214 s for `--hash keccak
-//! --layers 3`. Layer 1 has 4,518 witnesses and takes 0.6 s under the default, and 7,817
-//! witnesses and 0.6 s under `--hash keccak`. The default codeword-cell limit is 2^29 at
+//! varied far less: 101 s in both runs of the default against 194 to 203 s for `--hash keccak
+//! --layers 3`. Layer 1 has 4,518 witnesses and takes 0.7 to 1.4 s under the default, and
+//! 7,817 witnesses and 0.5 s under `--hash keccak`. The default codeword-cell limit is 2^29 at
 //! `--log-inv-rate 1`, doubled for each further rate bit and for `--pcs folding`, which
 //! multiplies every dense codeword.
 //!
