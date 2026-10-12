@@ -11,12 +11,14 @@
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::Poly64;
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::{ByteHash, NpoTypeId};
 use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, ExprId, Op};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit};
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
     BinaryNativeVerifierSpec, VerifiedBinaryNativePolyMixedWhirProof,
@@ -33,6 +35,7 @@ use p3_recursion::verifier::{
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 type F = Poly64;
+type H = NativeBinaryEncoding;
 /// A layer whose child is itself a mixed proof.
 type SecondLayer = PreparedNativeBinaryPolyMixedWhirLayer<BinaryPolyMixedWhirMultiStarkInputShape>;
 
@@ -57,11 +60,16 @@ const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
     max_operations: 584_000,
     max_trace_cells: 1 << 27,
 };
-/// About 12% above the measured 1,464 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 1_640;
+/// About 12% above the measured 765,220 expression nodes of the child's mixed verifier.
+const MAX_VERIFIER_NODES: usize = 857_000;
+/// About 8% above the measured 1,464 native Keccak-f calls, and below the 1,591 calls of a
+/// second layer over a dense child (`native_poly_second_layer`), so a layer whose child
+/// verifier hashed the Keccak table densely fails it.
+const MAX_KECCAK_CALLS: usize = 1_580;
 /// About 12% above the measured 54,525,952 initial codeword cells.
 const MAX_CODEWORD_CELLS: usize = 61_100_000;
-/// Measured padded witness, gate, public, Keccak and bridge table heights. One more row of growth at a power-of-two boundary doubles that table.
+/// Measured padded witness, gate, public, Keccak and bridge table heights. One more row of
+/// growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [21, 19, 4, 16, 12];
 
 struct SquaringAir;
@@ -211,11 +219,40 @@ fn second_poly_mixed_layer_is_bounded_and_refuses_a_forged_child() {
         checked,
         second,
     } = prepare();
-    let shape = first.authority().recursive_verifier().input_shape();
+    let child = first.authority();
+    let verifier = child.recursive_verifier();
+    let shape = verifier.input_shape();
     assert_eq!(
         second.child_public_value_counts(),
         shape.public_value_counts().collect::<Vec<_>>()
     );
+
+    // The child verifier rebuilt as the layer builds it: public statement, proof targets,
+    // initial transcript, then the native mixed verifier.
+    let mut scratch = CircuitBuilder::<F>::new();
+    scratch.enable_native_keccak_f1600().unwrap();
+    let public: Vec<Vec<_>> = shape
+        .public_value_counts()
+        .map(|count| (0..count).map(|_| scratch.public_input()).collect())
+        .collect();
+    let targets = shape.allocate_native_targets(&mut scratch).unwrap();
+    let initial: Vec<_> = child
+        .initial_bytes()
+        .iter()
+        .map(|&byte| scratch.define_const(H::encode_u16(u16::from(byte)).unwrap()))
+        .collect();
+    let challenger = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
+        &mut scratch,
+        child.transcript_hash(),
+        &initial,
+    )
+    .unwrap();
+    let before = scratch.construction_usage().unwrap().expression_nodes;
+    verifier
+        .verify_native(&mut scratch, challenger, &public, &targets)
+        .unwrap();
+    let nodes = scratch.construction_usage().unwrap().expression_nodes - before;
+    let scratch = scratch.build().unwrap();
 
     let circuit = second.circuit();
     let keccak_calls = circuit
@@ -231,16 +268,18 @@ fn second_poly_mixed_layer_is_bounded_and_refuses_a_forged_child() {
         NativeBusCircuit::with_options(circuit, "recursion", FOLD, CIRCUIT, KeccakCommitment::Bits)
             .unwrap();
     eprintln!(
-        "second Poly64 mixed layer: {} witnesses, {} operations, {keccak_calls} Keccak-f calls, \
-         log heights {:?}, {:?} packed bit variables, {} initial codeword cells",
+        "second Poly64 mixed layer: {nodes} child verifier nodes, {} witnesses, {} operations, \
+         {keccak_calls} Keccak-f calls, log heights {:?}, {:?} packed bit variables, {} initial \
+         codeword cells",
         circuit.witness_count,
         circuit.ops.len(),
         bus.log_heights(),
         bus.packed_bit_variables(),
         second.initial_codeword_cells(),
     );
+    assert_eq!(scratch.witness_count, circuit.witness_count);
+    assert!(nodes <= MAX_VERIFIER_NODES);
     assert!(keccak_calls <= MAX_KECCAK_CALLS);
-    assert!(bus.packed_bit_variables().is_some());
     assert!(second.initial_codeword_cells() <= MAX_CODEWORD_CELLS);
     assert_eq!(bus.log_heights().len(), MAX_LOG_HEIGHTS.len());
     assert!(
@@ -251,10 +290,7 @@ fn second_poly_mixed_layer_is_bounded_and_refuses_a_forged_child() {
     );
 
     // The verifier allocates its private inputs only through the child input shape and in this
-    // order, so a scratch allocation locates proof fields in the layer circuit.
-    let mut scratch = CircuitBuilder::<F>::new();
-    let targets = shape.allocate_native_targets(&mut scratch).unwrap();
-    let scratch = scratch.build().unwrap();
+    // order, so the scratch circuit locates proof fields in the layer circuit.
     let position = |expr: ExprId| {
         let id = scratch.expr_to_widx[&expr];
         scratch
@@ -286,10 +322,16 @@ fn second_poly_mixed_layer_is_bounded_and_refuses_a_forged_child() {
 
     // Every coefficient of the bit-committed Keccak table's first opened value, as the child
     // proof carries it.
-    assert!(first_proof.opening.packed.is_some());
-    for opened in targets.packed.values[0].coefficients() {
+    let packed = &first_proof.opening.packed.as_ref().unwrap().values;
+    for (opened, value) in targets.packed.values[0]
+        .coefficients()
+        .iter()
+        .zip(packed[0].coefficients())
+    {
+        let opened = position(*opened);
+        assert_eq!(private[opened], value);
         let mut forged = private.clone();
-        forged[position(*opened)] += F::ONE;
+        forged[opened] += F::ONE;
         assert!(run(&statement, &forged).is_err());
     }
 
