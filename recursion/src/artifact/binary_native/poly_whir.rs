@@ -1,6 +1,10 @@
 //! Factory-owned native additive WHIR proofs and checked recursion input.
 
+use p3_air::Air;
 use p3_binary_field::{Poly64, Poly192};
+use p3_field::Field;
+use p3_multi_stark::folder::{InteractionMultilinearFolder, MultilinearFolder};
+use p3_multi_stark::packed_ext::PackedExt;
 use p3_sumcheck::layout::SuffixProver;
 
 use super::config::{
@@ -9,6 +13,13 @@ use super::config::{
 use super::family::PolyWhirFamily;
 use super::*;
 use crate::verifier::{BinaryPolyWhirMultiStarkVerifier, NativeBinaryPolyWhirMultiStarkInput};
+
+/// The packing of [`Poly64`].
+type Poly64Packing = <Poly64 as Field>::Packing;
+/// The packing of [`Poly192`] over [`Poly64Packing`].
+type Poly192Packing = <Poly192 as ExtensionField<Poly64>>::ExtensionPacking;
+/// [`Poly192`] as packed [`Poly64`] coordinates.
+type Poly192PackedExt = PackedExt<Poly64, Poly192Packing>;
 
 /// Trusted AIRs, matched native key and exact additive domain and layout.
 pub struct BinaryNativePolyWhirAuthority<A, L = SuffixProver<Poly64, Poly192>>
@@ -123,10 +134,20 @@ where
         })
     }
 }
+// The bounds of `p3_multi_stark::folder::ProverAir<Poly64, Poly192>`, with all six folders
+// under one binder. Where `Poly64` is its own packing, the scalar and packed folders are the
+// same type: under one binder their bounds are one where-clause, whereas the separately
+// bound supertraits of `ProverAir` leave two that the trait solver finds ambiguous.
 impl<A, L> BinaryNativePolyWhirProver<A, L>
 where
     L: BinaryNativePolyWhirLayout,
-    A: p3_multi_stark::folder::ProverAir<Poly64, Poly192>,
+    A: VerifierAir<Poly64, Poly192>,
+    for<'a> A: Air<MultilinearFolder<'a, Poly64, Poly64, Poly192>>
+        + Air<MultilinearFolder<'a, Poly64, Poly64Packing, Poly192Packing>>
+        + Air<MultilinearFolder<'a, Poly64, Poly192PackedExt, Poly192PackedExt>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly64, Poly192>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly64Packing, Poly192Packing>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly192PackedExt, Poly192PackedExt>>,
 {
     /// Ordinary row-major AIR traces. Trusted shapes are checked before
     /// commitment or any native transcript mutation.
