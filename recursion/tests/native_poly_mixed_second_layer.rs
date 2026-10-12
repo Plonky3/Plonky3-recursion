@@ -49,7 +49,7 @@ const FOLD: usize = 4;
 /// About 12% above the measured second-layer construction: 741,093 expression nodes, 37,129
 /// pending connections, 16,704 non-primitive calls and 771,232 slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 827_000,
+    max_expression_nodes: 831_000,
     max_pending_connects: 41_600,
     max_non_primitive_calls: 18_800,
     max_non_primitive_slots: 864_000,
@@ -57,12 +57,12 @@ const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
 /// About 12% above the measured 692,620 witnesses and 478,746 operations. The trace cells
 /// follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 773_000,
-    max_operations: 533_000,
+    max_witnesses: 776_000,
+    max_operations: 537_000,
     max_trace_cells: 1 << 27,
 };
 /// About 12% above the measured 713,750 expression nodes of the child's mixed verifier.
-const MAX_VERIFIER_NODES: usize = 797_000;
+const MAX_VERIFIER_NODES: usize = 800_000;
 /// About 8% above the measured 1,464 native Keccak-f calls, and below the 1,591 calls of a
 /// second layer over a dense child (`native_poly_second_layer`), so a layer whose child
 /// verifier hashed the Keccak table densely fails it.

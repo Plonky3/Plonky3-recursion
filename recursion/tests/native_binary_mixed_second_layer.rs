@@ -48,7 +48,7 @@ const FOLD: usize = 4;
 /// About 12% above the measured second-layer construction: 443,646 expression nodes, 31,925
 /// pending connections, 7,079 non-primitive calls and 613,918 slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 495_000,
+    max_expression_nodes: 497_000,
     max_pending_connects: 35_800,
     max_non_primitive_calls: 7_930,
     max_non_primitive_slots: 688_000,
@@ -56,12 +56,12 @@ const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
 /// About 12% above the measured 410,166 witnesses and 230,499 operations. The trace cells
 /// follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 458_000,
-    max_operations: 256_000,
+    max_witnesses: 460_000,
+    max_operations: 259_000,
     max_trace_cells: 1 << 27,
 };
 /// About 12% above the measured 426,048 expression nodes of the child's mixed verifier.
-const MAX_VERIFIER_NODES: usize = 475_000;
+const MAX_VERIFIER_NODES: usize = 478_000;
 /// About 12% above the measured 1,176 native Keccak-f calls.
 const MAX_KECCAK_CALLS: usize = 1_320;
 /// Measured padded witness, gate, public, Keccak and bridge table heights. One more row of

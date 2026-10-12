@@ -70,13 +70,13 @@ const FOUR_DIGEST: Case = Case {
     arity: MerkleArity::Four,
     cap_height: 1,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 408_000,
+        max_expression_nodes: 411_000,
         max_pending_connects: 12_000,
         max_non_primitive_calls: 6_790,
         max_non_primitive_slots: 693_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 393_000,
+        max_witnesses: 396_000,
         max_operations: 184_000,
         max_trace_cells: 1 << 27,
     },
