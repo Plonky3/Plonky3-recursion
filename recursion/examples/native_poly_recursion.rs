@@ -39,6 +39,21 @@
 //! 3 need the default limit of 2^30 codeword cells, 8 GiB of Poly64 cells; at arity 4, layers 1
 //! to 3 stay within 2^29.
 //!
+//! `--hash blake3` measured against `--hash keccak` with `--keccak-commitment dense` on the same
+//! machine while other jobs shared it, so times vary from run to run (the range of two runs per
+//! row except at arity 4, one run). A hash call is one Keccak-f or one Blake3 compression, each
+//! at its hash's default arity unless shown:
+//!
+//! | hash   | arity | --layers | witnesses | hash calls | gate rows | codeword cells | last layer | resident |
+//! |--------|-------|----------|-----------|------------|-----------|----------------|------------|----------|
+//! | keccak | 4     | 3        | 1,362,313 | 2,227      | 1,047,133 | 335,544,320    | 7.1-9.3 s  | 14.7 GB  |
+//! | blake3 | 2     | 3        | 3,316,725 | 7,000      | 3,022,401 | 536,870,912    | 9.4-10.6 s | 18.6 GB  |
+//! | blake3 | 4     | 3        | 3,359,011 | 7,033      | 3,053,855 | 536,870,912    | 7.0 s      | 16.0 GB  |
+//!
+//! The Blake3 table holds 2^13 rows at layer 3, but the verifier checks its 11,536-column AIR
+//! over Poly192 and has 2.4 times the witnesses and 2.9 times the gate rows of the Keccak
+//! layer, which pads the fanout to 2^24 rows and the gate table to 2^22.
+//!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits count field cells
 //! or graph entries, not bytes.
 

@@ -45,6 +45,33 @@
 //! | `--log-inv-rate 2 --layers 2`          | 4     | 6.6 s      | 8.1 s  | 4.0 GB   | 3.9 GB    |
 //! | `--log-inv-rate 2 --layers 2`          | 2     | 10.7 s     | 11.9 s | 5.0 GB   | 4.9 GB    |
 //!
+//! `--hash blake3` measured against `--hash keccak` on the same machine while other jobs shared
+//! it, so times vary from run to run (the range of the runs; layer 3 has three runs per
+//! Keccak and Blake3 at arity 2, one at arity 4). A hash call is one Keccak-f or one
+//! Blake3 compression, each at its hash's default arity unless shown:
+//!
+//! | Command                                   | hash   | arity | witnesses | hash calls | gate rows | codeword cells |
+//! |-------------------------------------------|--------|-------|-----------|------------|-----------|----------------|
+//! | `--layers 3`                              | keccak | 4     | 746,649   | 1,748      | 491,140   | 58,720,256     |
+//! | `--layers 3`                              | blake3 | 2     | 793,020   | 5,336      | 574,091   | 109,051,904    |
+//! | `--layers 3 --hash blake3`                | blake3 | 4     | 834,249   | 5,375      | 604,520   | 109,051,904    |
+//! | `--hash-commitment dense --layers 2`      | keccak | 4     | 520,997   | 1,513      | 311,150   | 301,989,888    |
+//! | `--hash-commitment dense --layers 2`      | blake3 | 2     | 687,556   | 4,356      | 502,166   | 301,989,888    |
+//!
+//! | Command                                   | hash   | arity | last layer  | resident | proof bytes |
+//! |-------------------------------------------|--------|-------|-------------|----------|-------------|
+//! | `--layers 3`                              | keccak | 4     | 10.5-14.8 s | 4.2 GB   | 158,495     |
+//! | `--layers 3`                              | blake3 | 2     | 6.3-18.0 s  | 5.5 GB   | 269,871     |
+//! | `--layers 3 --hash blake3`                | blake3 | 4     | 6.0 s       | 5.4 GB   | 289,455     |
+//! | `--hash-commitment dense --layers 2`      | keccak | 4     | 24.0 s      | 10.0 GB  | 145,007     |
+//! | `--hash-commitment dense --layers 2`      | blake3 | 2     | 10.6 s      | 9.6 GB   | 257,263     |
+//!
+//! At layer 3 the Blake3 table has 2^13 rows, 5,336 of the 8,192 compressions it holds. The
+//! verifier's gate rows fill 55% of 2^20 (58% at arity 4) and so pad to 2^20 rows where
+//! Keccak's pad to 2^19, and its fanout pads to 2^22 rows instead of 2^21, which raises the
+//! initial codeword cells of a packed layer from 58.7M to 109.1M. A dense layer has the same
+//! cells under either hash.
+//!
 //! Layer 1 takes 0.7 s with 7,819 witnesses, and 0.5 s with 16,285 under `--pcs folding`. The
 //! default codeword-cell limit is 2^29 at `--log-inv-rate 1`, doubled for each further rate bit
 //! and for `--pcs folding`, which multiplies every dense codeword.
