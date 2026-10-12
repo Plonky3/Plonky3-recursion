@@ -117,8 +117,7 @@ impl Binary128SumcheckInterpolator {
         let mut iter = polynomial.into_iter().rev();
         let mut result = iter.next().expect("checked positive degree");
         for coefficient in iter {
-            let product = P::mul(b, &result, challenge);
-            result = P::add(b, &product, &coefficient);
+            result = P::mul_add(b, &result, challenge, &coefficient);
             b.check_construction_limits()?;
         }
         Ok(result)

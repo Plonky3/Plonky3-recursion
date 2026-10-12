@@ -38,7 +38,8 @@ use super::{BinaryRingClaimSpec, NativePolyBitTensorTarget, closing_weight_nativ
 use crate::BinaryTower128Challenger;
 use crate::transcript::domain_separator_seed;
 use crate::verifier::binary_field_policy::{
-    BinaryPolyPolicy, BinaryProtocolPolicy, NativePoly64Relation, poly_observe_seed_with_host,
+    BinaryPolyPolicy, BinaryProtocolPolicy, BinaryRelationPolicy, NativePoly64Relation,
+    poly_observe_seed_with_host,
 };
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
@@ -448,10 +449,8 @@ impl BinaryPolyBitRingVerifier {
                 let carry = carry.evaluate_rows(b, &batch)?;
                 let last = last.evaluate_rows(b, &batch)?;
                 // alpha * carry + alpha^2 * last, as alpha * (carry + alpha * last).
-                let scaled = b.native_poly192_mul(alpha, &last);
-                let inner = b.native_poly192_add(&carry, &scaled);
-                let outer = b.native_poly192_mul(alpha, &inner);
-                sum = b.native_poly192_add(&sum, &outer);
+                let inner = P::mul_add(b, alpha, &last, &carry);
+                sum = P::mul_add(b, alpha, &inner, &sum);
             }
             sums.push(sum);
             b.check_construction_limits()?;
@@ -598,8 +597,7 @@ fn batch_claims(
     let mut sum = last.clone();
     for term in rest.iter().rev() {
         let lambda = lambda.expect("several claims draw lambda");
-        let scaled = b.native_poly192_mul(lambda, &sum);
-        sum = b.native_poly192_add(term, &scaled);
+        sum = P::mul_add(b, lambda, &sum, term);
     }
     sum
 }
@@ -629,10 +627,9 @@ fn successor_within_element(
         };
         let weight = b.native_poly192_from_coefficients(weight);
         let column = tensor.column(b, v)?;
-        let term = b.native_poly192_mul(&column, &weight);
         reading = Some(match reading {
-            Some(sum) => b.native_poly192_add(&sum, &term),
-            None => term,
+            Some(sum) => P::mul_add(b, &column, &weight, &sum),
+            None => b.native_poly192_mul(&column, &weight),
         });
     }
     b.check_construction_limits()?;

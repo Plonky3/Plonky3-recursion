@@ -221,23 +221,23 @@ impl BinaryPolyBusVerifier {
                 }
                 let mut live = claims.offset.clone();
                 for (slot, weight) in claims.weights.iter().enumerate() {
-                    let term = match self
+                    live = match self
                         .input
                         .plan
                         .tuple_slot(share.bus, slot)
                         .ok_or_else(|| invalid("binary bus tuple slot mismatch"))?
                     {
-                        BusTupleSlot::Payload(i) => P::mul(
+                        BusTupleSlot::Payload(i) => P::mul_add(
                             b,
                             fields
                                 .get(i)
                                 .ok_or_else(|| invalid("binary bus payload width mismatch"))?,
                             weight,
+                            &live,
                         ),
-                        BusTupleSlot::DomainBit(true) => weight.clone(),
+                        BusTupleSlot::DomainBit(true) => P::add(b, &live, weight),
                         BusTupleSlot::DomainBit(false) | BusTupleSlot::Zero => continue,
                     };
-                    live = P::add(b, &live, &term);
                     b.check_construction_limits()?;
                 }
                 let mut shifted = P::add(b, &live, &one);
@@ -264,8 +264,7 @@ impl BinaryPolyBusVerifier {
                 if direction == BusDirection::Pull {
                     weight = P::mul(b, &weight, lambda);
                 }
-                let term = P::mul(b, &weight, &shifted);
-                terminal = P::add(b, &terminal, &term);
+                terminal = P::mul_add(b, &weight, &shifted, &terminal);
                 b.check_construction_limits()?;
             }
         }

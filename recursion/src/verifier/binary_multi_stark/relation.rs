@@ -551,8 +551,7 @@ where
                 &public[i],
                 &reduction.alpha,
             )?;
-            let term = P::mul(b, &weight, &evaluation.folded);
-            folded = P::add(b, &folded, &term);
+            folded = P::mul_add(b, &weight, &evaluation.folded, &folded);
             weight = P::mul(b, &weight, &reduction.beta);
             air_evaluations.push(evaluation);
         }

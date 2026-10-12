@@ -586,8 +586,7 @@ where
                     continue;
                 }
                 for eval in proof.evals[i].current().iter().chain(proof.evals[i].next()) {
-                    let term = P::mul(circuit, &power, eval);
-                    claim = P::add(circuit, &claim, &term);
+                    claim = P::mul_add(circuit, &power, eval, &claim);
                     power = P::mul(circuit, &power, &alpha);
                 }
             }
@@ -645,8 +644,7 @@ where
                         let selector_weight =
                             P::eq_eval(circuit, &selector_point, &fold_point[..selector_vars])?;
                         let selected_weight = P::mul(circuit, &selector_weight, &local_weight);
-                        let term = P::mul(circuit, &power, &selected_weight);
-                        weight = P::add(circuit, &weight, &term);
+                        weight = P::mul_add(circuit, &power, &selected_weight, &weight);
                         power = P::mul(circuit, &power, &alpha);
                     }
                 }

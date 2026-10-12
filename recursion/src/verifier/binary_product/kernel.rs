@@ -135,8 +135,7 @@ fn combine<P: BinaryProtocolPolicy<EF>, EF: Field + Eq + Hash>(
 ) -> Result<P::ChallengeTarget, VerificationError> {
     let mut result = P::constant(b, 0)?;
     for value in values.iter().rev() {
-        result = P::mul(b, &result, batching);
-        result = P::add(b, &result, value);
+        result = P::mul_add(b, &result, batching, value);
         b.check_construction_limits()?;
     }
     Ok(result)

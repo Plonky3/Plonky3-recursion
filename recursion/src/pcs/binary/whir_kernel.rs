@@ -202,8 +202,7 @@ where
                     .map(|pair| (pair, true)),
             )
         {
-            let weighted = P::mul(b, &power, value);
-            claim = P::add(b, &claim, &weighted);
+            claim = P::mul_add(b, &power, value, &claim);
             terms.push(Term {
                 variables: site.variables,
                 coefficient: power.clone(),
@@ -272,8 +271,7 @@ where
             Weight::Eq(point) => P::eq_eval(b, &point, &row)?,
             Weight::Select(point) => select_eval_using::<P, CF>(b, &point, &row)?,
         };
-        let scaled = P::mul(b, &term.coefficient, &value);
-        weight = P::add(b, &weight, &scaled);
+        weight = P::mul_add(b, &term.coefficient, &value, &weight);
         b.check_construction_limits()?;
     }
     let closing_r = oriented(&closing_r, p.order);
@@ -359,8 +357,7 @@ where
     };
     let mut sum = last.clone();
     for value in values {
-        let shifted = P::mul(b, &sum, x);
-        sum = P::add(b, value, &shifted);
+        sum = P::mul_add(b, &sum, x, value);
         b.check_construction_limits()?;
     }
     Ok(sum)
@@ -413,8 +410,7 @@ where
             None => value,
             Some(later) => {
                 let shift = powers.get::<P, CF>(b, count);
-                let shifted = P::mul(b, &shift, &later);
-                P::add(b, &value, &shifted)
+                P::mul_add(b, &shift, &later, &value)
             }
         });
         b.check_construction_limits()?;
