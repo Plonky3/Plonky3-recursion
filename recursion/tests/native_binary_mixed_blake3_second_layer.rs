@@ -7,14 +7,16 @@
 //! layer is a real first-layer proof: its BLAKE3 table opened through the column batch, the bit
 //! ring switch and the packed WHIR opening, every other table through a dense WHIR opening,
 //! over pairwise Merkle trees under a cap and with grinding. The default test bounds the
-//! circuit size, checks that witness generation refuses a forged packed opened value or a
-//! changed child statement, and that proving refuses a token of a foreign child authority.
+//! circuit size, checks that witness generation refuses a forged packed opened value, a forged
+//! cap limb or a changed child statement, and that proving refuses a token of a foreign child
+//! authority.
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, NpoTypeId};
-use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, ExprId, Op};
+use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, CircuitError, ExprId, Op};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit};
 use p3_field::PrimeCharacteristicRing;
@@ -338,9 +340,29 @@ fn second_blake3_mixed_layer_is_bounded_and_refuses_a_forged_child() {
     let packed = &first_proof.opening.packed.as_ref().unwrap().values;
     let opened = position(targets.packed.values[0].as_expr());
     assert_eq!(private[opened], packed[0]);
-    let mut forged = private;
+    let mut forged = private.clone();
     forged[opened] += F::ONE;
     assert!(run(&statement, &forged).is_err());
+
+    let forge = |expr: ExprId, delta: F| {
+        let mut forged = private.clone();
+        forged[position(expr)] += delta;
+        run(&statement, &forged)
+    };
+    // A cap limb reaches the transcript as a word, and a flipped limb changes the draws. In the
+    // child's commitment cap and in its dense opening's first WHIR round cap alike, the next
+    // refill absorbs it as a block word of a native BLAKE3 compression, which refuses a
+    // seventeenth coordinate; in a proof, the BLAKE3 AIR rejects it.
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    for limb in [targets.commitment[0][5], targets.dense.rounds[0].cap[0][5]] {
+        assert!(private[position(limb)].to_raw_coordinates() < 1 << 16);
+        assert!(forge(limb, F::ONE).is_err());
+        assert!(matches!(
+            forge(limb, wide),
+            Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
+                if op == NpoTypeId::native_blake3_compress()
+        ));
+    }
 
     // The same source proof through a first layer that differs only in its initial transcript
     // bytes: a checked mixed token of the child's shape and statement, under a foreign child

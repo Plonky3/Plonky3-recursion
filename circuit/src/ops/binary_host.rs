@@ -258,11 +258,14 @@ impl<F: BinaryCoordinateField> BinaryCircuitHost<F> for NativeBinaryEncoding {
         }
     }
 
-    /// Keccak-256 absorbs each word as a native Keccak lane, which the native
-    /// Keccak AIR constrains to sixteen coordinates, or, in a leading block of
-    /// constants, checks it while building.
+    /// Keccak-256 absorbs each word as a native Keccak lane and Blake3 as a
+    /// block word of a native compression, which the respective native AIR
+    /// constrains to sixteen coordinates; a word of a constant block absorbed
+    /// while building is checked there.
     fn hashes_words_whole(hash: ByteHash) -> bool {
-        matches!(hash, ByteHash::Keccak256)
+        match hash {
+            ByteHash::Keccak256 | ByteHash::Blake3 => true,
+        }
     }
 
     /// Adds no constraint. Under Boolean index bits the selected digests are

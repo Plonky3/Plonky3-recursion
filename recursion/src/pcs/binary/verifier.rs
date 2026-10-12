@@ -1458,25 +1458,34 @@ const fn limit(
 #[cfg(test)]
 mod host_tests {
     use p3_binary_field::{BinaryChallenger, BinaryField32, Poly64};
+    use p3_blake3::Blake3;
     use p3_challenger::{CanObserve, FieldChallenger};
     use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
     use p3_circuit::ops::binary_native::BinaryCoordinateField;
     use p3_field::BasedVectorSpace;
     use p3_keccak::Keccak256Hash;
-    use p3_symmetric::Hash as Digest;
+    use p3_symmetric::{CryptographicHasher, Hash as Digest};
 
     use super::*;
 
     type H = NativeBinaryEncoding;
 
-    fn transcript<CF: BinaryCoordinateField>() {
+    /// The transcript under `hash`, whose native hasher is `hasher`.
+    fn transcript<CF, NH>(hash: ByteHash, hasher: NH)
+    where
+        CF: BinaryCoordinateField,
+        NH: CryptographicHasher<u8, [u8; 32]> + Clone + Send + Sync + 'static,
+    {
         let seed = [0x81234567, 0xfedcba98].map(BinaryField32::from_repr);
         let dense = BinaryField128::from_repr(0x8123456789abcdeffedcba9876543210);
         let digest: [u8; 32] = core::array::from_fn(|i| 129u8.wrapping_add(i as u8 * 3));
-        let mut native = BinaryChallenger::<BinaryField32, _>::from_hasher(vec![], Keccak256Hash);
+        let mut native = BinaryChallenger::<BinaryField32, _>::from_hasher(vec![], hasher);
         let mut b = CircuitBuilder::<CF>::new();
-        b.enable_native_keccak_f1600().unwrap();
-        let mut ch = BinaryTower128Challenger::new(ByteHash::Keccak256);
+        match hash {
+            ByteHash::Keccak256 => b.enable_native_keccak_f1600().unwrap(),
+            ByteHash::Blake3 => b.enable_native_blake3_compress().unwrap(),
+        }
+        let mut ch = BinaryTower128Challenger::new(hash);
         native.observe_slice(&seed);
         observe_seed_with_host::<BinaryField32, H, CF>(&mut b, &mut ch, &seed).unwrap();
         let first = ch.sample_with_host::<H, CF>(&mut b).unwrap();
@@ -1493,7 +1502,8 @@ mod host_tests {
         }
         native.observe(Digest::<BinaryField32, u8, 32>::from(digest));
         // The cap limbs are observed as words for the next refill to absorb
-        // as Keccak lanes, with no decomposition or other node here.
+        // as Keccak lanes or Blake3 block words, with no decomposition or
+        // other node here.
         let before = b.construction_usage().unwrap();
         observe_cap_with_host::<H, CF>(&mut b, &mut ch, &[cap.to_vec()]).unwrap();
         assert_eq!(b.construction_usage().unwrap(), before);
@@ -1539,7 +1549,8 @@ mod host_tests {
             assert!(!run(&wrong));
         }
         // A cap word with coordinate 16 keeps its low sixteen coordinates, so
-        // only the range check of its Keccak lane refuses it.
+        // only the range check of its Keccak lane or Blake3 block word
+        // refuses it.
         let wide = CF::from_raw_coordinates(1 << 16).unwrap();
         for index in [0, 15] {
             let mut wrong = public.clone();
@@ -1550,7 +1561,9 @@ mod host_tests {
 
     #[test]
     fn native_protocol_seeds_caps_and_observations_preserve_all_bytes() {
-        transcript::<BinaryField128>();
-        transcript::<Poly64>();
+        transcript::<BinaryField128, _>(ByteHash::Keccak256, Keccak256Hash);
+        transcript::<Poly64, _>(ByteHash::Keccak256, Keccak256Hash);
+        transcript::<BinaryField128, _>(ByteHash::Blake3, Blake3);
+        transcript::<Poly64, _>(ByteHash::Blake3, Blake3);
     }
 }
