@@ -3,12 +3,14 @@
 use alloc::vec::Vec;
 use core::iter::repeat;
 use core::ops::Range;
+#[cfg(target_has_atomic = "64")]
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use p3_binary_field::TowerLevel;
 use p3_challenger::{CanObserve, CanSample};
 use p3_circuit::ops::ByteHash;
 use p3_keccak::{KeccakF, VECTOR_LEN};
+#[cfg(target_has_atomic = "64")]
 use p3_maybe_rayon::prelude::*;
 use p3_symmetric::{CryptographicHasher, Permutation};
 
@@ -19,6 +21,7 @@ use super::BinaryNativeHash;
 const GRIND_MARGIN_BITS: usize = 8;
 
 /// Consecutive candidates a worker takes at a time and scans in order.
+#[cfg(target_has_atomic = "64")]
 const GRIND_CHUNK: u64 = 1 << 10;
 
 /// Message bytes Keccak-256 absorbs per permutation.
@@ -92,23 +95,31 @@ impl NativeTranscript {
         // that starts past the best witness found so far. Every chunk below the
         // final best is therefore scanned, which makes it the smallest passing
         // index without a barrier between workers.
-        let next_chunk = AtomicU64::new(0);
-        let best = AtomicU64::new(u64::MAX);
-        (0..current_num_threads()).into_par_iter().for_each(|_| {
-            loop {
-                let chunk = next_chunk.fetch_add(1, Ordering::Relaxed);
-                let low = chunk.saturating_mul(GRIND_CHUNK);
-                if low >= num_candidates.min(best.load(Ordering::Relaxed)) {
-                    break;
+        #[cfg(target_has_atomic = "64")]
+        let index = {
+            let next_chunk = AtomicU64::new(0);
+            let best = AtomicU64::new(u64::MAX);
+            (0..current_num_threads()).into_par_iter().for_each(|_| {
+                loop {
+                    let chunk = next_chunk.fetch_add(1, Ordering::Relaxed);
+                    let low = chunk.saturating_mul(GRIND_CHUNK);
+                    if low >= num_candidates.min(best.load(Ordering::Relaxed)) {
+                        break;
+                    }
+                    let high = low.saturating_add(GRIND_CHUNK).min(num_candidates);
+                    if let Some(index) = prefix.first_pass::<F>(low..high, mask) {
+                        best.fetch_min(index, Ordering::Relaxed);
+                    }
                 }
-                let high = low.saturating_add(GRIND_CHUNK).min(num_candidates);
-                if let Some(index) = prefix.first_pass::<F>(low..high, mask) {
-                    best.fetch_min(index, Ordering::Relaxed);
-                }
-            }
-        });
+            });
+            best.into_inner()
+        };
+        // Without 64-bit atomics one scan in increasing order finds the same index.
+        #[cfg(not(target_has_atomic = "64"))]
+        let index = prefix
+            .first_pass::<F>(0..num_candidates, mask)
+            .unwrap_or(u64::MAX);
         // `u64::MAX` is never a candidate index: the range stops below it.
-        let index = best.into_inner();
         assert!(index < num_candidates, "failed to find witness");
         candidate(index)
     }
