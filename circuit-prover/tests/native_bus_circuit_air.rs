@@ -5,7 +5,7 @@ use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, DIGEST_LIMBS, bytes_to_limbs, keccak_state_to_limbs};
 use p3_circuit::tables::WitnessTrace;
-use p3_circuit::{CircuitBuilder, ExprId, WitnessId};
+use p3_circuit::{Circuit, CircuitBuilder, ExprId, WitnessId};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::indexed::IndexedCircuit;
 use p3_circuit_prover::native_binary::NativeBinaryCircuit;
@@ -422,6 +422,110 @@ fn a_difference_read_as_a_selector_keeps_its_addition() {
         let refused = std::panic::catch_unwind(|| check_constraints(air, trace, public)).is_err();
         assert_eq!(refused, table == 1, "table {table}");
     }
+}
+
+/// The select rows and the multiply-adds by one of a prepared circuit's gate table.
+fn selects_and_additions(prepared: &NativeBusCircuit<F>) -> [usize; 2] {
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let rows = gate_pp.values.as_chunks::<14>().0;
+    let count = |selector: usize, constant: F| {
+        rows.iter()
+            .filter(|row| row[6 + selector] == F::ONE && row[5] == constant)
+            .count()
+    };
+    [count(1, F::ZERO), count(6, F::ONE)]
+}
+
+/// Runs `circuit` on `statement`, applies `forge` to its witness values and the statement, and
+/// returns the tables refusing the result.
+fn refusing_tables(
+    circuit: &Circuit<F>,
+    prepared: &NativeBusCircuit<F>,
+    statement: &[F],
+    forge: impl FnOnce(&mut [F], &mut [F]),
+) -> Vec<usize> {
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(statement).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let mut values: Vec<F> = (0..witness.num_rows() as u32)
+        .map(|id| *witness.get_value(WitnessId(id)).unwrap())
+        .collect();
+    let mut statement = statement.to_vec();
+    forge(&mut values, &mut statement);
+    let traces = prepared.traces(&WitnessTrace::new(values)).unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    prepared
+        .airs()
+        .iter()
+        .zip(&traces)
+        .zip(&public)
+        .enumerate()
+        .filter(|(_, ((air, trace), public))| {
+            std::panic::catch_unwind(|| check_constraints(*air, *trace, public)).is_err()
+        })
+        .map(|(table, _)| table)
+        .collect()
+}
+
+/// A difference that a select reads and that is also a public value keeps its addition: a select
+/// in its place would leave the public difference unconstrained. A forged difference beside an
+/// honest select output is refused, and only by the gate table.
+#[test]
+fn a_difference_read_outside_the_gates_keeps_its_addition() {
+    let mut b = CircuitBuilder::<F>::new();
+    let [s, t, e, public_difference, selected] = b.alloc_public_input_array::<5>("public");
+    let difference = b.sub(t, e);
+    b.connect(difference, public_difference);
+    let mix = b.mul_add(s, difference, e);
+    b.connect(mix, selected);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "public").unwrap();
+    assert_eq!(selects_and_additions(&prepared), [0, 1]);
+
+    let raw = |x: u128| F::from_raw_coordinates(x).unwrap();
+    let [s_value, t_value, e_value] = [0x8123456789abcdef, 0x5a5a, 0x12345678].map(raw);
+    let statement = [
+        s_value,
+        t_value,
+        e_value,
+        t_value - e_value,
+        s_value * (t_value - e_value) + e_value,
+    ];
+    assert!(refusing_tables(&circuit, &prepared, &statement, |_, _| {}).is_empty());
+    let difference = circuit.expr_to_widx[&difference].0 as usize;
+    let forged = refusing_tables(&circuit, &prepared, &statement, |values, statement| {
+        values[difference] += F::ONE;
+        statement[3] += F::ONE;
+    });
+    assert_eq!(forged, [1]);
+}
+
+/// A difference squared by a multiply-add `d * d + e` is read by that row as both factors, so the
+/// row is no select of it and the difference keeps its addition: a select there would still read
+/// the difference with nothing left defining it. A difference forged to zero, whose square is
+/// then `e`, is refused, and only by the gate table.
+#[test]
+fn a_squared_difference_keeps_its_addition() {
+    let mut b = CircuitBuilder::<F>::new();
+    let [t, e, squared] = b.alloc_public_input_array::<3>("squared");
+    let difference = b.sub(t, e);
+    let square = b.mul_add(difference, difference, e);
+    b.connect(square, squared);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "squared").unwrap();
+    assert_eq!(selects_and_additions(&prepared), [0, 1]);
+
+    let raw = |x: u128| F::from_raw_coordinates(x).unwrap();
+    let [t_value, e_value] = [0x8123456789abcdef, 0x5a5a].map(raw);
+    let statement = [t_value, e_value, (t_value - e_value).square() + e_value];
+    assert!(refusing_tables(&circuit, &prepared, &statement, |_, _| {}).is_empty());
+    let [difference, square] = [difference, square].map(|expr| circuit.expr_to_widx[&expr].0);
+    let forged = refusing_tables(&circuit, &prepared, &statement, |values, statement| {
+        values[difference as usize] = F::ZERO;
+        values[square as usize] = e_value;
+        statement[2] = e_value;
+    });
+    assert_eq!(forged, [1]);
 }
 
 /// A four-digest Merkle level places the current digest at the position of its two index bits
