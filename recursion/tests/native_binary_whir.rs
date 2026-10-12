@@ -464,6 +464,7 @@ fn native_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word() {
         &public,
         &private,
         &pow_rows,
+        32,
         (1, 32),
         tower_accepts,
     );

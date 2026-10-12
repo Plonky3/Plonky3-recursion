@@ -1026,14 +1026,16 @@ fn native_keccak_lanes_range_check_poly64_leaf_words_in_both_blocks() {
     );
 }
 
-/// Each WHIR site that grinds splits its witness into hinted words bound by
-/// `witness = sum_j word_j * x_(16j)` and observes them, so the refill of the
-/// draw after it absorbs each word as a Keccak lane; a site without grinding
-/// splits nothing. Returns each split witness's private input position and
-/// words, given the rows of every site's witness.
+/// Each WHIR site that grinds splits its witness into `base_bits / 16` hinted
+/// words bound by `witness = sum_j word_j * x_(16j)` and observes them, so the
+/// refill of the draw after it absorbs each word as a Keccak lane; a site
+/// without grinding splits nothing. Returns each split witness's private input
+/// position and words, given the rows of every site's witness, and asserts
+/// that the first hint on each witness row is that word split.
 fn grinding_words<'a, F: Field>(
     circuit: &'a Circuit<F>,
     witnesses: &[WitnessId],
+    base_bits: usize,
 ) -> Vec<(usize, &'a [WitnessId])> {
     let sites: Vec<_> = witnesses
         .iter()
@@ -1053,6 +1055,13 @@ fn grinding_words<'a, F: Field>(
         })
         .collect();
     assert!(!sites.is_empty(), "a site grinds");
+    for (_, split) in &sites {
+        assert_eq!(
+            split.len(),
+            base_bits / 16,
+            "a grinding witness splits into sixteen-bit words"
+        );
+    }
     sites
 }
 
@@ -1066,10 +1075,10 @@ fn circuit_runs<F: Field>(circuit: &Circuit<F>, statement: &[F], private: &[F]) 
         .is_ok()
 }
 
-/// Every grinding witness (see [`grinding_words`]) of `circuit` splits into
-/// `base_bits / 16` words. Flipping the top coordinate of any word changes the
-/// absorbed lanes, which the draws after it bind, and flipping the first
-/// coordinate above `base_bits` leaves no split; the runner refuses both.
+/// Flipping the top coordinate of any word of a grinding witness (see
+/// [`grinding_words`]) of `circuit` changes the absorbed lanes, which the draws
+/// after it bind, and flipping the first coordinate above `base_bits` leaves no
+/// split; the runner refuses both.
 pub(crate) fn reject_flipped_grinding_bits<F: BinaryCoordinateField>(
     circuit: &Circuit<F>,
     statement: &[F],
@@ -1082,8 +1091,7 @@ pub(crate) fn reject_flipped_grinding_bits<F: BinaryCoordinateField>(
         "the honest witnesses run"
     );
     let above = (base_bits < F::COORDINATE_BITS).then_some(base_bits);
-    for (position, split) in grinding_words(circuit, witnesses) {
-        assert_eq!(split.len(), base_bits / 16);
+    for (position, split) in grinding_words(circuit, witnesses, base_bits) {
         for coordinate in (0..split.len()).map(|j| 16 * j + 15).chain(above) {
             let mut wrong = private.to_vec();
             wrong[position] += F::from_raw_coordinates(1 << coordinate).unwrap();
@@ -1107,6 +1115,7 @@ pub(crate) fn reject_wide_grinding_word<F: BinaryCoordinateField>(
     statement: &[F],
     private: &[F],
     witnesses: &[WitnessId],
+    base_bits: usize,
     (word, moved): (usize, usize),
     setup: impl FnOnce(&NativeBusCircuit<F>, Vec<Vec<F>>) -> Accepts<F>,
 ) {
@@ -1117,7 +1126,7 @@ pub(crate) fn reject_wide_grinding_word<F: BinaryCoordinateField>(
         0,
         "lane bytes unchanged"
     );
-    let (value, split) = grinding_words(circuit, witnesses)[0];
+    let (value, split) = grinding_words(circuit, witnesses, base_bits)[0];
     let prepared = NativeBusCircuit::new(circuit, "grinding").unwrap();
     let public = prepared.public_values(statement).unwrap();
     let accepts = setup(&prepared, public.clone());

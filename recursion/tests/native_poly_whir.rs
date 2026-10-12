@@ -328,6 +328,7 @@ fn native_poly_whir_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word(
         &public,
         &private,
         &pow_rows,
+        64,
         (0, 16),
         poly64_accepts,
     );
