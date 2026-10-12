@@ -1190,9 +1190,13 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
+    use p3_field::Field;
     use p3_test_utils::baby_bear_params::BabyBear;
 
     use super::*;
+    use crate::CircuitBuilder;
     #[cfg(feature = "debugging")]
     use crate::alloc::string::ToString;
 
@@ -1314,6 +1318,70 @@ mod tests {
                 matches!(builder.graph().nodes()[outer.0 as usize], Expr::Add { lhs, rhs } if (lhs, rhs) == operands)
             );
         }
+    }
+
+    /// Connects `a + (a + b)`, built from public inputs `a` and `b` in the given orientation, to
+    /// `claimed`: a third public input when `claimed_is_public`, a constant otherwise. Returns
+    /// whether the runner accepts the public values.
+    fn nested_sum_connection_accepts<F: Field>(
+        (a_position, nested_on_left): (usize, bool),
+        a: F,
+        b: F,
+        claimed: F,
+        claimed_is_public: bool,
+    ) -> bool {
+        let mut builder = CircuitBuilder::<F>::new();
+        let a_input = builder.public_input();
+        let b_input = builder.public_input();
+        let operands = if a_position == 0 {
+            (a_input, b_input)
+        } else {
+            (b_input, a_input)
+        };
+        let nested = builder.add(operands.0, operands.1);
+        let outer = if nested_on_left {
+            builder.add(nested, a_input)
+        } else {
+            builder.add(a_input, nested)
+        };
+        assert_eq!(outer, b_input);
+        let (target, public_values) = if claimed_is_public {
+            (builder.public_input(), vec![a, b, claimed])
+        } else {
+            (builder.define_const(claimed), vec![a, b])
+        };
+        builder.connect(outer, target);
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&public_values)
+            .and_then(|()| runner.run())
+            .is_ok()
+    }
+
+    /// `a + (a + b)` is the public input `b` itself, so connecting it to another public input or
+    /// to a constant binds `b` to that value: the runner accepts exactly the claim equal to `b`.
+    fn check_nested_sum_connection_binds_remaining_addend<F: Field>() {
+        let a = F::GENERATOR;
+        let b = a.square() + F::ONE;
+        for orientation in NESTED_ADDEND_ORIENTATIONS {
+            for claimed_is_public in [true, false] {
+                let accepts = |claimed| {
+                    nested_sum_connection_accepts(orientation, a, b, claimed, claimed_is_public)
+                };
+                assert!(accepts(b));
+                for wrong in [a, a + b, b + F::ONE] {
+                    assert_ne!(wrong, b);
+                    assert!(!accepts(wrong));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn binary_nested_sum_connection_binds_remaining_addend() {
+        check_nested_sum_connection_binds_remaining_addend::<p3_binary_field::BinaryField128>();
+        check_nested_sum_connection_binds_remaining_addend::<p3_binary_field::Poly64>();
     }
 
     #[test]
