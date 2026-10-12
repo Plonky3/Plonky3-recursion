@@ -6,10 +6,14 @@ use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::Field;
 use p3_sumcheck::strategy::VariableOrder;
+use p3_util::reverse_bits_len;
 
 use super::gadgets::{next_eval_using, reduce_sumcheck_using};
 use super::verifier::observe_cap_with_host;
-use super::whir_gadgets::{eval_coefficients_using, eval_multilinear_using, select_eval_using};
+use super::whir_gadgets::{
+    Powers, eval_coefficients_using, eval_multilinear_using, eval_power_table_using,
+    select_eval_using,
+};
 use super::whir_plan::{FoldShape, OracleSite, WhirPlan, invalid};
 use super::{BinaryWhirProofTargets, BinaryWhirSumcheckTargets, MerkleArity};
 use crate::BinaryTower128Challenger;
@@ -17,12 +21,25 @@ use crate::verifier::VerificationError;
 use crate::verifier::binary_field_policy::{BinaryOracleWord, BinaryWhirPolicy};
 enum Weight<T> {
     Eq(Vec<T>),
-    Next {
-        selector: Vec<T>,
-        point: Vec<T>,
-        selector_last: bool,
-    },
     Select(Vec<T>),
+}
+/// Terms of the initial claim that take consecutive powers of the batching
+/// challenge `alpha`.
+enum Batched<T> {
+    /// Columns of one opening and kind. A column at selector slot `c` has
+    /// weight `eq(c, r_sel) * w(point, r_x)`, with `w` the equality or the
+    /// successor weight, so the group's weight is `w(point, r_x)` times the
+    /// slot table of `alpha^k` at the `k`-th column's slot.
+    Columns {
+        point: Vec<T>,
+        next: bool,
+        selector_variables: usize,
+        /// Each column's selector slot, bit-reversed under prefix order to
+        /// match the reversed selector coordinates it is folded against.
+        slots: Vec<usize>,
+    },
+    /// An initial out-of-domain point over every variable.
+    Point(Vec<T>),
 }
 struct Term<T> {
     variables: usize,
@@ -69,9 +86,8 @@ where
     P::observe_seed::<H>(b, &mut ch, &p.engine_seed)?;
     P::observe_seed::<H>(b, &mut ch, &p.batching_seed)?;
     let alpha = P::sample::<H>(b, &mut ch)?;
-    let mut power = P::constant(b, 1)?;
-    let mut claim = P::constant(b, 0)?;
-    let mut terms = Vec::new();
+    let mut values = Vec::new();
+    let mut batched = Vec::new();
     for placement in &p.placements {
         for (opening, (table, request)) in p
             .protocol
@@ -79,41 +95,41 @@ where
             .enumerate()
             .filter(|(_, (table, _))| *table == placement.idx())
         {
+            let point = &points[opening];
+            let selector_variables = p.variables.checked_sub(point.len()).ok_or_else(|| {
+                invalid("binary WHIR opening point exceeds the committed variables")
+            })?;
             for (next, columns, evals) in [
                 (false, request.current(), proof.evals[opening].current()),
                 (true, request.next(), proof.evals[opening].next()),
             ] {
+                let mut slots = Vec::with_capacity(columns.len());
                 for (&column, eval) in columns.iter().zip(evals) {
                     let selector = &placement.selectors()[column];
-                    let selector = (0..selector.num_variables())
-                        .rev()
-                        .map(|bit| P::constant(b, ((selector.index() >> bit) & 1) as u128))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let point = points[opening].clone();
-                    let weight = if next {
-                        Weight::Next {
-                            selector,
-                            point,
-                            selector_last: p.order == VariableOrder::Prefix,
-                        }
+                    if selector.num_variables() != selector_variables {
+                        return Err(invalid(
+                            "binary WHIR selector does not complete the opening point",
+                        ));
+                    }
+                    // Prefix order stores bit-reversed slots; the reversed
+                    // slot against the reversed selector coordinates is the
+                    // same weight and keeps consecutive columns adjacent.
+                    slots.push(if p.order == VariableOrder::Prefix {
+                        reverse_bits_len(selector.index(), selector_variables)
                     } else {
-                        let lifted = if p.order == VariableOrder::Prefix {
-                            point.into_iter().chain(selector).collect()
-                        } else {
-                            selector.into_iter().chain(point).collect()
-                        };
-                        Weight::Eq(lifted)
-                    };
-                    let value = P::mul(b, &power, eval);
-                    claim = P::add(b, &claim, &value);
-                    terms.push(Term {
-                        variables: p.variables,
-                        coefficient: power.clone(),
-                        weight,
+                        selector.index()
                     });
-                    power = P::mul(b, &power, &alpha);
-                    b.check_construction_limits()?;
+                    values.push(eval.clone());
                 }
+                if !slots.is_empty() {
+                    batched.push(Batched::Columns {
+                        point: point.clone(),
+                        next,
+                        selector_variables,
+                        slots,
+                    });
+                }
+                b.check_construction_limits()?;
             }
             // The table index determines placement order; the prescribed
             // point and values retain their protocol opening indices.
@@ -121,16 +137,10 @@ where
         }
     }
     for (point, answer) in virtual_points.into_iter().zip(&proof.initial_ood_answers) {
-        let value = P::mul(b, &power, answer);
-        claim = P::add(b, &claim, &value);
-        terms.push(Term {
-            variables: p.variables,
-            coefficient: power.clone(),
-            weight: Weight::Eq(point),
-        });
-        power = P::mul(b, &power, &alpha);
-        b.check_construction_limits()?;
+        values.push(answer.clone());
+        batched.push(Batched::Point(point));
     }
+    let claim = horner_using::<P, CF>(b, &values, &alpha)?;
     let (mut claim, mut last_r) = fold_using::<P, H, CF>(
         b,
         &mut ch,
@@ -142,6 +152,7 @@ where
     let mut all_r = last_r.clone();
     let mut previous_cap = cap.to_vec();
     let mut checks = Vec::new();
+    let mut terms = Vec::new();
     for (i, (site, round)) in p.sites.iter().zip(&proof.rounds).enumerate() {
         observe_cap_with_host::<H, CF>(b, &mut ch, &round.cap)?;
         let mut ood_points = Vec::new();
@@ -254,26 +265,12 @@ where
             "binary WHIR trusted fold arities do not close the domain",
         ));
     }
-    let mut weight = P::constant(b, 0)?;
+    let mut weight = batched_weight_using::<P, CF>(b, p.order, batched, &all_r, &alpha)?;
     for term in terms {
         let row = oriented(&all_r[all_r.len() - term.variables..], p.order);
         let value = match term.weight {
             Weight::Eq(point) => P::eq_eval(b, &point, &row)?,
             Weight::Select(point) => select_eval_using::<P, CF>(b, &point, &row)?,
-            Weight::Next {
-                selector,
-                point,
-                selector_last,
-            } => {
-                let (selector_row, local_row) = if selector_last {
-                    (&row[point.len()..], &row[..point.len()])
-                } else {
-                    (&row[..selector.len()], &row[selector.len()..])
-                };
-                let selector_weight = P::eq_eval(b, &selector, selector_row)?;
-                let next_weight = next_eval_using::<P, CF>(b, &point, local_row)?;
-                P::mul(b, &selector_weight, &next_weight)
-            }
         };
         let scaled = P::mul(b, &term.coefficient, &value);
         weight = P::add(b, &weight, &scaled);
@@ -344,6 +341,88 @@ where
         }
     }
     Ok((proof.evals.clone(), ch))
+}
+
+/// `sum_i x^i * values[i]`, accumulated from the last value.
+fn horner_using<P, CF>(
+    b: &mut CircuitBuilder<CF>,
+    values: &[P::ChallengeTarget],
+    x: &P::ChallengeTarget,
+) -> Result<P::ChallengeTarget, VerificationError>
+where
+    CF: Field + Eq + Hash,
+    P: BinaryWhirPolicy<CF>,
+{
+    let mut values = values.iter().rev();
+    let Some(last) = values.next() else {
+        return Ok(P::constant(b, 0)?);
+    };
+    let mut sum = last.clone();
+    for value in values {
+        let shifted = P::mul(b, &sum, x);
+        sum = P::add(b, value, &shifted);
+        b.check_construction_limits()?;
+    }
+    Ok(sum)
+}
+
+/// The weight of the initial claim at the folded point `all_r`: every
+/// batched item's weight times `alpha` to the number of columns before it,
+/// accumulated from the last item.
+fn batched_weight_using<P, CF>(
+    b: &mut CircuitBuilder<CF>,
+    order: VariableOrder,
+    batched: Vec<Batched<P::ChallengeTarget>>,
+    all_r: &[P::ChallengeTarget],
+    alpha: &P::ChallengeTarget,
+) -> Result<P::ChallengeTarget, VerificationError>
+where
+    CF: Field + Eq + Hash,
+    P: BinaryWhirPolicy<CF>,
+{
+    let row = oriented(all_r, order);
+    let mut powers = Powers::new::<P, CF>(b, alpha)?;
+    let mut sum = None;
+    for item in batched.into_iter().rev() {
+        let (value, count) = match item {
+            Batched::Columns {
+                point,
+                next,
+                selector_variables,
+                slots,
+            } => {
+                let (selector_row, local_row) = if order == VariableOrder::Prefix {
+                    let (local, selector) = row.split_at(point.len());
+                    (selector.iter().rev().cloned().collect::<Vec<_>>(), local)
+                } else {
+                    let (selector, local) = row.split_at(selector_variables);
+                    (selector.to_vec(), local)
+                };
+                let local = if next {
+                    next_eval_using::<P, CF>(b, &point, local_row)?
+                } else {
+                    P::eq_eval(b, &point, local_row)?
+                };
+                let selectors =
+                    eval_power_table_using::<P, CF>(b, &slots, &selector_row, &mut powers)?;
+                (P::mul(b, &selectors, &local), slots.len())
+            }
+            Batched::Point(point) => (P::eq_eval(b, &point, &row)?, 1),
+        };
+        sum = Some(match sum {
+            None => value,
+            Some(later) => {
+                let shift = powers.get::<P, CF>(b, count);
+                let shifted = P::mul(b, &shift, &later);
+                P::add(b, &value, &shifted)
+            }
+        });
+        b.check_construction_limits()?;
+    }
+    match sum {
+        Some(sum) => Ok(sum),
+        None => Ok(P::constant(b, 0)?),
+    }
 }
 
 fn fold_using<P, H, CF>(
