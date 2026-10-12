@@ -58,7 +58,7 @@ const PAIRWISE: Case = Case {
         max_operations: 161_000,
         max_trace_cells: 1 << 27,
     },
-    max_keccak_calls: 1_710,
+    max_keccak_calls: 1_690,
 };
 /// Four-digest output trees under a cap of one level: the same 4 roots. The
 /// second layer measures 354,708 expression nodes, 10,642 pending
@@ -80,7 +80,7 @@ const FOUR_DIGEST: Case = Case {
         max_operations: 184_000,
         max_trace_cells: 1 << 27,
     },
-    max_keccak_calls: 1_480,
+    max_keccak_calls: 1_460,
 };
 /// About 12% above the measured 60 calls of the first transcript refill,
 /// whose 148 constant leading blocks take none.

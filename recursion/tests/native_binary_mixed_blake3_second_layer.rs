@@ -73,8 +73,8 @@ const MAX_COMPRESSIONS: usize = 4_700;
 const MAX_LOG_HEIGHTS: [usize; 4] = [20, 18, 4, 13];
 /// Measured variables of the packed BLAKE3 table: 14 column and 13 row variables.
 const MAX_PACKED_BIT_VARIABLES: usize = 27;
-/// Measured initial codeword cells: 2^23 main, 2^25 preprocessing and 2^21 packed cells.
-const MAX_CODEWORD_CELLS: usize = 44_040_192;
+/// Measured initial codeword cells: 2^23 main, 2^24 preprocessing and 2^21 packed cells.
+const MAX_CODEWORD_CELLS: usize = 27_262_976;
 
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
