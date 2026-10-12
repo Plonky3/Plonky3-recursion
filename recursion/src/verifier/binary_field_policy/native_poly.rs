@@ -403,18 +403,21 @@ mod tests {
         }
     }
 
-    /// Binds `P::mul_add(a, c, d)` and `P::mul(a, c) + d` to three public
-    /// expected coefficients, allocated after the operands' public coefficients.
-    fn mul_add_circuit(operands: [Operand; 3]) -> p3_circuit::Circuit<Poly64> {
+    /// Binds `P::mul_add(a, c, d)` when `fused`, else `P::mul(a, c) + d`, to
+    /// three public expected coefficients, allocated after the operands'
+    /// public coefficients.
+    fn mul_add_circuit(operands: [Operand; 3], fused: bool) -> p3_circuit::Circuit<Poly64> {
         let mut b = CircuitBuilder::<Poly64>::new();
         let [a, c, d] = operands.map(|kind| operand(&mut b, kind));
         let expected = b.alloc_public_input_array::<3>("a * c + d");
         let expected = b.native_poly192_from_coefficients(expected);
-        let fused = P::mul_add(&mut b, &a, &c, &d);
-        let product = P::mul(&mut b, &a, &c);
-        let separate = P::add(&mut b, &product, &d);
-        P::assert_equal(&mut b, &fused, &expected);
-        P::assert_equal(&mut b, &separate, &expected);
+        let value = if fused {
+            P::mul_add(&mut b, &a, &c, &d)
+        } else {
+            let product = P::mul(&mut b, &a, &c);
+            P::add(&mut b, &product, &d)
+        };
+        P::assert_equal(&mut b, &value, &expected);
         b.build().unwrap()
     }
 
@@ -442,11 +445,11 @@ mod tests {
             .is_ok()
     }
 
-    /// The native multiply-add computes the Poly192 `a * c + d`, the product
-    /// plus the addend, for public, lifted and constant zero operands. Each of
-    /// the four reductions of the y³ and y⁴ coefficients is enforced, and the
-    /// addend stays out of the product: neither `d * c + a` nor `a * d + c` is
-    /// accepted.
+    /// The native multiply-add computes the Poly192 `a * c + d`, as the
+    /// in-circuit product and sum do, for public, lifted and constant zero
+    /// operands. Its gates enforce each of the four reductions of the y³ and y⁴
+    /// coefficients and keep the addend out of the product: neither `d * c + a`
+    /// nor `a * d + c` is accepted.
     #[test]
     fn native_poly_mul_add_is_the_product_plus_the_addend() {
         let mut rng = SmallRng::seed_from_u64(17);
@@ -454,19 +457,23 @@ mod tests {
             Poly192::new(core::array::from_fn(|_| Poly64::new(rng.random())))
         });
         for operands in operand_kinds() {
-            let circuit = mul_add_circuit(operands);
+            let circuit = mul_add_circuit(operands, true);
+            let reference = mul_add_circuit(operands, false);
             let values: [Poly192; 3] = core::array::from_fn(|i| restrict(operands[i], random[i]));
             let [a, c, d] = values;
             let expected = a * c + d;
-            assert!(
-                mul_add_runs(&circuit, operands, values, expected),
-                "{operands:?}"
-            );
+            for circuit in [&circuit, &reference] {
+                assert!(
+                    mul_add_runs(circuit, operands, values, expected),
+                    "{operands:?}"
+                );
+            }
             let wrong = expected + Poly192::new([Poly64::ZERO, Poly64::ONE, Poly64::ZERO]);
             assert!(!mul_add_runs(&circuit, operands, values, wrong));
         }
         let operands = [Operand::Public; 3];
-        let circuit = mul_add_circuit(operands);
+        let circuit = mul_add_circuit(operands, true);
+        let reference = mul_add_circuit(operands, false);
         let [a, c, d] = random;
         let expected = a * c + d;
         assert!(!mul_add_runs(&circuit, operands, random, d * c + a));
@@ -489,10 +496,12 @@ mod tests {
             let mut values = random;
             values[i] = Poly192::ZERO;
             let [a, c, d] = values;
-            assert!(
-                mul_add_runs(&circuit, operands, values, a * c + d),
-                "zero value {i}"
-            );
+            for circuit in [&circuit, &reference] {
+                assert!(
+                    mul_add_runs(circuit, operands, values, a * c + d),
+                    "zero value {i}"
+                );
+            }
         }
     }
 

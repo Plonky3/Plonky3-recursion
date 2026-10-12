@@ -581,10 +581,10 @@ mod tests {
     type P = NativeTower128Relation;
     type Native = BinaryChallenger<BinaryField8, HashChallenger<u8, Keccak256Hash, 32>>;
 
-    /// Binds `P::mul_add(a, c, d)` and `P::mul(a, c) + d` to a public expected
-    /// value. An operand flagged in `zero` is the constant zero; the others are
-    /// public inputs, in order, before the expected value.
-    fn mul_add_circuit(zero: [bool; 3]) -> p3_circuit::Circuit<F> {
+    /// Binds `P::mul_add(a, c, d)` when `fused`, else `P::mul(a, c) + d`, to a
+    /// public expected value. An operand flagged in `zero` is the constant zero;
+    /// the others are public inputs, in order, before the expected value.
+    fn mul_add_circuit(zero: [bool; 3], fused: bool) -> p3_circuit::Circuit<F> {
         let mut b = CircuitBuilder::<F>::new();
         let [a, c, d] = zero.map(|zero| {
             if zero {
@@ -596,18 +596,20 @@ mod tests {
         });
         let expected = b.public_input();
         let expected = b.native_tower128_from_expr(expected);
-        let fused = P::mul_add(&mut b, &a, &c, &d);
-        let product = P::mul(&mut b, &a, &c);
-        let separate = P::add(&mut b, &product, &d);
-        P::assert_equal(&mut b, &fused, &expected);
-        P::assert_equal(&mut b, &separate, &expected);
+        let value = if fused {
+            P::mul_add(&mut b, &a, &c, &d)
+        } else {
+            let product = P::mul(&mut b, &a, &c);
+            P::add(&mut b, &product, &d)
+        };
+        P::assert_equal(&mut b, &value, &expected);
         b.build().unwrap()
     }
 
-    /// The native multiply-add computes `a * c + d`, the product plus the
-    /// addend, for random and zero values and for constant zero operands, and
-    /// keeps the addend out of the product: neither `d * c + a` nor `a * d + c`
-    /// is accepted.
+    /// The native multiply-add computes `a * c + d`, as the in-circuit product
+    /// and sum do, for random and zero values and for constant zero operands.
+    /// Its gate keeps the addend out of the product: neither `d * c + a` nor
+    /// `a * d + c` is accepted.
     #[test]
     fn native_tower_mul_add_is_the_product_plus_the_addend() {
         let mut rng = SmallRng::seed_from_u64(11);
@@ -623,13 +625,16 @@ mod tests {
         };
         for mask in 0..8 {
             let zero: [bool; 3] = core::array::from_fn(|i| mask >> i & 1 != 0);
-            let circuit = mul_add_circuit(zero);
+            let circuit = mul_add_circuit(zero, true);
+            let reference = mul_add_circuit(zero, false);
             let values = core::array::from_fn(|i| if zero[i] { F::ZERO } else { random[i] });
             let [a, c, d] = values;
-            assert!(
-                runs(&circuit, zero, values, a * c + d),
-                "zero operands {zero:?}"
-            );
+            for circuit in [&circuit, &reference] {
+                assert!(
+                    runs(circuit, zero, values, a * c + d),
+                    "zero operands {zero:?}"
+                );
+            }
             assert!(!runs(&circuit, zero, values, a * c + d + F::ONE));
             if mask == 0 {
                 assert!(!runs(&circuit, zero, values, d * c + a));
@@ -638,7 +643,9 @@ mod tests {
                     let mut values = values;
                     values[i] = F::ZERO;
                     let [a, c, d] = values;
-                    assert!(runs(&circuit, zero, values, a * c + d), "zero value {i}");
+                    for circuit in [&circuit, &reference] {
+                        assert!(runs(circuit, zero, values, a * c + d), "zero value {i}");
+                    }
                 }
             }
         }
