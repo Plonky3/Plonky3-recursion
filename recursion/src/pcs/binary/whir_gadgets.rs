@@ -426,10 +426,12 @@ pub fn native_tower128_whir_query_point<F: RecursiveBinaryTowerField>(
         .collect())
 }
 
-/// Query coordinates `[W_(n-1)(x), ..., W_0(x)]` on a native carrier whose
-/// own arithmetic is the alphabet's field. `x = sum_j bit_j basis(j)` is the
-/// queried domain point and `W_(s+1)(x) = W_s(x)^2 + W_s(x)`, so every
-/// coordinate after `x` is one gate.
+/// Query coordinates `[W_(n-1)(x), ..., W_0(x)]` on a native carrier `CF`.
+/// `x = sum_j bit_j basis(j)` is the queried domain point and
+/// `W_(s+1)(x) = W_s(x)^2 + W_s(x)`, so every coordinate after `x` is one gate.
+/// `basis(j)` must be the alphabet's Cantor vector `j` under a field embedding
+/// into `CF` (the Wiedemann subfield inclusion, or the alphabet itself), since
+/// each later coordinate squares in `CF`.
 /// Every index bit is constrained even when the coordinate point is empty.
 pub(super) fn native_query_coordinates<CF: Field + Eq + Hash>(
     circuit: &mut CircuitBuilder<CF>,
