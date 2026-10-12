@@ -40,6 +40,32 @@ impl<AB: AirBuilder<F = Poly64>> Air<AB> for DenseAir {
         b.when_first_row().assert_eq(a, public);
     }
 }
+
+/// Columns of [`ZeroColumnsAir`].
+const COLUMNS: usize = 4;
+
+/// Asserts its first `asserted` columns zero, in column order, so its fold is the Horner sum of
+/// those openings.
+struct ZeroColumnsAir {
+    asserted: usize,
+}
+impl BaseAir<Poly64> for ZeroColumnsAir {
+    fn width(&self) -> usize {
+        COLUMNS
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+}
+impl<AB: AirBuilder<F = Poly64>> Air<AB> for ZeroColumnsAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main();
+        for &value in &main.current_slice()[..self.asserted] {
+            b.assert_zero(value);
+        }
+    }
+}
+
 fn scalar(b: &mut CircuitBuilder<Poly64>) -> NativePoly192Target {
     let coefficients = b.alloc_public_input_array::<3>("native Poly192 value");
     b.native_poly192_from_coefficients(coefficients)
@@ -108,4 +134,82 @@ fn native_poly_air_matches_the_full_extension_folder() {
             assert!(!run(&wrong));
         }
     }
+}
+
+/// The native fold weights the assertions by descending powers of alpha, the first under the
+/// highest, as the native folder does. The ascending order and the sum weighted by alpha alone
+/// are refused.
+#[test]
+fn native_fold_weights_assertions_by_descending_alpha_powers() {
+    let air = ZeroColumnsAir { asserted: COLUMNS };
+    let plan = BinaryPolyAirConstraintPlan::from_air(&air, 1).unwrap();
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let current: [_; COLUMNS] = core::array::from_fn(|_| scalar(&mut b));
+    let point = [scalar(&mut b)];
+    let alpha = scalar(&mut b);
+    let folded = plan
+        .evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+        .unwrap();
+    let expected = scalar(&mut b);
+    for (&folded, &expected) in folded.coefficients().iter().zip(expected.coefficients()) {
+        let difference = b.sub(folded, expected);
+        b.assert_zero(difference);
+    }
+    let circuit = b.build().unwrap();
+    let current: [Poly192; COLUMNS] = core::array::from_fn(|i| dense(i as u64 + 3));
+    let point = dense(53);
+    let alpha = dense(59);
+    let runs = |expected: Poly192| {
+        let statement: Vec<_> = current
+            .into_iter()
+            .chain([point, alpha, expected])
+            .flat_map(|value| value.coefficients())
+            .collect();
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&statement)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let descending = current
+        .iter()
+        .fold(Poly192::ZERO, |sum, &c| sum * alpha + c);
+    let folder = MultilinearFolder::new(
+        &current,
+        &[Poly192::ZERO; COLUMNS],
+        BoundaryEvals::at(&[point]),
+        &[],
+        alpha,
+    )
+    .eval_air(&air);
+    assert_eq!(descending, folder);
+    assert!(runs(descending));
+    let ascending = current
+        .iter()
+        .rev()
+        .fold(Poly192::ZERO, |sum, &c| sum * alpha + c);
+    let flat = alpha * current.iter().copied().sum::<Poly192>();
+    for wrong in [ascending, flat] {
+        assert_ne!(wrong, descending);
+        assert!(!runs(wrong));
+    }
+}
+
+/// Each assertion after the first adds nine expression nodes to the native fold: one Poly192
+/// multiply-add of the running sum, alpha and the assertion, where a product and a sum take
+/// thirteen.
+#[test]
+fn native_fold_adds_one_multiply_add_per_further_assertion() {
+    let nodes = |asserted| {
+        let plan = BinaryPolyAirConstraintPlan::from_air(&ZeroColumnsAir { asserted }, 1).unwrap();
+        let mut b = CircuitBuilder::<Poly64>::new();
+        let current: [_; COLUMNS] = core::array::from_fn(|_| scalar(&mut b));
+        let point = [scalar(&mut b)];
+        let alpha = scalar(&mut b);
+        let before = b.construction_usage().unwrap().expression_nodes;
+        plan.evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+            .unwrap();
+        b.construction_usage().unwrap().expression_nodes - before
+    };
+    assert_eq!(nodes(COLUMNS) - nodes(1), 9 * (COLUMNS - 1));
 }

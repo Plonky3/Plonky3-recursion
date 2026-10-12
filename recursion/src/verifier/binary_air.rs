@@ -825,8 +825,7 @@ impl AirProgram {
         }
         let mut folded = P::constant(b, 0)?;
         for &root in &self.constraints {
-            let weighted = P::mul(b, &folded, alpha);
-            folded = P::add(b, &weighted, &values[root]);
+            folded = P::mul_add(b, &folded, alpha, &values[root]);
             b.check_construction_limits()?;
         }
         let bus_fields = self

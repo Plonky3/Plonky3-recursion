@@ -87,6 +87,103 @@ fn tower32_air_uses_native_challenges_and_rejects_high_base_coordinates() {
     );
 }
 
+/// Columns of [`ZeroColumnsAir`].
+const COLUMNS: usize = 4;
+
+/// Asserts its first `asserted` columns zero, in column order, so its fold is the Horner sum of
+/// those openings.
+struct ZeroColumnsAir {
+    asserted: usize,
+}
+impl BaseAir<F> for ZeroColumnsAir {
+    fn width(&self) -> usize {
+        COLUMNS
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+}
+impl<AB: AirBuilder<F = F>> Air<AB> for ZeroColumnsAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main();
+        for &value in &main.current_slice()[..self.asserted] {
+            b.assert_zero(value);
+        }
+    }
+}
+
+/// The native fold weights the assertions by descending powers of alpha, the first under the
+/// highest, as the native folder does. The ascending order and the sum weighted by alpha alone
+/// are refused.
+#[test]
+fn native_fold_weights_assertions_by_descending_alpha_powers() {
+    let air = ZeroColumnsAir { asserted: COLUMNS };
+    let plan = BinaryAirConstraintPlan::<F, F>::from_air(&air, 1).unwrap();
+    let mut b = CircuitBuilder::<F>::new();
+    let current: [_; COLUMNS] = core::array::from_fn(|_| scalar(&mut b));
+    let point = [scalar(&mut b)];
+    let alpha = scalar(&mut b);
+    let folded = plan
+        .evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+        .unwrap();
+    let expected = scalar(&mut b);
+    let difference = b.sub(folded.as_expr(), expected.as_expr());
+    b.assert_zero(difference);
+    let circuit = b.build().unwrap();
+    let dense = |n: u128| F::from_repr(0x8123456789abcdeffedcba9876543210u128.wrapping_mul(n));
+    let current: [F; COLUMNS] = core::array::from_fn(|i| dense(i as u128 + 3));
+    let point = dense(53);
+    let alpha = dense(59);
+    let runs = |expected: F| {
+        let mut statement = current.to_vec();
+        statement.extend([point, alpha, expected]);
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&statement)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let descending = current.iter().fold(F::ZERO, |sum, &c| sum * alpha + c);
+    let folder = MultilinearFolder::new(
+        &current,
+        &[F::ZERO; COLUMNS],
+        BoundaryEvals::at(&[point]),
+        &[],
+        alpha,
+    )
+    .eval_air(&air);
+    assert_eq!(descending, folder);
+    assert!(runs(descending));
+    let ascending = current
+        .iter()
+        .rev()
+        .fold(F::ZERO, |sum, &c| sum * alpha + c);
+    let flat = alpha * current.iter().copied().sum::<F>();
+    for wrong in [ascending, flat] {
+        assert_ne!(wrong, descending);
+        assert!(!runs(wrong));
+    }
+}
+
+/// Each assertion after the first adds one expression node to the native fold: a multiply-add of
+/// the running sum, alpha and the assertion, with no separately constrained product.
+#[test]
+fn native_fold_adds_one_node_per_further_assertion() {
+    let nodes = |asserted| {
+        let plan =
+            BinaryAirConstraintPlan::<F, F>::from_air(&ZeroColumnsAir { asserted }, 1).unwrap();
+        let mut b = CircuitBuilder::<F>::new();
+        let current: [_; COLUMNS] = core::array::from_fn(|_| scalar(&mut b));
+        let point = [scalar(&mut b)];
+        let alpha = scalar(&mut b);
+        let before = b.construction_usage().unwrap().expression_nodes;
+        plan.evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+            .unwrap();
+        b.construction_usage().unwrap().expression_nodes - before
+    };
+    assert_eq!(nodes(COLUMNS) - nodes(1), COLUMNS - 1);
+}
+
 struct DenseAir {
     periods: Vec<Vec<F>>,
     constant: F,
