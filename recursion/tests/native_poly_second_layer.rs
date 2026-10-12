@@ -33,20 +33,20 @@ type F = Poly64;
 const ARITY: MerkleArity = MerkleArity::Four;
 const CAP_HEIGHT: usize = 1;
 
-/// About 12% above the measured second-layer verifier: 946,968 expression
+/// About 12% above the measured second-layer verifier: 646,507 expression
 /// nodes, 20,258 pending connections, 14,957 non-primitive calls and 779,180
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 1_061_000,
+    max_expression_nodes: 725_000,
     max_pending_connects: 22_700,
     max_non_primitive_calls: 16_800,
     max_non_primitive_slots: 873_000,
 };
-/// About 12% above the measured 915,825 witnesses and 692,443 operations.
+/// About 12% above the measured 615,364 witnesses and 391,982 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 1_026_000,
-    max_operations: 776_000,
+    max_witnesses: 690_000,
+    max_operations: 440_000,
     max_trace_cells: 1 << 28,
 };
 /// About 12% above the measured 1,591 native Keccak-f calls.
@@ -56,7 +56,7 @@ const MAX_KECCAK_CALLS: usize = 1_790;
 const MAX_FIRST_REFILL_CALLS: usize = 60;
 /// Measured padded witness, gate, public, Keccak and bridge table heights.
 /// One more row of growth at a power-of-two boundary doubles that table.
-const MAX_LOG_HEIGHTS: [usize; 5] = [22, 20, 4, 16, 12];
+const MAX_LOG_HEIGHTS: [usize; 5] = [21, 19, 4, 16, 12];
 
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
