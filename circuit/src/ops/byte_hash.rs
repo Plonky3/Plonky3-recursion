@@ -865,6 +865,78 @@ mod tests {
         assert!(b.build().is_err());
     }
 
+    /// Orders two digests under `bit`, a public input when `None`, checks the ordered pair at
+    /// every value the bit takes, and returns the ALU rows the ordering costs.
+    fn digest_pair_ordering_rows<F>(bit: Option<bool>, limb: impl Fn(u64) -> F) -> usize
+    where
+        F: Field + Eq + core::hash::Hash,
+    {
+        let mut builder = CircuitBuilder::<F>::new();
+        let selector = match bit {
+            None => builder.public_input(),
+            Some(set) => builder.define_const(F::from_bool(set)),
+        };
+        let node: Vec<ExprId> = (0..DIGEST_LIMBS).map(|_| builder.public_input()).collect();
+        let sibling: Vec<ExprId> = (0..DIGEST_LIMBS).map(|_| builder.public_input()).collect();
+        let (left, right) = builder.order_digest_pair(selector, &node, &sibling);
+        let circuit = builder.build().unwrap();
+
+        let node_values: Vec<F> = (0..DIGEST_LIMBS as u64).map(&limb).collect();
+        let sibling_values: Vec<F> = (100..100 + DIGEST_LIMBS as u64).map(&limb).collect();
+        for set in bit.map_or_else(|| vec![false, true], |set| vec![set]) {
+            let public: Vec<F> = bit
+                .is_none()
+                .then(|| F::from_bool(set))
+                .into_iter()
+                .chain(node_values.iter().chain(&sibling_values).copied())
+                .collect();
+            let mut runner = circuit.runner();
+            runner.set_public_inputs(&public).unwrap();
+            let traces = runner.run().unwrap();
+            let read = |digest: &[ExprId]| -> Vec<F> {
+                digest
+                    .iter()
+                    .map(|id| {
+                        *traces
+                            .witness_trace
+                            .get_value(circuit.expr_to_widx[id])
+                            .unwrap()
+                    })
+                    .collect()
+            };
+            let (first, second) = if set {
+                (&sibling_values, &node_values)
+            } else {
+                (&node_values, &sibling_values)
+            };
+            assert_eq!(read(&left), *first);
+            assert_eq!(read(&right), *second);
+        }
+        circuit
+            .ops
+            .iter()
+            .filter(|op| matches!(op, crate::ops::Op::Alu { .. }))
+            .count()
+    }
+
+    /// A pairwise Merkle level orders its digest pair under an index bit. In characteristic
+    /// two that costs an add and two multiply-adds per limb, a quarter less than the four rows
+    /// of two selects that odd characteristic keeps, and a constant bit costs nothing.
+    #[test]
+    fn digest_pair_ordering_costs_three_alu_rows_per_limb_in_characteristic_two() {
+        use p3_binary_field::{BinaryField128, TowerLevel};
+
+        let binary =
+            |i: u64| BinaryField128::from_repr((0x0123_4567_89ab_cdef_u128 << 64) | u128::from(i));
+        let prime = |i: u64| BabyBear::from_u64(i + 1);
+        assert_eq!(digest_pair_ordering_rows(None, binary), 3 * DIGEST_LIMBS);
+        assert_eq!(digest_pair_ordering_rows(None, prime), 4 * DIGEST_LIMBS);
+        for set in [false, true] {
+            assert_eq!(digest_pair_ordering_rows(Some(set), binary), 0);
+            assert_eq!(digest_pair_ordering_rows(Some(set), prime), 0);
+        }
+    }
+
     #[test]
     fn the_index_bound_admits_exactly_the_indices_up_to_it() {
         for bound in 0..8usize {
