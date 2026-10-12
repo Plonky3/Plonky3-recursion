@@ -735,10 +735,10 @@ fn bit_committed_table_must_be_exactly_the_boolean_assuming_air() {
     );
 }
 
-/// The native first fold bounds the dense tables' heights, which share the dense layout. The
-/// bit-committed table lies in its own bit stack, whose variables its height must match.
+/// The native first fold bounds every table's height: the bit-committed table's preprocessed
+/// columns lie in the dense preprocessing layout alongside the dense tables'.
 #[test]
-fn first_fold_bounds_the_dense_tables_and_the_bit_stack_the_packed_table() {
+fn first_fold_bounds_the_dense_and_the_bit_committed_tables() {
     let (circuit, _) = keccak_chain();
     let bus = native_bus(&circuit, KeccakCommitment::Bits);
     let parameters = Parameters::new(&bus, MerkleArity::Two);
@@ -763,7 +763,7 @@ fn first_fold_bounds_the_dense_tables_and_the_bit_stack_the_packed_table() {
     );
     assert_eq!(
         refusal(keccak),
-        "binary trace tables do not match the committed bit arity"
+        "polynomial WHIR trace height is below the native first fold"
     );
 }
 

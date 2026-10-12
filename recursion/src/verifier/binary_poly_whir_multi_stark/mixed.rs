@@ -349,14 +349,10 @@ impl BinaryPolyMixedWhirMultiStarkVerifier {
                 "polynomial mixed WHIR MultiStark bit-committed table is not exactly the Boolean-assuming AIR",
             ));
         }
-        // The dense layout spans the dense tables only; the bit-committed table's geometry is
-        // checked against its own bit stack by the packed trace verifier.
+        // The bit-committed table's preprocessed columns share the dense preprocessing layout, whose
+        // native commitment pads any table shorter than the first fold.
         let first = dense_config.round_folding_factor(0);
-        if heights
-            .iter()
-            .enumerate()
-            .any(|(i, &height)| i != packed_table && height < first)
-        {
+        if heights.iter().any(|&height| height < first) {
             return Err(invalid(
                 "polynomial WHIR trace height is below the native first fold",
             ));
