@@ -464,8 +464,7 @@ where
             .iter()
             .map(|[low, high]| {
                 let slope = P::add(b, low, high);
-                let scaled = P::mul(b, coordinate, &slope);
-                P::add(b, low, &scaled)
+                P::mul_add(b, coordinate, &slope, low)
             })
             .collect();
     }

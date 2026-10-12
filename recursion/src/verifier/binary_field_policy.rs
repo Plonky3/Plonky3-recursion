@@ -62,6 +62,16 @@ pub(crate) trait BinaryRelationPolicy<EF: Field + Eq + Hash>: sealed::Relation {
         a: &Self::ChallengeTarget,
         c: &Self::ChallengeTarget,
     ) -> Self::ChallengeTarget;
+    /// `a * c + d`.
+    fn mul_add(
+        b: &mut CircuitBuilder<EF>,
+        a: &Self::ChallengeTarget,
+        c: &Self::ChallengeTarget,
+        d: &Self::ChallengeTarget,
+    ) -> Self::ChallengeTarget {
+        let product = Self::mul(b, a, c);
+        Self::add(b, &product, d)
+    }
 }
 
 pub(crate) struct TowerRelation<F, E>(PhantomData<(F, E)>);
@@ -342,6 +352,16 @@ where
     ) -> NativeTower128Target {
         b.native_tower128_mul(a, c)
     }
+    /// One multiply-add gate, with no separately constrained product.
+    fn mul_add(
+        b: &mut CircuitBuilder<BinaryField128>,
+        a: &NativeTower128Target,
+        c: &NativeTower128Target,
+        d: &NativeTower128Target,
+    ) -> NativeTower128Target {
+        let value = b.mul_add(a.as_expr(), c.as_expr(), d.as_expr());
+        b.native_tower128_from_expr(value)
+    }
 }
 impl<F: RecursiveBinaryTowerField> BinaryProtocolPolicy<BinaryField128>
     for NativeTower128Relation<F>
@@ -543,12 +563,16 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use p3_binary_field::{BinaryChallenger, BinaryField8, TowerLevel};
     use p3_challenger::{CanObserve, CanSample, CanSampleBits, HashChallenger};
     use p3_circuit::ops::ByteHash;
     use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
     use p3_field::PrimeCharacteristicRing;
     use p3_keccak::Keccak256Hash;
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
 
     use super::*;
 
@@ -556,6 +580,128 @@ mod tests {
     type H = NativeBinaryEncoding;
     type P = NativeTower128Relation;
     type Native = BinaryChallenger<BinaryField8, HashChallenger<u8, Keccak256Hash, 32>>;
+
+    /// Binds `P::mul_add(a, c, d)` and `P::mul(a, c) + d` to a public expected
+    /// value. An operand flagged in `zero` is the constant zero; the others are
+    /// public inputs, in order, before the expected value.
+    fn mul_add_circuit(zero: [bool; 3]) -> p3_circuit::Circuit<F> {
+        let mut b = CircuitBuilder::<F>::new();
+        let [a, c, d] = zero.map(|zero| {
+            if zero {
+                b.native_tower128_constant(0)
+            } else {
+                let value = b.public_input();
+                b.native_tower128_from_expr(value)
+            }
+        });
+        let expected = b.public_input();
+        let expected = b.native_tower128_from_expr(expected);
+        let fused = P::mul_add(&mut b, &a, &c, &d);
+        let product = P::mul(&mut b, &a, &c);
+        let separate = P::add(&mut b, &product, &d);
+        P::assert_equal(&mut b, &fused, &expected);
+        P::assert_equal(&mut b, &separate, &expected);
+        b.build().unwrap()
+    }
+
+    /// The native multiply-add computes `a * c + d`, the product plus the
+    /// addend, for random and zero values and for constant zero operands, and
+    /// keeps the addend out of the product: neither `d * c + a` nor `a * d + c`
+    /// is accepted.
+    #[test]
+    fn native_tower_mul_add_is_the_product_plus_the_addend() {
+        let mut rng = SmallRng::seed_from_u64(11);
+        let random: [F; 3] = core::array::from_fn(|_| F::from_repr(rng.random()));
+        let runs = |circuit: &p3_circuit::Circuit<F>, zero: [bool; 3], values: [F; 3], expected| {
+            let mut public: Vec<F> = (0..3).filter(|&i| !zero[i]).map(|i| values[i]).collect();
+            public.push(expected);
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(&public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        for mask in 0..8 {
+            let zero: [bool; 3] = core::array::from_fn(|i| mask >> i & 1 != 0);
+            let circuit = mul_add_circuit(zero);
+            let values = core::array::from_fn(|i| if zero[i] { F::ZERO } else { random[i] });
+            let [a, c, d] = values;
+            assert!(
+                runs(&circuit, zero, values, a * c + d),
+                "zero operands {zero:?}"
+            );
+            assert!(!runs(&circuit, zero, values, a * c + d + F::ONE));
+            if mask == 0 {
+                assert!(!runs(&circuit, zero, values, d * c + a));
+                assert!(!runs(&circuit, zero, values, a * d + c));
+                for i in 0..3 {
+                    let mut values = values;
+                    values[i] = F::ZERO;
+                    let [a, c, d] = values;
+                    assert!(runs(&circuit, zero, values, a * c + d), "zero value {i}");
+                }
+            }
+        }
+    }
+
+    /// The native multiply-add is one fused gate where a product and a sum
+    /// would be two.
+    #[test]
+    fn native_tower_mul_add_is_one_node() {
+        let added = |fused: bool| {
+            let mut b = CircuitBuilder::<F>::new();
+            let [a, c, d] = [(); 3].map(|()| {
+                let value = b.public_input();
+                b.native_tower128_from_expr(value)
+            });
+            let before = b.construction_usage().unwrap().expression_nodes;
+            if fused {
+                P::mul_add(&mut b, &a, &c, &d);
+            } else {
+                let product = P::mul(&mut b, &a, &c);
+                P::add(&mut b, &product, &d);
+            }
+            b.construction_usage().unwrap().expression_nodes - before
+        };
+        assert_eq!(added(true), 1);
+        assert_eq!(added(false), 2);
+    }
+
+    /// The default multiply-add, of tower targets in a prime circuit field,
+    /// computes `a * c + d` for random and zero values, not `d * c + a`.
+    #[test]
+    fn prime_tower_mul_add_is_the_product_plus_the_addend() {
+        type B = p3_baby_bear::BabyBear;
+        type T = TowerRelation<F, F>;
+        let mut b = CircuitBuilder::<B>::new();
+        let [a, c, d] = [(); 3].map(|()| {
+            let bits = b.alloc_public_input_array::<128>("operand bits");
+            b.binary128_from_bits(bits).unwrap()
+        });
+        let fused = T::mul_add(&mut b, &a, &c, &d);
+        let expected = b.alloc_public_input_array::<128>("expected bits");
+        for (&bit, &expected) in fused.bits().iter().zip(&expected) {
+            b.connect(bit, expected);
+        }
+        let circuit = b.build().unwrap();
+        let runs = |values: [F; 4]| {
+            let public: Vec<B> = values
+                .iter()
+                .flat_map(|value| (0..128).map(|i| B::from_bool(value.to_repr() >> i & 1 != 0)))
+                .collect();
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(&public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        let mut rng = SmallRng::seed_from_u64(13);
+        let [a, c, d]: [F; 3] = core::array::from_fn(|_| F::from_repr(rng.random()));
+        assert!(runs([a, c, d, a * c + d]));
+        assert!(!runs([a, c, d, d * c + a]));
+        assert!(runs([F::ZERO, c, d, d]));
+        assert!(runs([a, c, F::ZERO, a * c]));
+    }
 
     /// Binds a native policy draw to the native transcript's next field sample.
     fn draw(

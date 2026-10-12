@@ -181,6 +181,52 @@ impl BinaryRelationPolicy<Poly64> for NativePoly64Relation {
     ) -> NativePoly192Target {
         b.native_poly192_mul(a, c)
     }
+    /// The product of `native_poly192_mul`, reduced by `y³ = y + 1` and
+    /// `y⁴ = y² + y`, with every sum folded into a multiply-add: each
+    /// coefficient of `d` joins the gate that takes that coefficient's last
+    /// partial product.
+    fn mul_add(
+        b: &mut CircuitBuilder<Poly64>,
+        a: &NativePoly192Target,
+        c: &NativePoly192Target,
+        d: &NativePoly192Target,
+    ) -> NativePoly192Target {
+        let [a0, a1, a2] = *a.coefficients();
+        let [c0, c1, c2] = *c.coefficients();
+        let [d0, d1, d2] = *d.coefficients();
+        // The y³ and y⁴ coefficients of the product.
+        let cross = b.mul(a1, c2);
+        let cross = b.mul_add(a2, c1, cross);
+        let high = b.mul(a2, c2);
+        let out0 = mul_add_add(b, a0, c0, cross, d0);
+        let out1 = mul_add_add(b, a0, c1, cross, high);
+        let out1 = mul_add_add(b, a1, c0, out1, d1);
+        let out2 = b.mul_add(a0, c2, high);
+        let out2 = b.mul_add(a1, c1, out2);
+        let out2 = mul_add_add(b, a2, c0, out2, d2);
+        b.native_poly192_from_coefficients([out0, out1, out2])
+    }
+}
+
+/// `x * y + p + q` in one gate, or in the single operation its zero terms
+/// leave.
+fn mul_add_add(
+    b: &mut CircuitBuilder<Poly64>,
+    x: ExprId,
+    y: ExprId,
+    p: ExprId,
+    q: ExprId,
+) -> ExprId {
+    if p == ExprId::ZERO {
+        b.mul_add(x, y, q)
+    } else if q == ExprId::ZERO {
+        b.mul_add(x, y, p)
+    } else if x == ExprId::ZERO || y == ExprId::ZERO {
+        b.add(p, q)
+    } else {
+        // In characteristic two, `x * y + p - q` is `x * y + p + q`.
+        b.horner_acc_step(x, y, p, q)
+    }
 }
 
 impl BinaryPolyPolicy<Poly64> for NativePoly64Relation {
@@ -308,11 +354,175 @@ mod tests {
     use p3_field::PrimeCharacteristicRing;
     use p3_keccak::Keccak256Hash;
     use p3_symmetric::Hash as Digest;
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
 
     use super::*;
 
     type H = NativeBinaryEncoding;
     type P = NativePoly64Relation;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Operand {
+        /// Three public coefficients.
+        Public,
+        /// One public coefficient over two constant zeros, as a lifted base value.
+        Lifted,
+        /// The constant zero.
+        Zero,
+    }
+
+    /// Every assignment of operand kinds to `a`, `c` and `d`.
+    fn operand_kinds() -> impl Iterator<Item = [Operand; 3]> {
+        const KINDS: [Operand; 3] = [Operand::Public, Operand::Lifted, Operand::Zero];
+        (0..27).map(|i| [i % 3, i / 3 % 3, i / 9].map(|k| KINDS[k]))
+    }
+
+    /// The target of `operand`, allocating its public coefficients.
+    fn operand(b: &mut CircuitBuilder<Poly64>, operand: Operand) -> NativePoly192Target {
+        match operand {
+            Operand::Public => {
+                let coefficients = b.alloc_public_input_array::<3>("operand");
+                b.native_poly192_from_coefficients(coefficients)
+            }
+            Operand::Lifted => {
+                let coefficient = b.public_input();
+                b.native_poly192_from_coefficients([coefficient, ExprId::ZERO, ExprId::ZERO])
+            }
+            Operand::Zero => b.native_poly192_constant([0; 3]),
+        }
+    }
+
+    /// The part of `value` that `operand` can hold.
+    fn restrict(operand: Operand, value: Poly192) -> Poly192 {
+        let [c0, ..] = value.coefficients();
+        match operand {
+            Operand::Public => value,
+            Operand::Lifted => Poly192::new([c0, Poly64::ZERO, Poly64::ZERO]),
+            Operand::Zero => Poly192::ZERO,
+        }
+    }
+
+    /// Binds `P::mul_add(a, c, d)` and `P::mul(a, c) + d` to three public
+    /// expected coefficients, allocated after the operands' public coefficients.
+    fn mul_add_circuit(operands: [Operand; 3]) -> p3_circuit::Circuit<Poly64> {
+        let mut b = CircuitBuilder::<Poly64>::new();
+        let [a, c, d] = operands.map(|kind| operand(&mut b, kind));
+        let expected = b.alloc_public_input_array::<3>("a * c + d");
+        let expected = b.native_poly192_from_coefficients(expected);
+        let fused = P::mul_add(&mut b, &a, &c, &d);
+        let product = P::mul(&mut b, &a, &c);
+        let separate = P::add(&mut b, &product, &d);
+        P::assert_equal(&mut b, &fused, &expected);
+        P::assert_equal(&mut b, &separate, &expected);
+        b.build().unwrap()
+    }
+
+    /// Whether `circuit` accepts the operands' `values` with `expected`.
+    fn mul_add_runs(
+        circuit: &p3_circuit::Circuit<Poly64>,
+        operands: [Operand; 3],
+        values: [Poly192; 3],
+        expected: Poly192,
+    ) -> bool {
+        let mut public = Vec::new();
+        for (operand, value) in operands.into_iter().zip(values) {
+            let coefficients = value.coefficients();
+            match operand {
+                Operand::Public => public.extend(coefficients),
+                Operand::Lifted => public.push(coefficients[0]),
+                Operand::Zero => {}
+            }
+        }
+        public.extend(expected.coefficients());
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    }
+
+    /// The native multiply-add computes the Poly192 `a * c + d`, the product
+    /// plus the addend, for public, lifted and constant zero operands. Each of
+    /// the four reductions of the y³ and y⁴ coefficients is enforced, and the
+    /// addend stays out of the product: neither `d * c + a` nor `a * d + c` is
+    /// accepted.
+    #[test]
+    fn native_poly_mul_add_is_the_product_plus_the_addend() {
+        let mut rng = SmallRng::seed_from_u64(17);
+        let random: [Poly192; 3] = core::array::from_fn(|_| {
+            Poly192::new(core::array::from_fn(|_| Poly64::new(rng.random())))
+        });
+        for operands in operand_kinds() {
+            let circuit = mul_add_circuit(operands);
+            let values: [Poly192; 3] = core::array::from_fn(|i| restrict(operands[i], random[i]));
+            let [a, c, d] = values;
+            let expected = a * c + d;
+            assert!(
+                mul_add_runs(&circuit, operands, values, expected),
+                "{operands:?}"
+            );
+            let wrong = expected + Poly192::new([Poly64::ZERO, Poly64::ONE, Poly64::ZERO]);
+            assert!(!mul_add_runs(&circuit, operands, values, wrong));
+        }
+        let operands = [Operand::Public; 3];
+        let circuit = mul_add_circuit(operands);
+        let [a, c, d] = random;
+        let expected = a * c + d;
+        assert!(!mul_add_runs(&circuit, operands, random, d * c + a));
+        assert!(!mul_add_runs(&circuit, operands, random, a * d + c));
+        let [_, a1, a2] = a.coefficients();
+        let [_, c1, c2] = c.coefficients();
+        let cross = a1 * c2 + a2 * c1;
+        let high = a2 * c2;
+        let zero = Poly64::ZERO;
+        for dropped in [
+            [cross, zero, zero],
+            [zero, cross, zero],
+            [zero, high, zero],
+            [zero, zero, high],
+        ] {
+            let unreduced = expected - Poly192::new(dropped);
+            assert!(!mul_add_runs(&circuit, operands, random, unreduced));
+        }
+        for i in 0..3 {
+            let mut values = random;
+            values[i] = Poly192::ZERO;
+            let [a, c, d] = values;
+            assert!(
+                mul_add_runs(&circuit, operands, values, a * c + d),
+                "zero value {i}"
+            );
+        }
+    }
+
+    /// The fused multiply-add never adds more expression nodes than the product
+    /// and sum it replaces, and saves four of the thirteen for public operands.
+    #[test]
+    fn native_poly_mul_add_never_costs_more_than_the_product_and_sum() {
+        let added = |operands: [Operand; 3], fused: bool| {
+            let mut b = CircuitBuilder::<Poly64>::new();
+            let [a, c, d] = operands.map(|kind| operand(&mut b, kind));
+            let before = b.construction_usage().unwrap().expression_nodes;
+            if fused {
+                P::mul_add(&mut b, &a, &c, &d);
+            } else {
+                let product = P::mul(&mut b, &a, &c);
+                P::add(&mut b, &product, &d);
+            }
+            b.construction_usage().unwrap().expression_nodes - before
+        };
+        for operands in operand_kinds() {
+            assert!(
+                added(operands, true) <= added(operands, false),
+                "{operands:?}"
+            );
+        }
+        let public = [Operand::Public; 3];
+        assert_eq!(added(public, true), 9);
+        assert_eq!(added(public, false), 13);
+    }
+
     #[test]
     fn native_poly_constants_reject_truncation_before_graph_mutation() {
         let mut b = CircuitBuilder::<Poly64>::new();
