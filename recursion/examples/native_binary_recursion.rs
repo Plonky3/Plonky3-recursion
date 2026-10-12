@@ -366,7 +366,9 @@ fn options(depth: usize, args: &Args, security: Security) -> NativeBinaryRecursi
         preprocessed: recursive_protocol(args, security.level),
         arity: args.merkle_arity(),
         cap_height: args.cap_height(),
-        initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
+        // An even-length label keeps the words observed after it at even offsets,
+        // where they enter the hash whole.
+        initial_bytes: format!("native-binary-recursion-layer-{depth:02}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
         security_bits: security.bits,
@@ -497,7 +499,9 @@ fn folding_options(depth: usize, args: &Args) -> NativeBinaryFoldingRecursionOpt
         log_folding_factor: args.fold_arity,
         cap_height: args.cap_height(),
         query_draw_slack: args.query_draw_slack,
-        initial_bytes: format!("native-binary-recursion-layer-{depth}").into_bytes(),
+        // An even-length label keeps the words observed after it at even offsets,
+        // where they enter the hash whole.
+        initial_bytes: format!("native-binary-recursion-layer-{depth:02}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
         security_bits: SECURITY_BITS,

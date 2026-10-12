@@ -1559,6 +1559,38 @@ mod host_tests {
         }
     }
 
+    /// Nodes spent observing a cap of 16 words and sampling once after a constant transcript
+    /// label of `label_len` bytes.
+    fn cap_refill_nodes(label_len: usize) -> usize {
+        let mut b = CircuitBuilder::<BinaryField128>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let initial: Vec<_> = (0..label_len)
+            .map(|i| b.define_const(H::encode_u16(u16::from(b'a') + i as u16 % 26).unwrap()))
+            .collect();
+        let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<H, BinaryField128>(
+            &mut b,
+            ByteHash::Keccak256,
+            &initial,
+        )
+        .unwrap();
+        let cap = b.alloc_public_input_array::<16>("cap words");
+        let before = b.construction_usage().unwrap().expression_nodes;
+        observe_cap_with_host::<H, BinaryField128>(&mut b, &mut ch, &[cap.to_vec()]).unwrap();
+        ch.sample_with_host::<H, BinaryField128>(&mut b).unwrap();
+        b.construction_usage().unwrap().expression_nodes - before
+    }
+
+    /// After an even-length label the cap words sit at even offsets of an even-length refill
+    /// input and enter the hash whole; after an odd-length label each is split into checked
+    /// bytes.
+    #[test]
+    fn cap_words_after_an_even_length_label_enter_the_hash_whole() {
+        let even = cap_refill_nodes(32);
+        let odd = cap_refill_nodes(31);
+        assert!(even + 16 * 16 <= odd, "even {even}, odd {odd}");
+        assert_eq!(cap_refill_nodes(30), even);
+    }
+
     #[test]
     fn native_protocol_seeds_caps_and_observations_preserve_all_bytes() {
         transcript::<BinaryField128, _>(ByteHash::Keccak256, Keccak256Hash);

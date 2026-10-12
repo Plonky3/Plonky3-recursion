@@ -258,7 +258,9 @@ fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
         preprocessed: recursive_protocol(args.pcs_security_level, args.pow_bits),
         arity: args.merkle_arity(),
         cap_height: args.cap_height(),
-        initial_bytes: format!("native-poly-recursion-layer-{depth}").into_bytes(),
+        // An even-length label keeps the words observed after it at even offsets,
+        // where they enter the hash whole.
+        initial_bytes: format!("native-poly-recursion-layer-{depth:02}").into_bytes(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 32,
         security_bits: 4,
