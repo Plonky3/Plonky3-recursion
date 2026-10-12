@@ -16,6 +16,8 @@ mod native_binary_folding_verifier;
 mod native_binary_grouped_folding_pcs;
 #[path = "../native_binary_interpolation.rs"]
 mod native_binary_interpolation;
+#[path = "../native_binary_mixed_blake3_second_layer.rs"]
+mod native_binary_mixed_blake3_second_layer;
 #[path = "../native_binary_mixed_second_layer.rs"]
 mod native_binary_mixed_second_layer;
 #[path = "../native_binary_nonzero.rs"]

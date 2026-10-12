@@ -9,8 +9,9 @@ use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_binary_pcs::{ChallengeField, FoldAlphabet};
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, NativeTower128Target};
-use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir};
 use p3_field::{ExtensionField, PackedValue};
@@ -78,8 +79,9 @@ where
 {
     /// Builds a full binary verifier and its native output authority. All child
     /// plans and preprocessing come from `authority`, independently of any proof.
-    /// Native Keccak is required; indexed child relations are rejected before
-    /// graph allocation. Limits cover the graph and trace preparation; native
+    /// The child's transcript hash, Keccak-256 or BLAKE3, must also be its
+    /// commitments' hash, and is the output's; indexed child relations are rejected
+    /// before graph allocation. Limits cover the graph and trace preparation; native
     /// PCS codewords and proving workspaces require additional memory.
     pub fn from_native_authority<A, L>(
         authority: &BinaryNativeWhirAuthority<Base, A, L>,
@@ -187,10 +189,11 @@ where
             });
         }
         let limits = &options.artifact_limits;
+        let hash = authority.transcript_hash();
         let main = BinaryNativeWhirPcsParameters::<F>::with_limits(
             bus.main_variables(),
             options.main,
-            ByteHash::Keccak256,
+            hash,
             options.arity,
             options.cap_height,
             &limits.verifier,
@@ -201,7 +204,7 @@ where
                 BinaryNativeWhirPcsParameters::<F>::with_limits(
                     variables,
                     options.preprocessed,
-                    ByteHash::Keccak256,
+                    hash,
                     options.arity,
                     options.cap_height,
                     &limits.verifier,
@@ -211,7 +214,7 @@ where
         let spec = BinaryNativeVerifierSpec {
             main,
             preprocessed,
-            transcript_hash: ByteHash::Keccak256,
+            transcript_hash: hash,
             initial_bytes: options.initial_bytes,
             sumcheck_pow_bits: options.sumcheck_pow_bits,
             max_tau_draws: options.max_tau_draws,
@@ -391,7 +394,7 @@ where
 }
 
 /// Builds the child's complete native verifier circuit and its product-bus relation, with
-/// the output Keccak table committed as `keccak`, under `circuit_limits` and the options'
+/// the output hash table committed as `keccak`, under `circuit_limits` and the options'
 /// nonzero draw budget. `None` places no construction checkpoints.
 pub(super) fn native_verifier_circuit<C: NativeWhirChild>(
     child: &C,
@@ -415,7 +418,7 @@ pub(super) fn native_verifier_circuit<C: NativeWhirChild>(
         Some(limits) => CircuitBuilder::<F>::with_construction_limits(*limits)?,
         None => CircuitBuilder::<F>::new(),
     };
-    builder.enable_native_keccak_f1600()?;
+    enable_native_hash(&mut builder, transcript_hash)?;
     let public: Vec<Vec<_>> = public_counts
         .iter()
         .map(|&count| {
@@ -461,6 +464,19 @@ pub(super) fn native_verifier_circuit<C: NativeWhirChild>(
         )));
     }
     Ok((circuit, bus))
+}
+
+/// Enables the native operation `hash` runs on: Keccak-f for Keccak-256, the BLAKE3
+/// compression for BLAKE3. A layer enables only its child's transcript hash, so the verifier
+/// of a child whose commitments use another hash fails to build with `OpNotAllowed`.
+pub(super) fn enable_native_hash<CF: BinaryCoordinateField>(
+    builder: &mut CircuitBuilder<CF>,
+    hash: ByteHash,
+) -> Result<(), CircuitBuilderError> {
+    match hash {
+        ByteHash::Keccak256 => builder.enable_native_keccak_f1600(),
+        ByteHash::Blake3 => builder.enable_native_blake3_compress(),
+    }
 }
 
 pub(super) fn first_fold(parameters: &ProtocolParameters) -> Result<usize, VerificationError> {

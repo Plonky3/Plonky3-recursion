@@ -84,8 +84,9 @@ struct Fixture {
     layer: PreparedNativeBinaryMixedWhirLayer,
 }
 
-/// A layer over a dense child; the child and the layer's outputs commit with `arity` trees.
-fn prepare(arity: MerkleArity) -> Fixture {
+/// A layer over a dense child; the child and the layer's outputs commit with `arity` trees of
+/// `hash`, and the child's transcript hashes with `hash`.
+fn prepare(arity: MerkleArity, hash: ByteHash) -> Fixture {
     let [input, factor, constant] = [0xfedcba9876543210, 0x8123456789abcdef, 0x8912]
         .map(|raw| F::from_raw_coordinates(raw).unwrap());
     let mut builder = CircuitBuilder::<F>::new();
@@ -102,14 +103,14 @@ fn prepare(arity: MerkleArity) -> Fixture {
         main: BinaryNativeWhirPcsParameters::<F>::with_limits(
             variables,
             protocol(8, 1),
-            ByteHash::Keccak256,
+            hash,
             arity,
             0,
             &VerifierLimits::default(),
         )
         .unwrap(),
         preprocessed: None,
-        transcript_hash: ByteHash::Keccak256,
+        transcript_hash: hash,
         initial_bytes: b"native-recursion-child-v1".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
@@ -182,7 +183,7 @@ fn tampered_child_fails_mixed_layer_witness_generation() {
         private,
         layer,
         ..
-    } = prepare(MerkleArity::Two);
+    } = prepare(MerkleArity::Two, ByteHash::Keccak256);
     assert!(matches!(
         layer.prove_verified(&foreign),
         Err(VerificationError::PreparedInputMismatch { .. })
@@ -197,6 +198,38 @@ fn tampered_child_fails_mixed_layer_witness_generation() {
         let mut wrong = private.clone();
         wrong[index] += F::ONE;
         assert!(!run(layer.circuit(), flat, &wrong));
+    }
+}
+
+/// Layers with the same options over a Keccak child and a BLAKE3 child of the same statement
+/// have different identities, and each refuses the other's child: its checked token by
+/// identity before witness generation, and its proof values in the layer's verifier circuit,
+/// which hashes with the layer's own child's hash.
+#[test]
+fn keccak_and_blake3_layers_refuse_each_others_children() {
+    let keccak = prepare(MerkleArity::Two, ByteHash::Keccak256);
+    let blake3 = prepare(MerkleArity::Two, ByteHash::Blake3);
+    assert_eq!(
+        keccak.layer.authority().transcript_hash(),
+        ByteHash::Keccak256
+    );
+    assert_eq!(blake3.layer.authority().transcript_hash(), ByteHash::Blake3);
+    assert_ne!(
+        keccak.layer.authority().canonical_verifier_bytes(),
+        blake3.layer.authority().canonical_verifier_bytes()
+    );
+    assert_eq!(keccak.public, blake3.public);
+    // Both children's proofs have the same shape, so each circuit takes the other's values
+    // and refuses them by content.
+    assert_eq!(keccak.private.len(), blake3.private.len());
+    let flat = &keccak.public[0];
+    for (own, other) in [(&keccak, &blake3), (&blake3, &keccak)] {
+        assert!(matches!(
+            own.layer.prove_verified(&other.checked),
+            Err(VerificationError::PreparedInputMismatch { .. })
+        ));
+        assert!(run(own.layer.circuit(), flat, &own.private));
+        assert!(!run(own.layer.circuit(), flat, &other.private));
     }
 }
 
@@ -221,7 +254,7 @@ fn prove_mixed_output_layer(arity: MerkleArity) {
         checked,
         layer,
         ..
-    } = prepare(arity);
+    } = prepare(arity, ByteHash::Keccak256);
     let outer = layer.prove_verified(&checked).unwrap();
     assert!(outer.opening.packed.is_some());
     let token = layer.verify(&outer, &public).unwrap();
@@ -264,7 +297,7 @@ fn wrap_mixed_output_layer(arity: MerkleArity) {
         checked,
         layer,
         ..
-    } = prepare(arity);
+    } = prepare(arity, ByteHash::Keccak256);
     let outer = layer.prove_verified(&checked).unwrap();
     let token = layer.verify(&outer, &public).unwrap();
     let authority = layer.authority().clone();

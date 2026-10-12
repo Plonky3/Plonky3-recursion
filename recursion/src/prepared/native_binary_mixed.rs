@@ -1,5 +1,5 @@
 //! Prepared Tower32/Tower128 verifier circuits proved over Tower128, with the output proof's
-//! Keccak table committed as packed bits.
+//! hash table committed as packed bits.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -39,17 +39,17 @@ use crate::verifier::{
 
 type F = BinaryField128;
 type OutputAir = NativeBusCircuitAir<F>;
-/// A complete native recursive proof whose Keccak table is committed as packed bits.
+/// A complete native recursive proof whose hash table is committed as packed bits.
 pub type NativeBinaryMixedRecursiveProof = MultiStarkProof<BinaryNativeMixedWhirConfig>;
 
 /// Row variables one field element of the packed commitment absorbs.
 const ABSORBED_VARIABLES: usize = BinaryNativeMixedWhirPcsParameters::ABSORBED_VARIABLES;
 
 /// The ordinary native output options plus the packed commitment's protocol. The packed
-/// commitment uses the base options' hash and cap height.
+/// commitment uses the output's hash and the base options' cap height.
 pub struct NativeBinaryMixedRecursionOptions {
     pub base: NativeBinaryRecursionOptions,
-    /// Protocol of the Keccak table's packed-bit commitment.
+    /// Protocol of the hash table's packed-bit commitment.
     pub packed: ProtocolParameters,
 }
 
@@ -77,8 +77,9 @@ where
     F: ExtensionField<Base>,
 {
     /// Builds the child's full native verifier and an output authority that commits the
-    /// output Keccak table as packed bits. All child plans and preprocessing come from
-    /// `authority`, independently of any proof. Native Keccak is required.
+    /// output hash table as packed bits. All child plans and preprocessing come from
+    /// `authority`, independently of any proof. The child's transcript hash, Keccak-256 or
+    /// BLAKE3, must also be its commitments' hash, and is the output's.
     pub fn from_native_authority<A, L>(
         authority: &BinaryNativeWhirAuthority<Base, A, L>,
         options: NativeBinaryMixedRecursionOptions,
@@ -131,9 +132,10 @@ where
 
 impl PreparedNativeBinaryMixedWhirLayer<F, BinaryMixedWhirMultiStarkInputShape> {
     /// Builds the full native verifier of a child with one table committed as packed bits,
-    /// such as another mixed layer's output, whose Keccak table is, and an output authority
-    /// that commits the output Keccak table as packed bits. All child plans and preprocessing
-    /// come from `authority`, independently of any proof. Native Keccak is required.
+    /// such as another mixed layer's output, whose hash table is, and an output authority
+    /// that commits the output hash table as packed bits. All child plans and preprocessing
+    /// come from `authority`, independently of any proof. The child's transcript hash must
+    /// also be its commitments' hash, and is the output's.
     pub fn from_mixed_authority<A: VerifierAir<F, F>>(
         authority: &BinaryNativeMixedWhirAuthority<A>,
         options: NativeBinaryMixedRecursionOptions,
@@ -233,19 +235,19 @@ where
         )?;
         let input_shape = child.shape();
         let public_counts = C::public_counts(&input_shape);
-        let (keccak_table, bit_variables) = bus
-            .keccak_table_index()
+        let (packed_table, bit_variables) = bus
+            .packed_table_index()
             .zip(bus.packed_bit_variables())
             .ok_or_else(|| {
                 VerificationError::InvalidProofShape(
-                    "native recursive output has no packed Keccak table".into(),
+                    "native recursive output has no packed hash table".into(),
                 )
             })?;
         let packed_variables = bit_variables
             .checked_sub(ABSORBED_VARIABLES)
             .ok_or_else(|| {
                 VerificationError::InvalidProofShape(
-                    "native recursive packed Keccak table is smaller than one field element".into(),
+                    "native recursive packed hash table is smaller than one field element".into(),
                 )
             })?;
         let main_cells = codeword_cells(bus.main_variables(), options.main.starting_log_inv_rate)?;
@@ -269,11 +271,12 @@ where
             });
         }
         let limits = &options.artifact_limits;
+        let hash = child.transcript().0;
         let whir = |variables, protocol| {
             BinaryNativeWhirPcsParameters::<F>::with_limits(
                 variables,
                 protocol,
-                ByteHash::Keccak256,
+                hash,
                 options.arity,
                 options.cap_height,
                 &limits.verifier,
@@ -282,7 +285,7 @@ where
         let main = BinaryNativeMixedWhirPcsParameters::with_packed_table(
             whir(bus.main_variables(), options.main)?,
             whir(packed_variables, packed)?,
-            keccak_table,
+            packed_table,
             bit_variables,
         )?;
         let preprocessed = bus
@@ -294,7 +297,7 @@ where
         let spec = BinaryNativeVerifierSpec {
             main,
             preprocessed,
-            transcript_hash: ByteHash::Keccak256,
+            transcript_hash: hash,
             initial_bytes: options.initial_bytes,
             sumcheck_pow_bits: options.sumcheck_pow_bits,
             max_tau_draws: options.max_tau_draws,

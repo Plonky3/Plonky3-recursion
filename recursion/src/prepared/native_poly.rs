@@ -13,7 +13,9 @@ use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBu
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::folder::VerifierAir;
 
-use super::native_binary::{NativeBinaryRecursionOptions, codeword_cells, first_fold};
+use super::native_binary::{
+    NativeBinaryRecursionOptions, codeword_cells, enable_native_hash, first_fold,
+};
 use crate::BinaryTower128Challenger;
 use crate::artifact::{
     BinaryNativePolyMixedWhirAuthority, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirConfig,
@@ -47,8 +49,9 @@ pub struct PreparedNativeBinaryPolyWhirLayer {
 impl PreparedNativeBinaryPolyWhirLayer {
     /// Builds a full binary verifier and its native output authority. All child
     /// plans and preprocessing come from `authority`, independently of any proof.
-    /// Native Keccak is required; indexed child relations are rejected before
-    /// graph allocation. Limits cover the graph and trace preparation; native
+    /// The child's transcript hash, Keccak-256 or BLAKE3, must also be its
+    /// commitments' hash, and is the output's; indexed child relations are rejected
+    /// before graph allocation. Limits cover the graph and trace preparation; native
     /// PCS codewords and proving workspaces require additional memory.
     pub fn from_native_authority<A, L>(
         authority: &BinaryNativePolyWhirAuthority<A, L>,
@@ -144,10 +147,11 @@ impl PreparedNativeBinaryPolyWhirLayer {
             });
         }
         let limits = &options.artifact_limits;
+        let hash = authority.transcript_hash();
         let main = BinaryNativePolyWhirPcsParameters::with_limits(
             bus.main_variables(),
             options.main,
-            ByteHash::Keccak256,
+            hash,
             options.arity,
             options.cap_height,
             &limits.verifier,
@@ -158,7 +162,7 @@ impl PreparedNativeBinaryPolyWhirLayer {
                 BinaryNativePolyWhirPcsParameters::with_limits(
                     variables,
                     options.preprocessed,
-                    ByteHash::Keccak256,
+                    hash,
                     options.arity,
                     options.cap_height,
                     &limits.verifier,
@@ -168,7 +172,7 @@ impl PreparedNativeBinaryPolyWhirLayer {
         let spec = BinaryNativeVerifierSpec {
             main,
             preprocessed,
-            transcript_hash: ByteHash::Keccak256,
+            transcript_hash: hash,
             initial_bytes: options.initial_bytes,
             sumcheck_pow_bits: options.sumcheck_pow_bits,
             max_tau_draws: options.max_tau_draws,
@@ -376,7 +380,7 @@ impl<A: VerifierAir<Poly64, Poly192>> NativePolyWhirChild
 }
 
 /// Builds the child's complete native verifier circuit and its product-bus relation, with the
-/// output Keccak table committed as `keccak`, under `circuit_limits` and the options' nonzero
+/// output hash table committed as `keccak`, under `circuit_limits` and the options' nonzero
 /// draw budget. `None` places no construction checkpoints.
 pub(super) fn native_poly_verifier_circuit<C: NativePolyWhirChild>(
     child: &C,
@@ -400,7 +404,7 @@ pub(super) fn native_poly_verifier_circuit<C: NativePolyWhirChild>(
         Some(limits) => CircuitBuilder::<F>::with_construction_limits(*limits)?,
         None => CircuitBuilder::<F>::new(),
     };
-    builder.enable_native_keccak_f1600()?;
+    enable_native_hash(&mut builder, transcript_hash)?;
     let public: Vec<Vec<_>> = public_counts
         .iter()
         .map(|&count| {

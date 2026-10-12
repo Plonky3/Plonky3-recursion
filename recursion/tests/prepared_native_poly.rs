@@ -3,7 +3,7 @@
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::Poly64;
 use p3_circuit::ops::ByteHash;
-use p3_circuit::{CircuitBuilder, CircuitConstructionLimits};
+use p3_circuit::{CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits, NpoTypeId};
 use p3_circuit_prover::direct::{DirectCircuitAir, DirectCircuitLimits};
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
@@ -59,18 +59,26 @@ fn options(arity: MerkleArity) -> NativeBinaryRecursionOptions {
 #[test]
 #[ignore = "proves a full native Poly64/Poly192 verifier; run explicitly"]
 fn native_poly_layer_proves_and_binds_the_original_statement() {
-    prove_native_poly_layer(MerkleArity::Two);
+    prove_native_poly_layer(MerkleArity::Two, ByteHash::Keccak256);
+}
+
+/// A BLAKE3 child's verifier hashes with native BLAKE3, and the layer's output commits and
+/// hashes its transcript with BLAKE3.
+#[test]
+#[ignore = "proves a full native Poly64/Poly192 verifier; run explicitly"]
+fn blake3_native_poly_layer_proves_and_binds_the_original_statement() {
+    prove_native_poly_layer(MerkleArity::Two, ByteHash::Blake3);
 }
 
 /// The child and the layer's outputs commit with four-digest trees.
 #[test]
 #[ignore = "proves a full native Poly64/Poly192 verifier; run explicitly"]
 fn four_digest_trees_carry_through_a_native_poly_layer() {
-    prove_native_poly_layer(MerkleArity::Four);
+    prove_native_poly_layer(MerkleArity::Four, ByteHash::Keccak256);
 }
 
-/// The child and the layer's outputs commit with `arity` trees.
-fn prove_native_poly_layer(arity: MerkleArity) {
+/// The child and the layer's outputs commit with `arity` trees of `hash`.
+fn prove_native_poly_layer(arity: MerkleArity, hash: ByteHash) {
     let [input, factor, constant] = [0xfedcba9876543210, 0x8123456789abcdef, 0x8912].map(F::new);
     let mut builder = CircuitBuilder::<F>::new();
     let a = builder.public_input();
@@ -86,14 +94,14 @@ fn prove_native_poly_layer(arity: MerkleArity) {
         main: BinaryNativePolyWhirPcsParameters::with_limits(
             variables,
             protocol(),
-            ByteHash::Keccak256,
+            hash,
             arity,
             0,
             &VerifierLimits::default(),
         )
         .unwrap(),
         preprocessed: None,
-        transcript_hash: ByteHash::Keccak256,
+        transcript_hash: hash,
         initial_bytes: b"native-recursion-child-v1".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
@@ -146,6 +154,7 @@ fn prove_native_poly_layer(arity: MerkleArity) {
         layer.prove_verified(&foreign),
         Err(p3_recursion::verifier::VerificationError::PreparedInputMismatch { .. })
     ));
+    assert_eq!(layer.authority().transcript_hash(), hash);
     eprintln!(
         "native Poly layer: {} witnesses, {} operations",
         layer.circuit().witness_count,
@@ -194,11 +203,12 @@ impl<AB: AirBuilder<F = F>> Air<AB> for ConstantAir {
         b.assert_eq(main.current_slice()[0], b.public_values()[0]);
     }
 }
-fn authority(hash: ByteHash) -> BinaryNativePolyWhirAuthority<ConstantAir> {
+/// A child committed with `pcs` trees whose transcript hashes with `transcript`.
+fn authority(pcs: ByteHash, transcript: ByteHash) -> BinaryNativePolyWhirAuthority<ConstantAir> {
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativePolyWhirPcsParameters::new(1, protocol(), hash, 0).unwrap(),
+        main: BinaryNativePolyWhirPcsParameters::new(1, protocol(), pcs, 0).unwrap(),
         preprocessed: None,
-        transcript_hash: hash,
+        transcript_hash: transcript,
         initial_bytes: b"native-recursion-limit-test".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
@@ -220,15 +230,32 @@ fn limit_options() -> NativeBinaryRecursionOptions {
 }
 #[test]
 fn native_poly_preparation_checks_host_graph_and_codeword_limits() {
-    assert!(matches!(
-        PreparedNativeBinaryPolyWhirLayer::from_native_authority(
-            &authority(ByteHash::Blake3),
-            limit_options(),
-            &DirectCircuitLimits::default()
+    // The layer enables only the child's transcript hash, so a child whose commitments use
+    // the other hash cannot have its openings verified.
+    for (pcs, transcript, op) in [
+        (
+            ByteHash::Blake3,
+            ByteHash::Keccak256,
+            NpoTypeId::native_blake3_compress(),
         ),
-        Err(VerificationError::CircuitBuilder(_))
-    ));
-    let authority = authority(ByteHash::Keccak256);
+        (
+            ByteHash::Keccak256,
+            ByteHash::Blake3,
+            NpoTypeId::native_keccak_f1600(),
+        ),
+    ] {
+        assert!(matches!(
+            PreparedNativeBinaryPolyWhirLayer::from_native_authority(
+                &authority(pcs, transcript),
+                limit_options(),
+                &DirectCircuitLimits::default()
+            ),
+            Err(VerificationError::CircuitBuilder(
+                CircuitBuilderError::OpNotAllowed { op: refused }
+            )) if refused == op
+        ));
+    }
+    let authority = authority(ByteHash::Keccak256, ByteHash::Keccak256);
     for folding in [
         FoldingFactor::PerRound(vec![]),
         FoldingFactor::Constant(0),
