@@ -33,27 +33,27 @@ type F = Poly64;
 const ARITY: MerkleArity = MerkleArity::Four;
 const CAP_HEIGHT: usize = 1;
 
-/// About 12% above the measured second-layer verifier: 642,478 expression
+/// About 12% above the measured second-layer verifier: 610,691 expression
 /// nodes, 18,920 pending connections, 14,963 non-primitive calls and 778,400
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 720_000,
+    max_expression_nodes: 684_000,
     max_pending_connects: 21_200,
     max_non_primitive_calls: 16_800,
     max_non_primitive_slots: 872_000,
 };
-/// About 12% above the measured 611,771 witnesses and 390,728 operations.
+/// About 12% above the measured 579,984 witnesses and 358,943 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 686_000,
-    max_operations: 438_000,
+    max_witnesses: 650_000,
+    max_operations: 403_000,
     max_trace_cells: 1 << 28,
 };
 /// About 12% above the measured 1,591 native Keccak-f calls.
 const MAX_KECCAK_CALLS: usize = 1_790;
-/// About 12% above the measured 53 calls of the first transcript refill,
+/// About 12% above the measured 60 calls of the first transcript refill,
 /// whose 148 constant leading blocks take none.
-const MAX_FIRST_REFILL_CALLS: usize = 60;
+const MAX_FIRST_REFILL_CALLS: usize = 68;
 /// Measured padded witness, gate, public, Keccak and bridge table heights.
 /// One more row of growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [21, 19, 4, 16, 12];

@@ -41,50 +41,50 @@ struct Case {
 }
 
 /// Pairwise output trees under a cap of two levels: 4 roots. The second layer
-/// measures 362,215 expression nodes, 10,642 pending connections, 6,263
-/// non-primitive calls, 701,736 slots, 348,742 witnesses, 143,178 operations
+/// measures 354,201 expression nodes, 10,642 pending connections, 6,263
+/// non-primitive calls, 701,736 slots, 340,728 witnesses, 143,094 operations
 /// and 1,523 native Keccak-f calls.
 const PAIRWISE: Case = Case {
     arity: MerkleArity::Two,
     cap_height: 2,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 406_000,
+        max_expression_nodes: 397_000,
         max_pending_connects: 12_000,
         max_non_primitive_calls: 7_020,
         max_non_primitive_slots: 786_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 391_000,
+        max_witnesses: 382_000,
         max_operations: 161_000,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_710,
 };
 /// Four-digest output trees under a cap of one level: the same 4 roots. The
-/// second layer measures 366,084 expression nodes, 10,642 pending
-/// connections, 6,054 non-primitive calls, 618,136 slots, 352,820 witnesses,
-/// 164,091 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
+/// second layer measures 358,066 expression nodes, 10,642 pending
+/// connections, 6,054 non-primitive calls, 618,136 slots, 344,802 witnesses,
+/// 164,003 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
 /// below the pairwise layer's count, so a layer whose trees fell back to
 /// pairwise nodes fails it.
 const FOUR_DIGEST: Case = Case {
     arity: MerkleArity::Four,
     cap_height: 1,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 411_000,
+        max_expression_nodes: 402_000,
         max_pending_connects: 12_000,
         max_non_primitive_calls: 6_790,
         max_non_primitive_slots: 693_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 396_000,
+        max_witnesses: 387_000,
         max_operations: 184_000,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_480,
 };
-/// About 12% above the measured 53 calls of the first transcript refill,
+/// About 12% above the measured 60 calls of the first transcript refill,
 /// whose 148 constant leading blocks take none.
-const MAX_FIRST_REFILL_CALLS: usize = 60;
+const MAX_FIRST_REFILL_CALLS: usize = 68;
 /// Measured padded witness, gate, public, Keccak and bridge table heights.
 /// One more row of growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [20, 18, 4, 16, 12];

@@ -915,8 +915,8 @@ fn the_surviving_value_is_the_packed_evaluation() {
 /// these circuits are built from, and are updatable when either changes.
 #[test]
 fn node_counts_at_the_keccak_shape() {
-    const MEASURED_RING: usize = 228_712;
-    const MEASURED_WHIR: usize = 173_836;
+    const MEASURED_RING: usize = 225_450;
+    const MEASURED_WHIR: usize = 173_744;
     let case = Case::new(17, 1625, true, 1);
     let protocol = case.protocol();
     let variables = case.bit_variables() - ABSORBED;
