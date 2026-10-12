@@ -33,7 +33,7 @@ const CALLS: usize = 3;
 const MIN_VARIABLES: usize = 7;
 const FOLDING: usize = 2;
 const HASH: ByteHash = ByteHash::Keccak256;
-/// Two roots per part on pairwise trees, sixteen on arity-4 trees.
+/// Two roots per part on pairwise trees, four on arity-4 trees.
 const CAP_HEIGHT: usize = 1;
 /// Magic, version, kind, suite and body length.
 const HEADER_BYTES: usize = 17;
