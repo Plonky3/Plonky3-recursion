@@ -66,7 +66,7 @@ const MAX_VERIFIER_NODES: usize = 511_000;
 const MAX_KECCAK_CALLS: usize = 1_330;
 /// Measured padded witness, gate, public, Keccak and bridge table heights. One more row of
 /// growth at a power-of-two boundary doubles that table.
-const MAX_LOG_HEIGHTS: [usize; 5] = [21, 18, 4, 15, 12];
+const MAX_LOG_HEIGHTS: [usize; 5] = [20, 18, 4, 15, 12];
 
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
