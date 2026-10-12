@@ -45,25 +45,25 @@ const CAP_HEIGHT: usize = 1;
 /// Initial fold of every recursive commitment, and so the bus tables' minimum log height.
 const FOLD: usize = 4;
 
-/// About 12% above the measured second-layer construction: 452,712 expression nodes, 37,806
-/// pending connections, 7,105 non-primitive calls and 618,662 slots.
+/// About 12% above the measured second-layer construction: 449,666 expression nodes, 37,583
+/// pending connections, 7,079 non-primitive calls and 615,838 slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 508_000,
-    max_pending_connects: 42_400,
-    max_non_primitive_calls: 7_960,
-    max_non_primitive_slots: 693_000,
+    max_expression_nodes: 504_000,
+    max_pending_connects: 42_100,
+    max_non_primitive_calls: 7_930,
+    max_non_primitive_slots: 690_000,
 };
-/// About 12% above the measured 418,162 witnesses and 237,429 operations. The trace cells
+/// About 12% above the measured 415,162 witnesses and 235,488 operations. The trace cells
 /// follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 469_000,
-    max_operations: 266_000,
+    max_witnesses: 465_000,
+    max_operations: 264_000,
     max_trace_cells: 1 << 27,
 };
-/// About 12% above the measured 434,950 expression nodes of the child's mixed verifier.
-const MAX_VERIFIER_NODES: usize = 488_000;
-/// About 12% above the measured 1,182 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 1_330;
+/// About 12% above the measured 432,068 expression nodes of the child's mixed verifier.
+const MAX_VERIFIER_NODES: usize = 484_000;
+/// About 12% above the measured 1,176 native Keccak-f calls.
+const MAX_KECCAK_CALLS: usize = 1_320;
 /// Measured padded witness, gate, public, Keccak and bridge table heights. One more row of
 /// growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [20, 18, 4, 15, 12];
