@@ -224,7 +224,9 @@ fn mul_add_add(
     } else if x == ExprId::ZERO || y == ExprId::ZERO {
         b.add(p, q)
     } else {
-        // In characteristic two, `x * y + p - q` is `x * y + p + q`.
+        // In characteristic two, `x * y + p - q` is `x * y + p + q`. The native
+        // Horner gate binds its accumulator `x` as an operand of its own, so `x`
+        // need not be a previous Horner output.
         b.horner_acc_step(x, y, p, q)
     }
 }
