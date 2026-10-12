@@ -1,11 +1,14 @@
 //! Byte transcript of the native challenger and its proof-of-work search.
 
+mod blake3_midstate;
+
 use alloc::vec::Vec;
 use core::iter::repeat;
 use core::ops::Range;
 #[cfg(target_has_atomic = "64")]
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use blake3_midstate::Blake3Midstate;
 use p3_binary_field::TowerLevel;
 use p3_challenger::{CanObserve, CanSample};
 use p3_circuit::ops::ByteHash;
@@ -173,6 +176,9 @@ const fn draw(last: [u8; 8]) -> u64 {
 #[allow(clippy::large_enum_variant)]
 enum Prefix {
     Keccak256(KeccakPrefix),
+    /// BLAKE3 when the candidate ends a one-chunk message inside its final block.
+    Blake3Midstate(Blake3Midstate),
+    /// BLAKE3 for any other message.
     Blake3(blake3::Hasher),
 }
 
@@ -182,11 +188,14 @@ impl Prefix {
     fn new(hash: ByteHash, prefix: &[u8], witness_len: usize) -> Self {
         match hash {
             ByteHash::Keccak256 => Self::Keccak256(KeccakPrefix::new(prefix, witness_len)),
-            ByteHash::Blake3 => {
-                let mut state = blake3::Hasher::new();
-                state.update(prefix);
-                Self::Blake3(state)
-            }
+            ByteHash::Blake3 => Blake3Midstate::new(prefix, witness_len).map_or_else(
+                || {
+                    let mut state = blake3::Hasher::new();
+                    state.update(prefix);
+                    Self::Blake3(state)
+                },
+                Self::Blake3Midstate,
+            ),
         }
     }
 
@@ -195,6 +204,7 @@ impl Prefix {
     fn first_pass<F: TowerLevel>(&self, range: Range<u64>, mask: u64) -> Option<u64> {
         match self {
             Self::Keccak256(prefix) => prefix.first_pass::<F>(range, mask),
+            Self::Blake3Midstate(prefix) => prefix.first_pass(range, mask),
             Self::Blake3(prefix) => range.into_iter().find(|&index| {
                 let (bytes, len) = observed_bytes(candidate::<F>(index));
                 let mut state = prefix.clone();
@@ -317,7 +327,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use super::super::{BinaryNativeChallenger, BinaryNativeHash, NativeAlphabet};
-    use super::{GRIND_CHUNK, KeccakPrefix, VECTOR_LEN, candidate, draw, observed_bytes};
+    use super::{GRIND_CHUNK, KeccakPrefix, Prefix, VECTOR_LEN, candidate, draw, observed_bytes};
 
     const HASHES: [ByteHash; 2] = [ByteHash::Keccak256, ByteHash::Blake3];
 
@@ -538,6 +548,36 @@ mod tests {
             check::<BinaryField128>(len);
             check::<Poly64>(len);
         }
+    }
+
+    /// The BLAKE3 midstate takes the messages of one chunk whose candidate falls in the final
+    /// block. A candidate that crosses the chunk edge, a prefix that fills or crosses a chunk,
+    /// and a candidate that straddles two blocks keep the `Hasher` path.
+    #[test]
+    fn blake3_messages_past_one_chunk_take_the_hasher_path() {
+        let midstate =
+            |len: usize, width: usize| match Prefix::new(ByteHash::Blake3, &vec![7; len], width) {
+                Prefix::Blake3Midstate(_) => true,
+                Prefix::Blake3(_) => false,
+                Prefix::Keccak256(_) => unreachable!("a BLAKE3 prefix"),
+            };
+        for (len, width) in [(1008, 16), (1016, 8), (1020, 4), (1022, 2)] {
+            assert!(
+                midstate(len, width),
+                "prefix {len}, witness {width} fill the chunk"
+            );
+            assert!(
+                !midstate(len + 1, width),
+                "prefix {}, witness {width} cross it",
+                len + 1
+            );
+        }
+        for width in [2, 4, 8, 16] {
+            for len in [1024, 1072, 2048] {
+                assert!(!midstate(len, width), "prefix {len}, witness {width}");
+            }
+        }
+        assert!(!midstate(60, 8), "the candidate straddles two blocks");
     }
 
     #[test]
