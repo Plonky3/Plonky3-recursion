@@ -126,7 +126,7 @@ def write_consumer(path, packages, roots, source):
     for name, version in packages:
         lines.append(f'{json.dumps(name)} = {json.dumps("=" + version)}')
     if source == SMOKE:
-        lines.extend(['p3-baby-bear = "0.8.0"', 'p3-koala-bear = "0.8.0"'])
+        lines.extend(['p3-baby-bear = "0.9.0-rc.1"', 'p3-koala-bear = "0.9.0-rc.1"'])
     lines.extend(['', '[patch.crates-io]'])
     for name, _ in packages:
         lines.append(f'{json.dumps(name)} = {{ path = {json.dumps(str(roots[name]))} }}')
