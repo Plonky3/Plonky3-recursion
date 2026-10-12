@@ -50,6 +50,8 @@ mod native_poly_air;
 mod native_poly_boolean_whir_trace;
 #[path = "../native_poly_fraction.rs"]
 mod native_poly_fraction;
+#[path = "../native_poly_mixed_second_layer.rs"]
+mod native_poly_mixed_second_layer;
 #[path = "../native_poly_product.rs"]
 mod native_poly_product;
 #[path = "../native_poly_recursive_verifier.rs"]
