@@ -510,7 +510,7 @@ fn native_poly_packed_opening_replays_the_keccak_shape() {
 #[test]
 fn node_counts_at_the_keccak_shape() {
     const MEASURED_RING: usize = 398_229;
-    const MEASURED_WHIR: usize = 233_976;
+    const MEASURED_WHIR: usize = 205_987;
     let case = Case::new(17, 1625, true, 1);
     let variables = case.bit_variables() - ABSORBED;
     let config = whir_config(variables, 32, 3, 4);

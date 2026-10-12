@@ -916,7 +916,7 @@ fn the_surviving_value_is_the_packed_evaluation() {
 #[test]
 fn node_counts_at_the_keccak_shape() {
     const MEASURED_RING: usize = 381_562;
-    const MEASURED_WHIR: usize = 234_936;
+    const MEASURED_WHIR: usize = 173_836;
     let case = Case::new(17, 1625, true, 1);
     let protocol = case.protocol();
     let variables = case.bit_variables() - ABSORBED;
