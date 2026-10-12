@@ -448,14 +448,24 @@ fn native_grinding_beyond_one_sampled_byte_binds_every_witness() {
 /// A site that grinds observes its witness as the unchecked sixteen-bit words
 /// of its base width, which the refill of the draw after it range-checks as
 /// Keccak lanes. The runner refuses a flipped witness bit under Tower128 and
-/// Tower32. Under Tower32, moving coordinate 32 of the witness into its second
-/// word keeps the absorbed bytes but leaves the base field; only the lane
-/// range check refuses it.
+/// Tower32. Moving coordinate 32 of the witness into its second word keeps the
+/// absorbed bytes; under Tower128 the forged witness stays in the base field
+/// but differs from the one the bytes encode, and under Tower32 it leaves the
+/// base field. Only the lane range check refuses either.
 #[test]
 fn native_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word() {
     let (circuit, _, _, (public, private, pow_rows)) =
         check!(F, PrefixProver, protocol(3, 1, false), 0, 2);
     reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 128);
+    reject_wide_grinding_word(
+        &circuit,
+        &public,
+        &private,
+        &pow_rows,
+        128,
+        (1, 32),
+        tower_accepts,
+    );
     let (circuit, _, _, (public, private, pow_rows)) =
         check!(BinaryField32, PrefixProver, protocol(3, 1, false), 0, 2);
     reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 32);
