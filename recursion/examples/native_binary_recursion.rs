@@ -26,9 +26,9 @@
 //!
 //! | Command                       | arity | witnesses | codeword cells | proof bytes |
 //! |-------------------------------|-------|-----------|----------------|-------------|
-//! | `--layers 3`                  | 2     | 621,964   | 58,720,256     | 266,047     |
+//! | `--layers 3`                  | 2     | 614,675   | 50,331,648     | 263,259     |
 //! | `--hash keccak --layers 3`    | 4     | 588,488   | 50,331,648     | 155,387     |
-//! | `--merkle-arity 4 --layers 3` | 4     | 689,680   | 58,720,256     | 284,671     |
+//! | `--merkle-arity 4 --layers 3` | 4     | 680,197   | 58,720,256     | 284,863     |
 //!
 //! | Command                       | arity | last layer | wall   | resident | footprint |
 //! |-------------------------------|-------|------------|--------|----------|-----------|
@@ -37,7 +37,7 @@
 //! | `--merkle-arity 4 --layers 3` | 4     | 4.9 s      | 10.3 s | 3.6 GB   | 3.2 GB    |
 //!
 //! Blake3 proves the last layer in under half the time of Keccak with less memory, and its
-//! proofs are 71% larger. A four-digest node costs two Blake3 compressions, so under Blake3 a
+//! proofs are 69% larger. A four-digest node costs two Blake3 compressions, so under Blake3 a
 //! four-digest tree saves no compressions over half the levels while it opens three siblings
 //! per level, and arity 2 proves the last layer faster with smaller proofs.
 //!
