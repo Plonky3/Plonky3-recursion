@@ -5,7 +5,8 @@
 //! them, is a weighted sum of sixteen of those bits, and the row pushes it onto the witness bus
 //! under its preprocessed witness label. Output bits are sums of the last round's cells, so every
 //! pushed limb has degree one. The bits are Boolean by the AIR, or by a commitment that stores
-//! bits, so every pushed limb spans sixteen coordinates.
+//! bits, so every pushed limb spans sixteen coordinates. A row may push a slot of limbs as one
+//! carrier element instead, see [`ElementSlots`].
 
 use alloc::vec::Vec;
 use core::array;
@@ -34,12 +35,66 @@ use crate::native_bus::NativeBusCircuitError;
 const PUSHED_LIMBS: usize = BLAKE3_INPUT_LIMBS + 2 * NATIVE_BLAKE3_OUTPUT_LIMBS;
 /// Pushed limbs under the call activation; the swapped output limbs follow.
 const CALL_LIMBS: usize = BLAKE3_INPUT_LIMBS + NATIVE_BLAKE3_OUTPUT_LIMBS;
+/// Input limbs of a call's block: its first sixteen input words.
+const BLOCK_LIMBS: usize = 32;
 /// Preprocessed columns: the call activation, a witness label per pushed limb, and the
-/// swapped-digest activation.
-pub(crate) const BLAKE3_PP: usize = PUSHED_LIMBS + 2;
+/// swapped-digest activation. A table that binds elements adds an activation per slot.
+const BLAKE3_PP: usize = PUSHED_LIMBS + 2;
 const ACTIVE: usize = 0;
 const LABELS: usize = 1;
 const SWAPPED_ACTIVE: usize = LABELS + PUSHED_LIMBS;
+const BOUND: usize = BLAKE3_PP;
+
+/// Runs of pushed limbs that a row can push as one carrier element of `words` sixteen-bit
+/// words: the block's aligned runs of `words` limbs, then the swapped output limbs `words` at a
+/// time in the order a draw reads them, from the back. A bound slot pushes
+/// `sum_j shift_j * limb_j` over its words `limb_j`, with `shift_j` the element of raw
+/// coordinate `16 * j`, under the label of its word 0 in place of its limbs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ElementSlots {
+    words: usize,
+}
+
+impl ElementSlots {
+    /// The slots of a carrier of `F::COORDINATE_BITS / 16` words, when that is more than one.
+    pub(crate) const fn of<F: BinaryCoordinateField>() -> Option<Self> {
+        let words = F::COORDINATE_BITS / 16;
+        if words > 1 {
+            Some(Self { words })
+        } else {
+            None
+        }
+    }
+
+    /// Slots per row: the block's, then the swapped output limbs'.
+    pub(crate) const fn count(self) -> usize {
+        (BLOCK_LIMBS + NATIVE_BLAKE3_OUTPUT_LIMBS) / self.words
+    }
+
+    /// The pushed limbs of slot `slot`'s words, word 0 first.
+    pub(crate) fn limbs(self, slot: usize) -> impl Iterator<Item = usize> {
+        let block = BLOCK_LIMBS / self.words;
+        (0..self.words).map(move |j| {
+            if slot < block {
+                self.words * slot + j
+            } else {
+                PUSHED_LIMBS - 1 - self.words * (slot - block) - j
+            }
+        })
+    }
+
+    /// `shift_j` for each word `j` of a slot.
+    pub(crate) fn shifts<F: BinaryCoordinateField>(self) -> Vec<F> {
+        (0..self.words)
+            .map(|j| F::from_raw_coordinates(1 << (16 * j)).expect("a slot spans the carrier"))
+            .collect()
+    }
+}
+
+/// Preprocessed columns of a table that binds elements to `slots`, when it binds any.
+pub(crate) fn blake3_preprocessed_width(slots: Option<ElementSlots>) -> usize {
+    BLAKE3_PP + slots.map_or(0, ElementSlots::count)
+}
 
 /// The `a`, `b`, `c`, `d` word indices of each G step of a round: four column steps, then four
 /// diagonal steps.
@@ -60,15 +115,35 @@ pub(crate) struct Blake3Call {
     pub(crate) output: [usize; NATIVE_BLAKE3_OUTPUT_LIMBS],
     /// Outputs holding the output limbs with their two bytes swapped.
     pub(crate) swapped: Option<[usize; NATIVE_BLAKE3_OUTPUT_LIMBS]>,
+    /// The element each slot of the table's [`ElementSlots`] pushes, by slot; empty when the
+    /// row binds none.
+    pub(crate) bound: Vec<Option<usize>>,
 }
 
 impl Blake3Call {
-    /// The witness IDs of the limbs the call's row pushes, in label order.
-    pub(crate) fn ids(&self) -> impl Iterator<Item = &usize> {
-        self.input
-            .iter()
-            .chain(&self.output)
-            .chain(self.swapped.iter().flatten())
+    /// The witness ID of pushed limb `limb`, in label order, unless it is a swapped output limb
+    /// of a call that outputs none.
+    pub(crate) fn limb(&self, limb: usize) -> Option<usize> {
+        match limb {
+            0..BLAKE3_INPUT_LIMBS => Some(self.input[limb]),
+            BLAKE3_INPUT_LIMBS..CALL_LIMBS => Some(self.output[limb - BLAKE3_INPUT_LIMBS]),
+            _ => self.swapped.map(|swapped| swapped[limb - CALL_LIMBS]),
+        }
+    }
+
+    /// The witness ID each label column of the call's row labels, by pushed limb: the limb's own,
+    /// except that a slot bound under `slots` labels its word 0's column with its element and
+    /// leaves its other columns unlabelled. The row pushes exactly the labelled columns.
+    pub(crate) fn labels(&self, slots: Option<ElementSlots>) -> [Option<usize>; PUSHED_LIMBS] {
+        let mut labels = array::from_fn(|limb| self.limb(limb));
+        for (slot, &element) in self.bound.iter().enumerate() {
+            if let (Some(element), Some(slots)) = (element, slots) {
+                for (j, limb) in slots.limbs(slot).enumerate() {
+                    labels[limb] = (j == 0).then_some(element);
+                }
+            }
+        }
+        labels
     }
 }
 
@@ -100,29 +175,38 @@ pub(crate) fn blake3_calls<F: Field>(
                 output: array::from_fn(id),
                 swapped: (outputs[0].len() > NATIVE_BLAKE3_OUTPUT_LIMBS)
                     .then(|| array::from_fn(|m| id(NATIVE_BLAKE3_OUTPUT_LIMBS + m))),
+                bound: Vec::new(),
             });
         }
     }
     Ok(calls)
 }
 
-/// The preprocessed rows of a table of `height` rows: a call's row is active and labels its
-/// limbs by witness ID plus one, and labels and activates its swapped output limbs when the call
-/// outputs them. Every other cell is zero. `label` encodes a label.
+/// The preprocessed rows of a table of `height` rows that binds elements to `slots`, when it
+/// binds any: a call's row is active and labels its columns (see [`Blake3Call::labels`]) by
+/// witness ID plus one, activates its swapped output limbs when the call outputs them, and
+/// activates each bound slot. Every other cell is zero. `label` encodes a label.
 pub(crate) fn blake3_preprocessed<F: Field>(
     calls: &[Blake3Call],
+    slots: Option<ElementSlots>,
     height: usize,
     label: impl Fn(usize) -> Result<F, NativeBusCircuitError>,
 ) -> Result<RowMajorMatrix<F>, NativeBusCircuitError> {
-    let mut pp = F::zero_vec(cells(height, BLAKE3_PP)?);
-    for (row, call) in pp.as_chunks_mut::<BLAKE3_PP>().0.iter_mut().zip(calls) {
+    let width = blake3_preprocessed_width(slots);
+    let mut pp = F::zero_vec(cells(height, width)?);
+    for (row, call) in pp.chunks_exact_mut(width).zip(calls) {
         row[ACTIVE] = F::ONE;
-        for (cell, &id) in row[LABELS..].iter_mut().zip(call.ids()) {
-            *cell = label(id + 1)?;
+        for (cell, id) in row[LABELS..].iter_mut().zip(call.labels(slots)) {
+            if let Some(id) = id {
+                *cell = label(id + 1)?;
+            }
         }
         row[SWAPPED_ACTIVE] = F::from_bool(call.swapped.is_some());
+        for (cell, element) in row[BOUND..].iter_mut().zip(&call.bound) {
+            *cell = F::from_bool(element.is_some());
+        }
     }
-    Ok(RowMajorMatrix::new(pp, BLAKE3_PP))
+    Ok(RowMajorMatrix::new(pp, width))
 }
 
 /// Compression inputs of the calls, padded to `height` with zero inputs, after checking every
@@ -188,18 +272,20 @@ pub(crate) fn blake3_packed_words<F: BinaryCoordinateField>(
 }
 
 /// Constrains the current row to one compression, with the booleanity of its input cells unless
-/// `assume_boolean`, and pushes its limbs onto `witness_bus`. `row` and `pp` are the row's main
-/// and preprocessed cells. `assume_boolean` is sound only when the table is committed as bits.
+/// `assume_boolean`, and pushes its limbs onto `witness_bus`, the element of each slot of `slots`
+/// that the row binds in place of the slot's limbs. `row` and `pp` are the row's main and
+/// preprocessed cells. `assume_boolean` is sound only when the table is committed as bits.
 pub(crate) fn eval_blake3<AB>(
     builder: &mut AB,
     row: &[AB::Var],
     pp: &[AB::Var],
     weights: &[AB::F; 16],
+    slots: Option<ElementSlots>,
     assume_boolean: bool,
     witness_bus: BusName<'_>,
 ) where
     AB: AirBuilder + BusInteractionBuilder,
-    AB::F: Field,
+    AB::F: BinaryCoordinateField,
 {
     let air = if assume_boolean {
         Blake3BinaryAir::assuming_boolean_trace()
@@ -208,20 +294,51 @@ pub(crate) fn eval_blake3<AB>(
     };
     air.eval(builder);
     let cols: &Blake3BinaryCols<AB::Var> = row.borrow();
-    for (i, limb) in pushed_limbs::<AB::Var, AB::Expr, AB::F>(cols, weights)
-        .into_iter()
-        .enumerate()
-    {
-        let active = if i < CALL_LIMBS {
+    let limbs = pushed_limbs::<AB::Var, AB::Expr, AB::F>(cols, weights);
+    let mut slot_of = [None; PUSHED_LIMBS];
+    if let Some(slots) = slots {
+        for slot in 0..slots.count() {
+            for limb in slots.limbs(slot) {
+                slot_of[limb] = Some(slot);
+            }
+        }
+    }
+    for (i, limb) in limbs.iter().enumerate() {
+        let active: AB::Expr = if i < CALL_LIMBS {
             pp[ACTIVE]
         } else {
             pp[SWAPPED_ACTIVE]
+        }
+        .into();
+        // A slot is bound only on an active row and, for a swapped slot, only when the call
+        // outputs swapped limbs, so the difference is Boolean: zero exactly on a bound slot.
+        let active = match slot_of[i] {
+            Some(slot) => active - pp[BOUND + slot],
+            None => active,
         };
         builder.push_bus_interaction(
             witness_bus,
             BusDirection::Push,
-            [pp[LABELS + i].into(), limb],
-            BusActivation::Boolean(active.into()),
+            [pp[LABELS + i].into(), limb.clone()],
+            BusActivation::Boolean(active),
+        );
+    }
+    let Some(slots) = slots else {
+        return;
+    };
+    let shifts = slots.shifts::<AB::F>();
+    for slot in 0..slots.count() {
+        let element: AB::Expr = slots
+            .limbs(slot)
+            .zip(&shifts)
+            .map(|(limb, &shift)| limbs[limb].clone() * shift)
+            .sum();
+        let first = slots.limbs(slot).next().expect("a slot has words");
+        builder.push_bus_interaction(
+            witness_bus,
+            BusDirection::Push,
+            [pp[LABELS + first].into(), element],
+            BusActivation::Boolean(pp[BOUND + slot].into()),
         );
     }
 }
@@ -356,13 +473,14 @@ mod tests {
             input: array::from_fn(|i| 100 + i),
             output: array::from_fn(|i| 200 + i),
             swapped: Some(array::from_fn(|i| 300 + i)),
+            bound: Vec::new(),
         };
         let plain = Blake3Call {
             swapped: None,
-            ..call
+            ..call.clone()
         };
         let label = |id: usize| Ok(F::from_raw_coordinates(id as u128).unwrap());
-        let pp = blake3_preprocessed::<F>(&[call, plain], 4, label).unwrap();
+        let pp = blake3_preprocessed::<F>(&[call, plain], None, 4, label).unwrap();
         let rows = pp.values.as_chunks::<BLAKE3_PP>().0;
         let ids: Vec<usize> = (100..156).chain(200..216).chain(300..316).collect();
         for (row, swapped) in rows.iter().zip([true, false]) {

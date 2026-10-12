@@ -22,8 +22,7 @@ use p3_bus::{
 };
 use p3_circuit::Circuit;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::native_blake3::NATIVE_BLAKE3_OUTPUT_LIMBS;
-use p3_circuit::ops::{BLAKE3_INPUT_LIMBS, KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, NpoTypeId};
+use p3_circuit::ops::{KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, NpoTypeId};
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::types::WitnessId;
 use p3_field::{Field, PrimeCharacteristicRing};
@@ -38,8 +37,8 @@ use crate::native_binary::{
     keccak_limb_expression, keccak_packed_words,
 };
 use crate::native_blake3::{
-    BLAKE3_PP, Blake3Call, blake3_calls, blake3_packed_words, blake3_preprocessed, blake3_trace,
-    eval_blake3,
+    Blake3Call, ElementSlots, blake3_calls, blake3_packed_words, blake3_preprocessed,
+    blake3_preprocessed_width, blake3_trace, eval_blake3,
 };
 use crate::primitive_plan::{PrimitiveConstraint, PrimitivePlan};
 
@@ -158,6 +157,8 @@ enum Table<F> {
         pp: Arc<RowMajorMatrix<F>>,
         weights: [F; 16],
         bits: bool,
+        /// The slots its rows bind elements to, when they bind any.
+        elements: Option<ElementSlots>,
     },
 }
 
@@ -260,15 +261,10 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             ],
         )?;
         let calls = keccak_calls(circuit, true)?;
-        let blake3_calls = blake3_calls(circuit)?;
+        let mut blake3_calls = blake3_calls(circuit)?;
         if !calls.is_empty() && !blake3_calls.is_empty() {
             return Err(NativeBusCircuitError::MixedHashTables);
         }
-        let swapped_calls = calls.iter().filter(|call| call.swapped.is_some()).count();
-        let blake3_swapped_calls = blake3_calls
-            .iter()
-            .filter(|call| call.swapped.is_some())
-            .count();
         // The witness reads of the public, Keccak boundary and BLAKE3 rows.
         let mut external: Vec<usize> = plan.public.iter().map(|&w| w + 1).collect();
         for call in &calls {
@@ -281,14 +277,29 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     .map(|&w| w + 1),
             );
         }
+        let blake3_reads = external.len();
         for call in &blake3_calls {
-            external.extend(call.ids().map(|&w| w + 1));
+            external.extend(call.labels(None).into_iter().flatten().map(|w| w + 1));
         }
-        let gate_rows = fuse_selects(
+        let mut gate_rows = fuse_selects(
             gate_rows(&plan.constraints, plan.width),
             &external,
             plan.width,
         );
+        let mut elements = None;
+        if let Some(slots) = ElementSlots::of::<F>()
+            && !blake3_calls.is_empty()
+        {
+            gate_rows =
+                bind_blake3_elements(gate_rows, &external, &mut blake3_calls, slots, plan.width);
+            if blake3_calls.iter().any(|call| !call.bound.is_empty()) {
+                elements = Some(slots);
+                external.truncate(blake3_reads);
+                for call in &blake3_calls {
+                    external.extend(call.labels(elements).into_iter().flatten().map(|w| w + 1));
+                }
+            }
+        }
         let gate_occurrences = gate_rows.iter().try_fold(0, |total, row| {
             add(
                 total,
@@ -297,22 +308,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     .count(),
             )
         })?;
-        let n = add(
-            add(gate_occurrences, plan.public.len())?,
-            add(
-                add(
-                    cells(calls.len(), 2 * KECCAK_STATE_LIMBS)?,
-                    cells(swapped_calls, KECCAK256_DIGEST_LIMBS)?,
-                )?,
-                add(
-                    cells(
-                        blake3_calls.len(),
-                        BLAKE3_INPUT_LIMBS + NATIVE_BLAKE3_OUTPUT_LIMBS,
-                    )?,
-                    cells(blake3_swapped_calls, NATIVE_BLAKE3_OUTPUT_LIMBS)?,
-                )?,
-            )?,
-        )?;
+        let n = add(gate_occurrences, external.len())?;
         let witness_height = padded_height(n.max(minimum_height))?;
         let gate_height = if gate_rows.is_empty() {
             0
@@ -347,7 +343,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let (hash_width, hash_pp) = if blake3_calls.is_empty() {
             (HASH_WIDTH, 3)
         } else {
-            (NUM_BLAKE3_BINARY_COLS, BLAKE3_PP)
+            (NUM_BLAKE3_BINARY_COLS, blake3_preprocessed_width(elements))
         };
         let hash_cells = cells(hash_height, hash_width)?;
         let main_cells = add(
@@ -487,9 +483,15 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 F::from_raw_coordinates(1 << i).expect("validated limb width")
             });
             airs.push(air(Table::Blake3 {
-                pp: Arc::new(blake3_preprocessed(&blake3_calls, hash_height, label::<F>)?),
+                pp: Arc::new(blake3_preprocessed(
+                    &blake3_calls,
+                    elements,
+                    hash_height,
+                    label::<F>,
+                )?),
                 weights,
                 bits,
+                elements,
             }));
             log_heights.push(hash_height.ilog2() as usize);
         }
@@ -931,6 +933,88 @@ fn fuse_selects<F: BinaryCoordinateField>(
         .collect()
 }
 
+/// Binds whole elements to BLAKE3 rows. A call's slot (see [`ElementSlots`]) with words
+/// `w_0, ..., w_(n-1)` binds `s_(n-1)` when [`MUL_ADD_CONSTANT`] rows compute
+/// `s_j = w_j * shift_j + s_(j-1)` for `j = 1..n` from `s_0 = w_0`, each multiplier exactly the
+/// slot's `shift_j`, and every word and every partial sum `s_1, ..., s_(n-2)` has exactly two
+/// reads: a word its row and its push, a partial sum its row and the next. The row then pushes
+/// `s_(n-1)` as `sum_j shift_j * w_j` over its limbs' bits, the chain's own relation, so the
+/// chain rows are dropped and nothing reads the words or partial sums any more. Only the full run
+/// of an aligned slot binds, so a shorter split keeps the rows that also bound its value's high
+/// coordinates. `external` holds the reads outside the gate table, every call's limbs among
+/// them, as for [`fuse_selects`], so the counts cover every fanout occurrence. A call that binds
+/// a slot records its elements.
+fn bind_blake3_elements<F: BinaryCoordinateField>(
+    rows: Vec<GateRow<F>>,
+    external: &[usize],
+    calls: &mut [Blake3Call],
+    slots: ElementSlots,
+    width: usize,
+) -> Vec<GateRow<F>> {
+    let mut reads = vec![0usize; width + 1];
+    for row in &rows {
+        for slot in (0..5).filter(|&slot| gate_slot_used(row.selector, slot)) {
+            reads[row.ids[slot]] += 1;
+        }
+    }
+    for &id in external {
+        reads[id] += 1;
+    }
+    // A witness that is the multiplicand of two such rows has more than two reads.
+    let mut product_of = HashMap::<usize, usize>::new();
+    for (i, row) in rows.iter().enumerate() {
+        if row.selector == MUL_ADD_CONSTANT {
+            product_of.insert(row.ids[0], i);
+        }
+    }
+    let shifts = slots.shifts::<F>();
+    // The chain rows over `words`, low first, and the sum they end at.
+    let chain = |words: &[usize], kept: &[bool]| -> Option<(Vec<usize>, usize)> {
+        if words.iter().any(|&word| reads[word] != 2) {
+            return None;
+        }
+        let mut rows_of_chain = Vec::with_capacity(words.len() - 1);
+        let mut sum = words[0];
+        for (j, (&word, &shift)) in words.iter().zip(&shifts).enumerate().skip(1) {
+            let &r = product_of.get(&word)?;
+            let row = &rows[r];
+            if !kept[r] || row.ids[2] != sum || row.constant != shift || (j > 1 && reads[sum] != 2)
+            {
+                return None;
+            }
+            rows_of_chain.push(r);
+            sum = row.ids[4];
+        }
+        Some((rows_of_chain, sum))
+    };
+    let mut kept = vec![true; rows.len()];
+    for call in calls {
+        let mut bound = vec![None; slots.count()];
+        for (slot, element) in bound.iter_mut().enumerate() {
+            let Some(words) = slots
+                .limbs(slot)
+                .map(|limb| call.limb(limb).map(|w| w + 1))
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            if let Some((rows_of_chain, sum)) = chain(&words, &kept) {
+                for r in rows_of_chain {
+                    kept[r] = false;
+                }
+                *element = Some(sum - 1);
+            }
+        }
+        if bound.iter().any(Option::is_some) {
+            call.bound = bound;
+        }
+    }
+    rows.into_iter()
+        .zip(kept)
+        .filter_map(|(row, kept)| kept.then_some(row))
+        .collect()
+}
+
 // Selectors below six other than SELECT come from the shared frozen primitive gate
 // codec. MulAdd and the fused gates retain the optional addend slot: an absent
 // addend uses the checked zero sentinel. Every other inactive slot can be omitted
@@ -978,7 +1062,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Public(_) => 0,
             Table::Keccak { .. } => 3,
             Table::Bridge(_) => BRIDGE_PP,
-            Table::Blake3 { .. } => BLAKE3_PP,
+            Table::Blake3 { elements, .. } => blake3_preprocessed_width(elements),
         }
     }
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
@@ -1113,11 +1197,17 @@ where
                     BusActivation::Boolean(pp[BRIDGE_ACTIVE].into()),
                 );
             }
-            Table::Blake3 { weights, bits, .. } => eval_blake3(
+            Table::Blake3 {
+                weights,
+                bits,
+                elements,
+                ..
+            } => eval_blake3(
                 b,
                 row,
                 pp,
                 weights,
+                *elements,
                 *bits,
                 BusName::new(self.witness_bus.as_ref()),
             ),

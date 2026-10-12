@@ -1113,7 +1113,9 @@ pub(crate) fn reject_flipped_grinding_bits<F: BinaryCoordinateField>(
 /// does not, and lifting the Keccak lane instead leaves a state cell outside
 /// {0, 1}. Under BLAKE3 one block word of a compression turns wide, the fanout
 /// and gate rows accept it, the witness bus does not, and lifting the
-/// compression's bit instead leaves a cell outside {0, 1}.
+/// compression's bit instead leaves a cell outside {0, 1}. A witness split into
+/// as many words as its carrier has is bound whole to its block slot: no gate
+/// row reads it, and the compression pushes the witness its bits encode.
 pub(crate) fn reject_wide_grinding_word<F: BinaryCoordinateField>(
     circuit: &Circuit<F>,
     statement: &[F],
@@ -1140,7 +1142,7 @@ pub(crate) fn reject_wide_grinding_word<F: BinaryCoordinateField>(
         let forgery = Blake3Forgery::new(circuit, &prepared, statement, private, accepts);
         let mut hinted = forgery.honest.clone();
         hinted[split[word].0 as usize] += wide;
-        forgery.reject_wide_limb(&hinted, &forged_private, true);
+        forgery.reject_wide_limb(&hinted, &forged_private, base_bits < F::COORDINATE_BITS);
         return;
     }
     let mut runner = circuit.runner();
@@ -2303,9 +2305,10 @@ impl<'a, F: BinaryCoordinateField> Blake3Forgery<'a, F> {
     /// coordinate, and returns the `(call, input)` of the only BLAKE3 input it changes. The
     /// runner refuses the limb. A prover who keeps the `claimed` hint and call outputs satisfies
     /// every fanout and gate row, and the BLAKE3 table, which holds no bridge, cannot carry the
-    /// limb in its bits, so the witness bus refuses the traces. Lifting the limb's lowest bit to
-    /// carry it balances the bus and leaves a cell outside {0, 1}. `through_gates` is whether
-    /// gate rows read the forged value. The limb must be a block input of its call.
+    /// limb in its bits, nor push the forged value in place of a bound slot's limbs, so the
+    /// witness bus refuses the traces. Lifting the limb's lowest bit to carry it balances the bus
+    /// and leaves a cell outside {0, 1}. `through_gates` is whether gate rows read the forged
+    /// value. The limb must be a block input of its call.
     fn reject_wide_limb(
         &self,
         claimed: &[F],
@@ -2468,7 +2471,9 @@ fn native_blake3_words_range_check_subtree_leaf_words_in_blocks() {
 /// coordinate below sixteen, so every limb keeps the sixteen low coordinates it hashes and only
 /// the table's range check separates the forged opening from the committed one: limb
 /// `value * count + word` of the leaf turns wide, the fanout and gate rows accept it, the
-/// witness bus does not, and lifting the table's bit instead leaves a cell outside {0, 1}.
+/// witness bus does not, and lifting the table's bit instead leaves a cell outside {0, 1}. A
+/// value split into as many words as its carrier has is bound whole to its block slot: no gate
+/// row reads it, and the compression pushes the value its bits encode.
 fn reject_wide_blake3_leaf_words<F: BinaryCoordinateField>(
     values: &[F],
     count: usize,
@@ -2536,7 +2541,8 @@ fn reject_wide_blake3_leaf_words<F: BinaryCoordinateField>(
         let mut forged_private = private.clone();
         forged_private[value] += monomial(moved);
         let limb = value * count + word;
-        let forged = forgery.reject_wide_limb(&hinted, &forged_private, true);
+        let through_gates = 16 * count < F::COORDINATE_BITS;
+        let forged = forgery.reject_wide_limb(&hinted, &forged_private, through_gates);
         assert_eq!(forged, (limb / 32, limb % 32), "value {value} word {word}");
     }
 }

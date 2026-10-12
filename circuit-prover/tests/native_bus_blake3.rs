@@ -1,5 +1,6 @@
 //! The native BLAKE3 table proves one compression per row, pushes every call's limbs onto the
-//! witness bus, and is committed densely or as packed bits of its own width.
+//! witness bus, or one element in place of a slot of limbs that only its split reads, and is
+//! committed densely or as packed bits of its own width.
 
 use core::borrow::Borrow;
 
@@ -738,4 +739,481 @@ fn trace_cell_limit_charges_the_blake3_table_as_committed() {
             dense.traces(&witness).unwrap()[table].values
         );
     }
+}
+
+/// Preprocessed column of the activation of a table's first element slot, when it binds any.
+const BOUND: usize = PP_WIDTH;
+/// The gate preprocessing's column of the multiply-add-by-constant selector.
+const MUL_ADD_CONSTANT_COLUMN: usize = 12;
+
+/// Sixteen-bit words per element of `F`, which is the width of an element slot.
+const fn element_words<F: BinaryCoordinateField>() -> usize {
+    F::COORDINATE_BITS / 16
+}
+
+/// `shift_j` of an element slot: the element of raw coordinate `16 * j`.
+fn shift<F: BinaryCoordinateField>(j: usize) -> F {
+    F::from_raw_coordinates(1 << (16 * j)).unwrap()
+}
+
+/// The element `sum_j words[j] * shift(j)` that `words` split.
+fn packed<F: BinaryCoordinateField>(words: &[u16], shift: impl Fn(usize) -> F) -> F {
+    words
+        .iter()
+        .enumerate()
+        .map(|(j, &word)| raw::<F>(word) * shift(j))
+        .sum()
+}
+
+/// `count` sixteen-bit words, distinct for distinct `seed`s.
+fn words(count: usize, seed: u16) -> Vec<u16> {
+    (0..count as u16)
+        .map(|j| (j + seed).wrapping_mul(0x9e37) ^ 0x6a09)
+        .collect()
+}
+
+/// A circuit whose one BLAKE3 call hashes the words of public value 0, the element, as block
+/// limbs `at..`, every other block and chaining-value limb a public value, and binds its digest
+/// to public values; the statement, private inputs and the element's and words' expressions.
+struct HashedSplit<F: BinaryCoordinateField> {
+    circuit: Circuit<F>,
+    public: Vec<F>,
+    private: Vec<F>,
+    element: ExprId,
+    words: Vec<ExprId>,
+}
+
+/// `split` emits the hashed words of the element, which `hashed` gives, from private inputs
+/// `private` when it reads any.
+fn hashed_split<F: BinaryCoordinateField>(
+    at: usize,
+    hashed: &[u16],
+    element: F,
+    private: Vec<F>,
+    split: impl FnOnce(&mut CircuitBuilder<F>, ExprId) -> Vec<ExprId>,
+) -> HashedSplit<F> {
+    let span = at..at + hashed.len();
+    let others = words(48 - hashed.len(), 0x51);
+    let mut limbs = others.clone();
+    for (i, &word) in span.clone().zip(hashed) {
+        limbs.insert(i, word);
+    }
+    limbs.extend(words_to_limbs(&tail(0)));
+    let input: [u32; BLAKE3_INPUT_WORDS] = limbs_to_words(&limbs).try_into().unwrap();
+    let digest = words_to_limbs(&blake3_compress(&input)[..8]);
+
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let value = b.public_input();
+    let split = split(&mut b, value);
+    assert_eq!(split.len(), hashed.len());
+    let mut filler = (0..others.len())
+        .map(|_| b.public_input())
+        .collect::<Vec<_>>();
+    for (i, &word) in span.zip(&split) {
+        filler.insert(i, word);
+    }
+    for limb in words_to_limbs(&tail(0)) {
+        filler.push(b.define_const(raw(limb)));
+    }
+    for limb in b.add_native_blake3_compress(&filler).unwrap() {
+        let expected = b.public_input();
+        b.connect(limb, expected);
+    }
+    let mut public = vec![element];
+    public.extend(others.into_iter().chain(digest).map(raw::<F>));
+    HashedSplit {
+        circuit: b.build().unwrap(),
+        public,
+        private,
+        element: value,
+        words: split,
+    }
+}
+
+fn run<F: BinaryCoordinateField>(
+    circuit: &Circuit<F>,
+    public: &[F],
+    private: &[F],
+) -> WitnessTrace<F> {
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(public).unwrap();
+    runner.set_private_inputs(private).unwrap();
+    runner.run().unwrap().witness_trace
+}
+
+/// The activation of each element slot on the BLAKE3 table's first row, or `None` when the
+/// table binds no element.
+fn bound_slots<F: BinaryCoordinateField>(prepared: &NativeBusCircuit<F>) -> Option<Vec<bool>> {
+    let air = prepared.airs().last().unwrap();
+    let width = BaseAir::<F>::preprocessed_width(air);
+    (width != PP_WIDTH).then(|| {
+        let pp = air.preprocessed_trace().unwrap();
+        pp.values[BOUND..width]
+            .iter()
+            .map(|&cell| cell == F::ONE)
+            .collect()
+    })
+}
+
+/// `Some` of the slot activations with only `slot` set, among the slots of `F`.
+fn only<F: BinaryCoordinateField>(slot: usize) -> Option<Vec<bool>> {
+    Some((0..48 / element_words::<F>()).map(|s| s == slot).collect())
+}
+
+/// Live fanout reads of witness `id`.
+fn fanout_reads<F: BinaryCoordinateField>(prepared: &NativeBusCircuit<F>, id: usize) -> usize {
+    let pp = prepared.airs()[0].preprocessed_trace().unwrap();
+    let label = F::from_raw_coordinates(id as u128 + 1).unwrap();
+    pp.values
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|row| row[1] == F::ONE && row[0] == label)
+        .count()
+}
+
+/// Gate rows of the multiply-add-by-constant selector.
+fn constant_products<F: BinaryCoordinateField>(prepared: &NativeBusCircuit<F>) -> usize {
+    let pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    pp.values
+        .as_chunks::<14>()
+        .0
+        .iter()
+        .filter(|row| row[MUL_ADD_CONSTANT_COLUMN] == F::ONE)
+        .count()
+}
+
+fn id<F: BinaryCoordinateField>(circuit: &Circuit<F>, expr: ExprId) -> usize {
+    circuit.expr_to_widx[&expr].0 as usize
+}
+
+/// A split element hashed as an aligned block slot binds it: the row pushes the element, the
+/// split's rows go and nothing reads its words. The honest witness balances, and a prover who
+/// claims another element for the same block bits is refused by the witness bus alone.
+fn split_elements_bind_their_block_slots<F: BinaryCoordinateField>(
+    split: impl Fn(&mut CircuitBuilder<F>, ExprId, usize) -> Vec<ExprId>,
+) {
+    let n = element_words::<F>();
+    let hashed = words(n, 3);
+    let element = packed(&hashed, shift::<F>);
+    for slot in [0, 32 / n - 1] {
+        let split = hashed_split(n * slot, &hashed, element, Vec::new(), |b, v| {
+            split(b, v, n)
+        });
+        let circuit = &split.circuit;
+        let witness = run(circuit, &split.public, &split.private);
+        let element_id = id(circuit, split.element);
+        assert_eq!(
+            *witness.get_value(WitnessId(element_id as u32)).unwrap(),
+            element
+        );
+        for mode in [KeccakCommitment::Dense, KeccakCommitment::Bits] {
+            let prepared = build(circuit, 1, mode);
+            assert_eq!(
+                bound_slots(&prepared),
+                only::<F>(slot),
+                "{mode:?}, slot {slot}"
+            );
+            assert_eq!(constant_products(&prepared), 0);
+            for &word in &split.words {
+                assert_eq!(fanout_reads(&prepared, id(circuit, word)), 0);
+            }
+            // The public table's read and the row's push.
+            assert_eq!(fanout_reads(&prepared, element_id), 2);
+            let pp = prepared
+                .airs()
+                .last()
+                .unwrap()
+                .preprocessed_trace()
+                .unwrap();
+            let labels = &pp.values[1 + n * slot..1 + n * (slot + 1)];
+            assert_eq!(
+                labels[0],
+                F::from_raw_coordinates(element_id as u128 + 1).unwrap()
+            );
+            assert!(labels[1..].iter().all(|&label| label == F::ZERO));
+
+            check_local(&prepared, &witness, &split.public);
+            let replay = Replay::new(&prepared);
+            assert!(replay.balanced(&witness, &split.public));
+            let forged = replaced(&witness, element_id, element + F::ONE);
+            let mut statement = split.public.clone();
+            statement[0] += F::ONE;
+            assert!(
+                !replay.balanced(&forged, &statement),
+                "{mode:?}, slot {slot}"
+            );
+        }
+    }
+}
+
+#[test]
+fn split_elements_bind_their_block_slots_in_both_bases() {
+    split_elements_bind_their_block_slots::<F>(|b, value, count| {
+        let value = b.native_tower128_from_expr(value);
+        b.native_tower128_unchecked_words(&value, count).unwrap()
+    });
+    split_elements_bind_their_block_slots::<Poly64>(|b, value, count| {
+        b.native_poly64_unchecked_words(value, count).unwrap()
+    });
+}
+
+/// Whether every bus balances over the dense traces of `witness`, but for the BLAKE3 table's,
+/// which are those of `hashed`: a prover who commits honest compression bits beside forged
+/// witness copies.
+fn balanced_beside<F: BinaryCoordinateField>(
+    prepared: &NativeBusCircuit<F>,
+    witness: &WitnessTrace<F>,
+    hashed: &WitnessTrace<F>,
+    public: &[F],
+) -> bool {
+    let mut traces = prepared.traces(witness).unwrap();
+    let table = traces.len() - 1;
+    traces[table] = prepared.traces(hashed).unwrap().swap_remove(table);
+    let preprocessed: Vec<_> = prepared
+        .airs()
+        .iter()
+        .map(|air| {
+            air.preprocessed_trace()
+                .map(|pp| Table::new(pp.transpose()))
+        })
+        .collect();
+    let profiles: Vec<_> = prepared
+        .airs()
+        .iter()
+        .map(|air| BusSymbolicBuilder::<F>::from_air(air, AirLayout::from_air::<F>(air)))
+        .collect();
+    let traces: Vec<_> = traces
+        .into_iter()
+        .map(|trace| Table::new(trace.transpose()))
+        .collect();
+    let public = prepared.public_values(public).unwrap();
+    let instances: Vec<_> = (0..traces.len())
+        .map(|i| {
+            BusDebugInstance::new(
+                &traces[i],
+                preprocessed[i].as_ref(),
+                &public[i],
+                &profiles[i],
+            )
+            .unwrap()
+        })
+        .collect();
+    BusDebugReport::check(&instances).unwrap().is_balanced()
+}
+
+/// A split whose word another gate also reads keeps its rows and its limb pushes: binding it
+/// would leave that gate's copy of the word free of the hashed bits. A prover who forges the
+/// word and the gate's output beside honest compression bits is refused.
+fn a_word_read_elsewhere_is_not_bound<F: BinaryCoordinateField>(
+    split: impl Fn(&mut CircuitBuilder<F>, ExprId, usize) -> Vec<ExprId>,
+) {
+    let n = element_words::<F>();
+    let hashed = words(n, 7);
+    let element = packed(&hashed, shift::<F>);
+    let mut square = None;
+    let split = hashed_split(0, &hashed, element, Vec::new(), |b, value| {
+        let words = split(b, value, n);
+        square = Some(b.mul(words[1], words[1]));
+        words
+    });
+    let circuit = &split.circuit;
+    let witness = run(circuit, &split.public, &split.private);
+    let prepared = build(circuit, 1, KeccakCommitment::Dense);
+    assert_eq!(bound_slots(&prepared), None);
+    assert_eq!(constant_products(&prepared), n - 1);
+    let replay = Replay::new(&prepared);
+    assert!(replay.balanced(&witness, &split.public));
+    assert!(balanced_beside(
+        &prepared,
+        &witness,
+        &witness,
+        &split.public
+    ));
+
+    let word = id(circuit, split.words[1]);
+    let square = id(circuit, square.unwrap());
+    let value = *witness.get_value(WitnessId(word as u32)).unwrap() + F::ONE;
+    let forged = replaced(&replaced(&witness, word, value), square, value * value);
+    assert!(!balanced_beside(
+        &prepared,
+        &forged,
+        &witness,
+        &split.public
+    ));
+}
+
+#[test]
+fn a_word_read_elsewhere_is_not_bound_in_both_bases() {
+    a_word_read_elsewhere_is_not_bound::<F>(|b, value, count| {
+        let value = b.native_tower128_from_expr(value);
+        b.native_tower128_unchecked_words(&value, count).unwrap()
+    });
+    a_word_read_elsewhere_is_not_bound::<Poly64>(|b, value, count| {
+        b.native_poly64_unchecked_words(value, count).unwrap()
+    });
+}
+
+/// Splits that do not fill an aligned slot keep their rows and limb pushes: a split straddling
+/// two slots, and a split of one word fewer, which also bounds its element's high coordinates.
+fn unaligned_and_short_splits_are_not_bound<F: BinaryCoordinateField>(
+    split: impl Fn(&mut CircuitBuilder<F>, ExprId, usize) -> Vec<ExprId>,
+) {
+    let n = element_words::<F>();
+    for (at, count) in [(n / 2, n), (0, n - 1)] {
+        let hashed = words(count, 11);
+        let element = packed(&hashed, shift::<F>);
+        let split = hashed_split(at, &hashed, element, Vec::new(), |b, v| split(b, v, count));
+        let witness = run(&split.circuit, &split.public, &split.private);
+        let prepared = build(&split.circuit, 1, KeccakCommitment::Dense);
+        assert_eq!(bound_slots(&prepared), None, "at {at}, {count} words");
+        assert_eq!(constant_products(&prepared), count - 1);
+        check_local(&prepared, &witness, &split.public);
+        assert!(Replay::new(&prepared).balanced(&witness, &split.public));
+    }
+}
+
+#[test]
+fn unaligned_and_short_splits_are_not_bound_in_both_bases() {
+    unaligned_and_short_splits_are_not_bound::<F>(|b, value, count| {
+        let value = b.native_tower128_from_expr(value);
+        b.native_tower128_unchecked_words(&value, count).unwrap()
+    });
+    unaligned_and_short_splits_are_not_bound::<Poly64>(|b, value, count| {
+        b.native_poly64_unchecked_words(value, count).unwrap()
+    });
+}
+
+/// A chain over private words, `x^(bits * j)` multiplying word `j`, whose partial sum `s_1` a
+/// squaring also reads when `square_partial`.
+fn private_chain<F: BinaryCoordinateField>(
+    hashed: &[u16],
+    bits: usize,
+    square_partial: bool,
+) -> HashedSplit<F> {
+    let n = hashed.len();
+    let shift = |j: usize| F::from_raw_coordinates(1 << (bits * j)).unwrap();
+    let element = packed(hashed, shift);
+    let private = hashed.iter().map(|&word| raw::<F>(word)).collect();
+    hashed_split(0, hashed, element, private, |b, value| {
+        let words = b.alloc_private_inputs(n, "words");
+        let mut sum = words[0];
+        for (j, &word) in words.iter().enumerate().skip(1) {
+            let k = b.define_const(shift(j));
+            sum = b.mul_add(word, k, sum);
+            if j == 1 && square_partial {
+                b.mul(sum, sum);
+            }
+        }
+        b.connect(sum, value);
+        words
+    })
+}
+
+/// A chain over private words binds only when each multiplier is exactly its word's shift and
+/// no other gate reads a partial sum: with `x^(8 j)` in place of `x^(16 j)` the element is not
+/// the slot's, and a partial sum read elsewhere would be left free of the hashed bits.
+fn only_exact_private_chains_bind<F: BinaryCoordinateField>() {
+    let n = element_words::<F>();
+    let hashed = words(n, 13);
+    for (bits, square_partial, binds) in [(16, false, true), (8, false, false), (16, true, false)] {
+        let split = private_chain::<F>(&hashed, bits, square_partial);
+        let witness = run(&split.circuit, &split.public, &split.private);
+        let prepared = build(&split.circuit, 1, KeccakCommitment::Dense);
+        let case = format!("shift bits {bits}, partial sum squared {square_partial}");
+        assert_eq!(
+            bound_slots(&prepared),
+            if binds { only::<F>(0) } else { None },
+            "{case}"
+        );
+        assert_eq!(
+            constant_products(&prepared),
+            if binds { 0 } else { n - 1 },
+            "{case}"
+        );
+        check_local(&prepared, &witness, &split.public);
+        assert!(Replay::new(&prepared).balanced(&witness, &split.public));
+    }
+}
+
+#[test]
+fn only_exact_private_chains_bind_in_both_bases() {
+    only_exact_private_chains_bind::<F>();
+    only_exact_private_chains_bind::<Poly64>();
+}
+
+/// An element packed from drawn words, the swapped digest limbs read from the back, binds its
+/// digest slot: the row pushes the element of its output bits, and a prover who claims another
+/// element for the same compression is refused by the witness bus alone.
+fn drawn_elements_bind_their_digest_slots<F: BinaryCoordinateField>(
+    pack: impl Fn(&mut CircuitBuilder<F>, &[ExprId]) -> ExprId,
+) {
+    let n = element_words::<F>();
+    let limbs: Vec<u16> = words(48, 17)
+        .into_iter()
+        .chain(words_to_limbs(&tail(0)))
+        .collect();
+    let input: [u32; BLAKE3_INPUT_WORDS] = limbs_to_words(&limbs).try_into().unwrap();
+    let digest = words_to_limbs(&blake3_compress(&input)[..8]);
+    let swapped: Vec<u16> = digest.iter().map(|limb| limb.swap_bytes()).collect();
+    for slot in [0, 16 / n - 1] {
+        let drawn: Vec<u16> = (0..n).map(|j| swapped[15 - n * slot - j]).collect();
+        let element = packed(&drawn, shift::<F>);
+
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_blake3_compress().unwrap();
+        let mut input: Vec<ExprId> = (0..48).map(|_| b.public_input()).collect();
+        for &limb in &limbs[48..] {
+            input.push(b.define_const(raw(limb)));
+        }
+        let (output, swapped_ids) = b
+            .add_native_blake3_compress_with_swapped_digest(&input)
+            .unwrap();
+        for limb in output {
+            let expected = b.public_input();
+            b.connect(limb, expected);
+        }
+        let words: Vec<ExprId> = (0..n).map(|j| swapped_ids[15 - n * slot - j]).collect();
+        let packed_id = pack(&mut b, &words);
+        let claimed = b.public_input();
+        b.connect(packed_id, claimed);
+        let circuit = b.build().unwrap();
+        let mut public: Vec<F> = limbs[..48].iter().chain(&digest).map(|&l| raw(l)).collect();
+        public.push(element);
+        let witness = run(&circuit, &public, &[]);
+        let element_id = id(&circuit, claimed);
+
+        for mode in [KeccakCommitment::Dense, KeccakCommitment::Bits] {
+            let prepared = build(&circuit, 1, mode);
+            assert_eq!(bound_slots(&prepared), only::<F>(32 / n + slot), "{mode:?}");
+            assert_eq!(constant_products(&prepared), 0);
+            for &word in &words {
+                assert_eq!(fanout_reads(&prepared, id(&circuit, word)), 0);
+            }
+            check_local(&prepared, &witness, &public);
+            let replay = Replay::new(&prepared);
+            assert!(replay.balanced(&witness, &public));
+            let forged = replaced(&witness, element_id, element + F::ONE);
+            let mut statement = public.clone();
+            *statement.last_mut().unwrap() += F::ONE;
+            assert!(
+                !replay.balanced(&forged, &statement),
+                "{mode:?}, slot {slot}"
+            );
+        }
+    }
+}
+
+#[test]
+fn drawn_elements_bind_their_digest_slots_in_both_bases() {
+    drawn_elements_bind_their_digest_slots::<F>(|b, words| {
+        b.native_tower128_from_unchecked_words(words.try_into().unwrap())
+            .unwrap()
+            .as_expr()
+    });
+    drawn_elements_bind_their_digest_slots::<Poly64>(|b, words| {
+        b.native_poly64_from_unchecked_words(words.try_into().unwrap())
+            .unwrap()
+    });
 }
