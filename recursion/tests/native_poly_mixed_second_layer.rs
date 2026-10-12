@@ -7,7 +7,8 @@
 //! its witness takes seconds, while proving it takes gigabytes of codewords, so the default test
 //! bounds the circuit size and the Keccak-f calls, checks that witness generation refuses a
 //! forged packed opened value or a changed child statement, and that proving refuses a token of
-//! a foreign child authority.
+//! a foreign child authority. Under BLAKE3, the first layer proves over a BLAKE3 source and the
+//! second layer generates its witness over the first layer's proof.
 
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::Poly64;
@@ -71,6 +72,13 @@ const MAX_CODEWORD_CELLS: usize = 61_100_000;
 /// Measured padded witness, gate, public, Keccak and bridge table heights. One more row of
 /// growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [21, 19, 4, 16, 12];
+
+/// Limits of the second BLAKE3 layer, whose size this file does not bound.
+const BLAKE3: DirectCircuitLimits = DirectCircuitLimits {
+    max_witnesses: 1 << 22,
+    max_operations: 1 << 22,
+    max_trace_cells: 1 << 28,
+};
 
 struct SquaringAir;
 impl BaseAir<F> for SquaringAir {
@@ -152,7 +160,15 @@ struct Fixture {
     second: SecondLayer,
 }
 
-fn prepare() -> Fixture {
+/// The squaring source statement, its authority committing and hashing its transcript with
+/// `hash`, and its checked proof.
+fn source(
+    hash: ByteHash,
+) -> (
+    Vec<Vec<F>>,
+    BinaryNativePolyWhirAuthority<SquaringAir>,
+    VerifiedBinaryNativePolyWhirProof,
+) {
     let input = F::new(0xfedcba9876543210);
     let mut values = vec![input];
     for _ in 0..3 {
@@ -161,10 +177,9 @@ fn prepare() -> Fixture {
     }
     let expected = vec![vec![input, *values.last().unwrap()]];
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativePolyWhirPcsParameters::new(2, protocol(), ByteHash::Keccak256, 0)
-            .unwrap(),
+        main: BinaryNativePolyWhirPcsParameters::new(2, protocol(), hash, 0).unwrap(),
         preprocessed: None,
-        transcript_hash: ByteHash::Keccak256,
+        transcript_hash: hash,
         initial_bytes: b"native-poly-mixed-second-layer-source".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
@@ -181,6 +196,11 @@ fn prepare() -> Fixture {
         .prove(&expected, vec![RowMajorMatrix::new(values, 1)])
         .unwrap();
     let source = authority.verify_native(&proof, &expected).unwrap();
+    (expected, authority, source)
+}
+
+fn prepare() -> Fixture {
+    let (expected, authority, source) = source(ByteHash::Keccak256);
     let first = PreparedNativeBinaryPolyMixedWhirLayer::from_native_authority(
         &authority,
         options(1),
@@ -382,4 +402,60 @@ fn second_poly_mixed_layer_proves_and_binds_the_original_statement() {
     let values = wrong.iter_mut().find(|values| !values.is_empty()).unwrap();
     values[0] += F::ONE;
     assert!(second.verify(&outer, &wrong).is_err());
+}
+
+/// Under BLAKE3 the source and both layers commit and hash their transcripts with BLAKE3, and
+/// each layer commits its BLAKE3 table as packed bits. The first layer proves and verifies. The
+/// second layer, over the first layer's packed-BLAKE3 output, runs native BLAKE3 compressions
+/// only, and its witness generation accepts the first layer's proof under the original
+/// statement but not under a changed one.
+#[test]
+fn blake3_poly_mixed_layers_commit_their_blake3_tables_as_packed_bits() {
+    let (expected, authority, source) = source(ByteHash::Blake3);
+    let first = PreparedNativeBinaryPolyMixedWhirLayer::from_native_authority(
+        &authority,
+        options(1),
+        &DirectCircuitLimits::default(),
+    )
+    .unwrap();
+    let first_proof = first.prove_verified(&source).unwrap();
+    assert!(first_proof.opening.packed.is_some());
+    let checked = first.verify(&first_proof, &expected).unwrap();
+    let child = first.authority();
+    assert_eq!(child.transcript_hash(), ByteHash::Blake3);
+    let second =
+        PreparedNativeBinaryPolyMixedWhirLayer::from_mixed_authority(child, options(2), &BLAKE3)
+            .unwrap();
+    assert_eq!(second.authority().transcript_hash(), ByteHash::Blake3);
+
+    let circuit = second.circuit();
+    let calls = |op: NpoTypeId| {
+        circuit
+            .ops
+            .iter()
+            .filter(|call| {
+                matches!(call, Op::NonPrimitiveOpWithExecutor { executor, .. }
+                    if executor.op_type() == &op)
+            })
+            .count()
+    };
+    assert!(calls(NpoTypeId::native_blake3_compress()) > 0);
+    assert_eq!(calls(NpoTypeId::native_keccak_f1600()), 0);
+    let statement: Vec<F> = checked.public_values().iter().flatten().copied().collect();
+    assert_eq!(statement, expected.concat());
+    let private = checked
+        .native_input()
+        .private_native_values(&child.recursive_verifier().input_shape())
+        .unwrap();
+    let run = |statement: &[F]| {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(statement).unwrap();
+        runner.set_private_inputs(&private).unwrap();
+        runner.run().map(|traces| traces.witness_trace)
+    };
+    let witness = run(&statement).unwrap();
+    assert_eq!(witness.num_rows(), circuit.witness_count as usize);
+    let mut wrong = statement;
+    wrong[1] += F::ONE;
+    assert!(run(&wrong).is_err());
 }
