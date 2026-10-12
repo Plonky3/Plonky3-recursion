@@ -76,3 +76,5 @@ mod prepared_native_binary_folding;
 mod prepared_native_binary_mixed;
 #[path = "../prepared_native_poly.rs"]
 mod prepared_native_poly;
+#[path = "../common/sum_shapes_air.rs"]
+mod sum_shapes_air;

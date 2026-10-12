@@ -39,6 +39,11 @@ pub(crate) trait BinaryRelationPolicy<EF: Field + Eq + Hash>: sealed::Relation {
     type Challenge: ExtensionField<Self::Base>;
     type BaseTarget: Clone;
     type ChallengeTarget: Clone;
+    /// Whether a binary AIR program evaluates a sum with a product that nothing
+    /// else reads as one [`Self::mul_add`], and folds a constraint that is a sum
+    /// nothing else reads with [`Self::mul_add_add`]. Otherwise it evaluates every
+    /// node as it stands.
+    const FUSES_AIR_SUMS: bool = false;
     fn constant(
         b: &mut CircuitBuilder<EF>,
         raw: u128,
@@ -71,6 +76,17 @@ pub(crate) trait BinaryRelationPolicy<EF: Field + Eq + Hash>: sealed::Relation {
     ) -> Self::ChallengeTarget {
         let product = Self::mul(b, a, c);
         Self::add(b, &product, d)
+    }
+    /// `a * c + d + e`.
+    fn mul_add_add(
+        b: &mut CircuitBuilder<EF>,
+        a: &Self::ChallengeTarget,
+        c: &Self::ChallengeTarget,
+        d: &Self::ChallengeTarget,
+        e: &Self::ChallengeTarget,
+    ) -> Self::ChallengeTarget {
+        let addend = Self::add(b, d, e);
+        Self::mul_add(b, a, c, &addend)
     }
 }
 
@@ -315,6 +331,7 @@ where
     type Challenge = BinaryField128;
     type BaseTarget = NativeTower128Target;
     type ChallengeTarget = NativeTower128Target;
+    const FUSES_AIR_SUMS: bool = true;
     fn constant(
         b: &mut CircuitBuilder<BinaryField128>,
         raw: u128,
@@ -361,6 +378,37 @@ where
     ) -> NativeTower128Target {
         let value = b.mul_add(a.as_expr(), c.as_expr(), d.as_expr());
         b.native_tower128_from_expr(value)
+    }
+    /// One Horner gate, or the single operation its zero operands leave.
+    fn mul_add_add(
+        b: &mut CircuitBuilder<BinaryField128>,
+        a: &NativeTower128Target,
+        c: &NativeTower128Target,
+        d: &NativeTower128Target,
+        e: &NativeTower128Target,
+    ) -> NativeTower128Target {
+        let value = mul_add_add(b, a.as_expr(), c.as_expr(), d.as_expr(), e.as_expr());
+        b.native_tower128_from_expr(value)
+    }
+}
+
+/// `x * y + p + q` in one gate, or in the single operation its zero terms
+/// leave. `F` has characteristic two.
+fn mul_add_add<F>(b: &mut CircuitBuilder<F>, x: ExprId, y: ExprId, p: ExprId, q: ExprId) -> ExprId
+where
+    F: Field + Eq + Hash,
+{
+    if p == ExprId::ZERO {
+        b.mul_add(x, y, q)
+    } else if q == ExprId::ZERO {
+        b.mul_add(x, y, p)
+    } else if x == ExprId::ZERO || y == ExprId::ZERO {
+        b.add(p, q)
+    } else {
+        // In characteristic two, `x * y + p - q` is `x * y + p + q`. The native
+        // Horner gate binds its accumulator `x` as an operand of its own, so `x`
+        // need not be a previous Horner output.
+        b.horner_acc_step(x, y, p, q)
     }
 }
 impl<F: RecursiveBinaryTowerField> BinaryProtocolPolicy<BinaryField128>
@@ -672,6 +720,105 @@ mod tests {
         };
         assert_eq!(added(true), 1);
         assert_eq!(added(false), 2);
+    }
+
+    /// Binds `P::mul_add_add(a, c, d, e)` when `fused`, else `P::mul(a, c) + d + e`, to a
+    /// public expected value. An operand flagged in `zero` is the constant zero; the others are
+    /// public inputs, in order, before the expected value.
+    fn mul_add_add_circuit(zero: [bool; 4], fused: bool) -> p3_circuit::Circuit<F> {
+        let mut b = CircuitBuilder::<F>::new();
+        let [a, c, d, e] = zero.map(|zero| {
+            if zero {
+                b.native_tower128_constant(0)
+            } else {
+                let value = b.public_input();
+                b.native_tower128_from_expr(value)
+            }
+        });
+        let expected = b.public_input();
+        let expected = b.native_tower128_from_expr(expected);
+        let value = if fused {
+            P::mul_add_add(&mut b, &a, &c, &d, &e)
+        } else {
+            let product = P::mul(&mut b, &a, &c);
+            let partial = P::add(&mut b, &product, &d);
+            P::add(&mut b, &partial, &e)
+        };
+        P::assert_equal(&mut b, &value, &expected);
+        b.build().unwrap()
+    }
+
+    /// The native multiply-add with two addends computes `a * c + d + e`, as the in-circuit
+    /// product and sums do, for random and zero values and for constant zero operands. Its gate
+    /// keeps both addends out of the product: neither `d * c + a + e`, `a * d + c + e` nor
+    /// `a * e + d + c` is accepted, nor the value without `e`.
+    #[test]
+    fn native_tower_mul_add_add_is_the_product_plus_both_addends() {
+        let mut rng = SmallRng::seed_from_u64(19);
+        let random: [F; 4] = core::array::from_fn(|_| F::from_repr(rng.random()));
+        let runs = |circuit: &p3_circuit::Circuit<F>, zero: [bool; 4], values: [F; 4], expected| {
+            let mut public: Vec<F> = (0..4).filter(|&i| !zero[i]).map(|i| values[i]).collect();
+            public.push(expected);
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(&public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        for mask in 0..16 {
+            let zero: [bool; 4] = core::array::from_fn(|i| mask >> i & 1 != 0);
+            let circuit = mul_add_add_circuit(zero, true);
+            let reference = mul_add_add_circuit(zero, false);
+            let values = core::array::from_fn(|i| if zero[i] { F::ZERO } else { random[i] });
+            let [a, c, d, e] = values;
+            for circuit in [&circuit, &reference] {
+                assert!(
+                    runs(circuit, zero, values, a * c + d + e),
+                    "zero operands {zero:?}"
+                );
+            }
+            assert!(!runs(&circuit, zero, values, a * c + d + e + F::ONE));
+        }
+        let zero = [false; 4];
+        let circuit = mul_add_add_circuit(zero, true);
+        let [a, c, d, e] = random;
+        for wrong in [d * c + a + e, a * d + c + e, a * e + d + c, a * c + d] {
+            assert_ne!(wrong, a * c + d + e);
+            assert!(!runs(&circuit, zero, random, wrong));
+        }
+        for i in 0..4 {
+            let mut values = random;
+            values[i] = F::ZERO;
+            let [a, c, d, e] = values;
+            assert!(
+                runs(&circuit, zero, values, a * c + d + e),
+                "zero value {i}"
+            );
+        }
+    }
+
+    /// With every operand a public input, the native multiply-add with two addends is one Horner
+    /// gate where a product and two sums would be three nodes.
+    #[test]
+    fn native_tower_mul_add_add_is_one_node() {
+        let added = |fused: bool| {
+            let mut b = CircuitBuilder::<F>::new();
+            let [a, c, d, e] = [(); 4].map(|()| {
+                let value = b.public_input();
+                b.native_tower128_from_expr(value)
+            });
+            let before = b.construction_usage().unwrap().expression_nodes;
+            if fused {
+                P::mul_add_add(&mut b, &a, &c, &d, &e);
+            } else {
+                let product = P::mul(&mut b, &a, &c);
+                let partial = P::add(&mut b, &product, &d);
+                P::add(&mut b, &partial, &e);
+            }
+            b.construction_usage().unwrap().expression_nodes - before
+        };
+        assert_eq!(added(true), 1);
+        assert_eq!(added(false), 3);
     }
 
     /// The default multiply-add, of tower targets in a prime circuit field,

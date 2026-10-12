@@ -141,6 +141,7 @@ impl BinaryRelationPolicy<Poly64> for NativePoly64Relation {
     type Challenge = Poly192;
     type BaseTarget = ExprId;
     type ChallengeTarget = NativePoly192Target;
+    const FUSES_AIR_SUMS: bool = true;
 
     fn constant(
         b: &mut CircuitBuilder<Poly64>,
@@ -206,28 +207,37 @@ impl BinaryRelationPolicy<Poly64> for NativePoly64Relation {
         let out2 = mul_add_add(b, a2, c0, out2, d2);
         b.native_poly192_from_coefficients([out0, out1, out2])
     }
-}
-
-/// `x * y + p + q` in one gate, or in the single operation its zero terms
-/// leave.
-fn mul_add_add(
-    b: &mut CircuitBuilder<Poly64>,
-    x: ExprId,
-    y: ExprId,
-    p: ExprId,
-    q: ExprId,
-) -> ExprId {
-    if p == ExprId::ZERO {
-        b.mul_add(x, y, q)
-    } else if q == ExprId::ZERO {
-        b.mul_add(x, y, p)
-    } else if x == ExprId::ZERO || y == ExprId::ZERO {
-        b.add(p, q)
-    } else {
-        // In characteristic two, `x * y + p - q` is `x * y + p + q`. The native
-        // Horner gate binds its accumulator `x` as an operand of its own, so `x`
-        // need not be a previous Horner output.
-        b.horner_acc_step(x, y, p, q)
+    /// [`Self::mul_add`] with the second addend `e` in one more operation, the
+    /// sum `d₂ + e₂`. `e₀` joins the shared `y³` terms and `e₀ + e₁` the shared
+    /// `y⁴` term, which give `e₀` to the constant coefficient and `e₁` to the
+    /// linear one. The quadratic coefficient cancels the `e₀ + e₁` it receives
+    /// in its two free addend slots.
+    fn mul_add_add(
+        b: &mut CircuitBuilder<Poly64>,
+        a: &NativePoly192Target,
+        c: &NativePoly192Target,
+        d: &NativePoly192Target,
+        e: &NativePoly192Target,
+    ) -> NativePoly192Target {
+        let zero = [ExprId::ZERO; 3];
+        if *a.coefficients() == zero || *c.coefficients() == zero {
+            return b.native_poly192_add(d, e);
+        }
+        let [a0, a1, a2] = *a.coefficients();
+        let [c0, c1, c2] = *c.coefficients();
+        let [d0, d1, d2] = *d.coefficients();
+        let [e0, e1, e2] = *e.coefficients();
+        let cross = b.mul_add(a1, c2, e0);
+        let cross = b.mul_add(a2, c1, cross);
+        let high = mul_add_add(b, a2, c2, e0, e1);
+        let out0 = mul_add_add(b, a0, c0, cross, d0);
+        let out1 = mul_add_add(b, a0, c1, cross, high);
+        let out1 = mul_add_add(b, a1, c0, out1, d1);
+        let out2 = mul_add_add(b, a0, c2, high, e0);
+        let out2 = mul_add_add(b, a1, c1, out2, e1);
+        let tail = b.add(d2, e2);
+        let out2 = mul_add_add(b, a2, c0, out2, tail);
+        b.native_poly192_from_coefficients([out0, out1, out2])
     }
 }
 
@@ -424,10 +434,10 @@ mod tests {
     }
 
     /// Whether `circuit` accepts the operands' `values` with `expected`.
-    fn mul_add_runs(
+    fn mul_add_runs<const N: usize>(
         circuit: &p3_circuit::Circuit<Poly64>,
-        operands: [Operand; 3],
-        values: [Poly192; 3],
+        operands: [Operand; N],
+        values: [Poly192; N],
         expected: Poly192,
     ) -> bool {
         let mut public = Vec::new();
@@ -532,6 +542,112 @@ mod tests {
         let public = [Operand::Public; 3];
         assert_eq!(added(public, true), 9);
         assert_eq!(added(public, false), 13);
+    }
+
+    /// Binds `P::mul_add_add(a, c, d, e)` when `fused`, else `P::mul(a, c) + d + e`, to three
+    /// public expected coefficients, allocated after the operands' public coefficients.
+    fn mul_add_add_circuit(operands: [Operand; 4], fused: bool) -> p3_circuit::Circuit<Poly64> {
+        let mut b = CircuitBuilder::<Poly64>::new();
+        let [a, c, d, e] = operands.map(|kind| operand(&mut b, kind));
+        let expected = b.alloc_public_input_array::<3>("a * c + d + e");
+        let expected = b.native_poly192_from_coefficients(expected);
+        let value = if fused {
+            P::mul_add_add(&mut b, &a, &c, &d, &e)
+        } else {
+            let product = P::mul(&mut b, &a, &c);
+            let partial = P::add(&mut b, &product, &d);
+            P::add(&mut b, &partial, &e)
+        };
+        P::assert_equal(&mut b, &value, &expected);
+        b.build().unwrap()
+    }
+
+    /// Every assignment of operand kinds to `a`, `c`, `d` and `e`.
+    fn four_operand_kinds() -> impl Iterator<Item = [Operand; 4]> {
+        operand_kinds().flat_map(|[a, c, d]| {
+            [Operand::Public, Operand::Lifted, Operand::Zero].map(|e| [a, c, d, e])
+        })
+    }
+
+    /// The native multiply-add with two addends computes the Poly192 `a * c + d + e`, as the
+    /// in-circuit product and sums do, for public, lifted and constant zero operands. Each
+    /// coefficient of `e` reaches only its own coefficient of the result: the value with
+    /// `e₀` also in the linear or quadratic coefficient, or `e₁` also in the quadratic one, is
+    /// refused. Its gates keep both addends out of the product: neither `d * c + a + e`,
+    /// `a * d + c + e` nor `a * e + d + c` is accepted, nor the value without `e`.
+    #[test]
+    fn native_poly_mul_add_add_is_the_product_plus_both_addends() {
+        let mut rng = SmallRng::seed_from_u64(23);
+        let random: [Poly192; 4] = core::array::from_fn(|_| {
+            Poly192::new(core::array::from_fn(|_| Poly64::new(rng.random())))
+        });
+        for operands in four_operand_kinds() {
+            let circuit = mul_add_add_circuit(operands, true);
+            let reference = mul_add_add_circuit(operands, false);
+            let values: [Poly192; 4] = core::array::from_fn(|i| restrict(operands[i], random[i]));
+            let [a, c, d, e] = values;
+            let expected = a * c + d + e;
+            for circuit in [&circuit, &reference] {
+                assert!(
+                    mul_add_runs(circuit, operands, values, expected),
+                    "{operands:?}"
+                );
+            }
+            let wrong = expected + Poly192::new([Poly64::ZERO, Poly64::ONE, Poly64::ZERO]);
+            assert!(!mul_add_runs(&circuit, operands, values, wrong));
+        }
+        let operands = [Operand::Public; 4];
+        let circuit = mul_add_add_circuit(operands, true);
+        let [a, c, d, e] = random;
+        let expected = a * c + d + e;
+        let [e0, e1, _] = e.coefficients();
+        let zero = Poly64::ZERO;
+        for misrouted in [[zero, e0, zero], [zero, zero, e0], [zero, zero, e1]] {
+            let wrong = expected + Poly192::new(misrouted);
+            assert!(!mul_add_runs(&circuit, operands, random, wrong));
+        }
+        for wrong in [d * c + a + e, a * d + c + e, a * e + d + c, a * c + d] {
+            assert_ne!(wrong, expected);
+            assert!(!mul_add_runs(&circuit, operands, random, wrong));
+        }
+        for i in 0..4 {
+            let mut values = random;
+            values[i] = Poly192::ZERO;
+            let [a, c, d, e] = values;
+            assert!(
+                mul_add_runs(&circuit, operands, values, a * c + d + e),
+                "zero value {i}"
+            );
+        }
+    }
+
+    /// The multiply-add with two addends never adds more expression nodes than the product and
+    /// sums it replaces, and takes ten of their sixteen for public operands: one more than the
+    /// multiply-add with one addend.
+    #[test]
+    fn native_poly_mul_add_add_takes_one_operation_more_than_the_multiply_add() {
+        let added = |operands: [Operand; 4], fused: bool| {
+            let mut b = CircuitBuilder::<Poly64>::new();
+            let [a, c, d, e] = operands.map(|kind| operand(&mut b, kind));
+            let before = b.construction_usage().unwrap().expression_nodes;
+            if fused {
+                P::mul_add_add(&mut b, &a, &c, &d, &e);
+            } else {
+                let product = P::mul(&mut b, &a, &c);
+                let partial = P::add(&mut b, &product, &d);
+                P::add(&mut b, &partial, &e);
+            }
+            b.construction_usage().unwrap().expression_nodes - before
+        };
+        for operands in four_operand_kinds() {
+            assert!(
+                added(operands, true) <= added(operands, false),
+                "{operands:?}"
+            );
+        }
+        let public = [Operand::Public; 4];
+        assert_eq!(added(public, true), 10);
+        assert_eq!(added(public, false), 16);
     }
 
     #[test]

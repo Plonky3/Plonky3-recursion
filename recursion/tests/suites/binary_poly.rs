@@ -37,3 +37,5 @@ mod binary_poly_whir_trusted_portable;
 #[path = "../common/test_config.rs"]
 mod test_config;
 use test_config::proof_config;
+#[path = "../common/sum_shapes_air.rs"]
+mod sum_shapes_air;

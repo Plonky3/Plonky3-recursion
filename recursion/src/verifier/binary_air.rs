@@ -27,7 +27,7 @@ use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerFiel
 
 mod native_poly;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Node {
     Constant(u128),
     Current(usize),
@@ -804,8 +804,13 @@ impl AirProgram {
             )?);
         }
         b.check_construction_limits()?;
-        let mut values: Vec<P::ChallengeTarget> = Vec::with_capacity(self.nodes.len());
-        for node in &self.nodes {
+        let fusion = P::FUSES_AIR_SUMS.then(|| self.fusion());
+        let mut values: Vec<Option<P::ChallengeTarget>> = Vec::with_capacity(self.nodes.len());
+        for (index, node) in self.nodes.iter().enumerate() {
+            if fusion.as_ref().is_some_and(|fusion| fusion.skipped[index]) {
+                values.push(None);
+                continue;
+            }
             let value = match *node {
                 Node::Constant(raw) => P::constant(b, raw)?,
                 Node::Current(i) => current[i].clone(),
@@ -817,15 +822,36 @@ impl AirProgram {
                 Node::First => first.clone(),
                 Node::Last => last.clone(),
                 Node::Transition => transition.clone(),
-                Node::Add(x, y) => P::add(b, &values[x], &values[y]),
-                Node::Mul(x, y) => P::mul(b, &values[x], &values[y]),
+                Node::Add(x, y) => {
+                    match fusion.as_ref().and_then(|fusion| fusion.products[index]) {
+                        Some(product) => {
+                            let Node::Mul(p, q) = self.nodes[product] else {
+                                return Err(invalid("binary AIR fused product is not a product"));
+                            };
+                            let addend = if product == x { y } else { x };
+                            P::mul_add(
+                                b,
+                                value(&values, p)?,
+                                value(&values, q)?,
+                                value(&values, addend)?,
+                            )
+                        }
+                        None => P::add(b, value(&values, x)?, value(&values, y)?),
+                    }
+                }
+                Node::Mul(x, y) => P::mul(b, value(&values, x)?, value(&values, y)?),
             };
-            values.push(value);
+            values.push(Some(value));
             b.check_construction_limits()?;
         }
         let mut folded = P::constant(b, 0)?;
-        for &root in &self.constraints {
-            folded = P::mul_add(b, &folded, alpha, &values[root]);
+        for (index, &root) in self.constraints.iter().enumerate() {
+            folded = match fusion.as_ref().and_then(|fusion| fusion.sums[index]) {
+                Some((u, v)) => {
+                    P::mul_add_add(b, &folded, alpha, value(&values, u)?, value(&values, v)?)
+                }
+                None => P::mul_add(b, &folded, alpha, value(&values, root)?),
+            };
             b.check_construction_limits()?;
         }
         let bus_fields = self
@@ -835,21 +861,116 @@ impl AirProgram {
                 declaration
                     .fields
                     .iter()
-                    .map(|&root| values[root].clone())
+                    .map(|&root| value(&values, root).cloned())
                     .collect()
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let bus_activations = self
             .bus
             .iter()
-            .map(|declaration| declaration.activation.map(|root| values[root].clone()))
-            .collect();
+            .map(|declaration| {
+                declaration
+                    .activation
+                    .map(|root| value(&values, root).cloned())
+                    .transpose()
+            })
+            .collect::<Result<_, _>>()?;
         Ok(BinaryAirEvaluation {
             folded,
             bus_fields,
             bus_activations,
         })
     }
+
+    /// Plans the characteristic-two evaluation. Structurally equal nodes evaluate
+    /// to one shared expression, so reads are counted per class of equal nodes,
+    /// with sums and products equal up to operand order, and per distinct reading
+    /// class, constraint or bus payload.
+    fn fusion(&self) -> Fusion {
+        let mut classes = BTreeMap::new();
+        let mut class: Vec<usize> = Vec::with_capacity(self.nodes.len());
+        let mut first = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let key = match *node {
+                Node::Add(x, y) => Node::Add(class[x].min(class[y]), class[x].max(class[y])),
+                Node::Mul(x, y) => Node::Mul(class[x].min(class[y]), class[x].max(class[y])),
+                ref leaf => leaf.clone(),
+            };
+            let next = classes.len();
+            let id = *classes.entry(key).or_insert(next);
+            first.push(id == next);
+            class.push(id);
+        }
+        let mut reads = alloc::vec![0usize; classes.len()];
+        for (node, _) in self.nodes.iter().zip(&first).filter(|&(_, &first)| first) {
+            if let Node::Add(x, y) | Node::Mul(x, y) = *node {
+                reads[class[x]] += 1;
+                reads[class[y]] += 1;
+            }
+        }
+        let payloads = self
+            .bus
+            .iter()
+            .flat_map(|bus| bus.fields.iter().chain(&bus.activation));
+        for &root in self.constraints.iter().chain(payloads) {
+            reads[class[root]] += 1;
+        }
+        // The operand order of a class's sums is fixed up to a swap, so the
+        // lower class picks the same product in every node of that class.
+        let products: Vec<Option<usize>> = self
+            .nodes
+            .iter()
+            .map(|node| match *node {
+                Node::Add(x, y) => [x, y]
+                    .into_iter()
+                    .filter(|&m| matches!(self.nodes[m], Node::Mul(..)) && reads[class[m]] == 1)
+                    .min_by_key(|&m| class[m]),
+                _ => None,
+            })
+            .collect();
+        // A product read once is read by one class of sums, each of which takes it.
+        let mut fused = alloc::vec![false; classes.len()];
+        for &product in products.iter().flatten() {
+            fused[class[product]] = true;
+        }
+        let mut skipped: Vec<bool> = class.iter().map(|&class| fused[class]).collect();
+        let sums = self
+            .constraints
+            .iter()
+            .map(|&root| match self.nodes[root] {
+                Node::Add(u, v) if reads[class[root]] == 1 && products[root].is_none() => {
+                    skipped[root] = true;
+                    Some((u, v))
+                }
+                _ => None,
+            })
+            .collect();
+        Fusion {
+            products,
+            skipped,
+            sums,
+        }
+    }
+}
+
+/// How a characteristic-two relation evaluates an [`AirProgram`]: a sum with a
+/// product that nothing else reads is one multiply-add, and a constraint that
+/// is a sum nothing else reads is folded as `folded * alpha + u + v`.
+struct Fusion {
+    /// The product operand of each sum evaluated as a multiply-add.
+    products: Vec<Option<usize>>,
+    /// Nodes whose values nothing reads: the products of those multiply-adds and
+    /// the sums folded as two addends.
+    skipped: Vec<bool>,
+    /// The two addends of each constraint folded as a sum.
+    sums: Vec<Option<(usize, usize)>>,
+}
+
+/// The value of a node that the evaluation reads.
+fn value<T>(values: &[Option<T>], node: usize) -> Result<&T, VerificationError> {
+    values[node]
+        .as_ref()
+        .ok_or_else(|| invalid("binary AIR evaluation reads a fused node"))
 }
 
 struct Compiler<'a, F> {
