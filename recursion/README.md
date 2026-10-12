@@ -36,8 +36,8 @@ squarings with native WHIR, then proves and verifies a BabyBear recursion layer:
 `cargo run -p p3-recursion --release --example binary_prover`.
 
 The [native binary recursion example](examples/native_binary_recursion.rs) proves
-and verifies a Tower128 verifier circuit over Tower128 again, using native Keccak,
-product-bus wiring and additive WHIR:
+and verifies a Tower128 verifier circuit over Tower128 again, using native Blake3
+(`--hash keccak` selects Keccak), product-bus wiring and additive WHIR:
 `cargo run -p p3-recursion --profile optimized --features parallel --example native_binary_recursion -- --layers 2`.
 `prepared::PreparedNativeBinaryWhirLayer` accepts Tower32 or Tower128 children,
 retains the trusted child authority and
@@ -45,16 +45,17 @@ binds the recursive proof to the caller's original expected public values. Its
 output authority can prepare another binary layer. The example uses development
 security parameters, non-hiding proofs and explicit allocation limits; its
 recursive verifier levels off from layer 4. Under WHIR its layers commit with
-four-digest Keccak Merkle trees, each node one Keccak-f block like a pairwise
-node over half the levels; `--merkle-arity 2` selects pairwise trees.
+pairwise Merkle trees; `--merkle-arity 4` selects four-digest trees, the default
+under `--hash keccak`, each node one Keccak-f block like a pairwise node over
+half the levels.
 
 The [native polynomial recursion example](examples/native_poly_recursion.rs) proves
 and verifies a Poly64 verifier circuit over Poly64 with Poly192 challenges:
 `cargo run -p p3-recursion --profile optimized --features parallel --example native_poly_recursion -- --layers 1`.
 `prepared::PreparedNativeBinaryPolyWhirLayer` retains the Poly64 child authority
 and preserves the caller's expected public values in native Poly64 cells.
-Its layers also commit with four-digest Keccak Merkle trees unless given
-`--merkle-arity 2`.
+Its layers use Blake3 and pairwise Merkle trees by default; `--hash keccak` selects
+Keccak with four-digest trees, and `--merkle-arity` overrides the arity.
 Both prepared owners offer `from_native_authority_with_construction_limits`.
 The examples use it to check expression, connection and non-primitive entry
 counts during construction, before lowering and the separate circuit, trace

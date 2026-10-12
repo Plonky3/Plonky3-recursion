@@ -1,30 +1,33 @@
-//! Native Poly64 proving and recursion with Poly192 challenges. `--hash keccak|blake3` selects
+//! Native Poly64 proving and recursion with Poly192 challenges. `--hash blake3|keccak` selects
 //! the hash of every commitment and transcript, `--hash-commitment packed|dense` (alias
 //! `--keccak-commitment`) selects how every layer commits its hash table: as packed bits, 64 per
 //! field element, beside a dense commitment of every other table, or as field elements like
 //! every other table, and `--merkle-arity 4|2` selects four-digest or pairwise Merkle trees for
-//! every layer's commitments (default 4 under Keccak and 2 under Blake3).
+//! every layer's commitments (default 2, and 4 under Keccak).
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_poly_recursion -- --layers 3
 //!
-//! The defaults (Keccak with packed hash tables, WHIR security level 32 with 24 grinding bits,
-//! four-digest Merkle trees under a cap of 2 levels) keep every layer within the default
+//! The defaults (Blake3 with packed hash tables, WHIR security level 32 with 24 grinding bits,
+//! pairwise Merkle trees under a cap of 4 levels) keep every layer within the default
 //! limits. When a layer exceeds one anyway, the error names the flag that raises it and a value
 //! to start from.
 //!
 //! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
 //! last layer; wall time, maximum resident set and peak memory footprint of the whole run;
-//! arity is `--merkle-arity`, Keccak is `--hash-commitment`, with packed log inverse rate 3):
+//! arity is `--merkle-arity`, table is `--hash-commitment`, with packed log inverse rate 3). The
+//! first row is the default configuration, the median of two runs, and the others ran under
+//! `--hash keccak`:
 //!
-//! | arity | Keccak | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
-//! |-------|--------|----------|-----------|----------------|------------|--------|----------|-----------|
-//! | 4     | packed | 2        | 857,033   | 117,440,512    | 4.8 s      | 6.4 s  | 6.5 GB   | 5.7 GB    |
-//! | 4     | packed | 3        | 1,145,424 | 117,440,512    | 4.6 s      | 10.2 s | 6.5 GB   | 6.0 GB    |
-//! | 4     | dense  | 2        | 1,049,178 | 335,544,320    | 6.1 s      | 8.1 s  | 12.2 GB  | 11.1 GB   |
-//! | 4     | dense  | 3        | 1,362,313 | 335,544,320    | 7.0 s      | 17.1 s | 14.5 GB  | 12.3 GB   |
-//! | 2     | dense  | 2        | 1,057,676 | 335,544,320    | 6.5 s      | 7.8 s  | 12.8 GB  | 12.5 GB   |
-//! | 2     | dense  | 3        | 1,380,220 | 603,979,776    | 10.9 s     | 19.1 s | 23.5 GB  | 21.9 GB   |
+//! | hash   | arity | table  | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
+//! |--------|-------|--------|----------|-----------|----------------|------------|--------|----------|-----------|
+//! | blake3 | 2     | packed | 3        | 1,387,129 | 184,549,376    | 3.0 s      | 7.4 s  | 9.2 GB   | 7.8 GB    |
+//! | keccak | 4     | packed | 2        | 857,033   | 117,440,512    | 4.8 s      | 6.4 s  | 6.5 GB   | 5.7 GB    |
+//! | keccak | 4     | packed | 3        | 1,145,424 | 117,440,512    | 4.6 s      | 10.2 s | 6.5 GB   | 6.0 GB    |
+//! | keccak | 4     | dense  | 2        | 1,049,178 | 335,544,320    | 6.1 s      | 8.1 s  | 12.2 GB  | 11.1 GB   |
+//! | keccak | 4     | dense  | 3        | 1,362,313 | 335,544,320    | 7.0 s      | 17.1 s | 14.5 GB  | 12.3 GB   |
+//! | keccak | 2     | dense  | 2        | 1,057,676 | 335,544,320    | 6.5 s      | 7.8 s  | 12.8 GB  | 12.5 GB   |
+//! | keccak | 2     | dense  | 3        | 1,380,220 | 603,979,776    | 10.9 s     | 19.1 s | 23.5 GB  | 21.9 GB   |
 //!
 //! At arity 4, layer 1 has 8,284 witnesses and 1,048,576 codeword cells when packed and
 //! 4,718,592 when dense, and takes 0.8 to 1.2 s either way. Layers 2 and 3 pad the witness
@@ -60,7 +63,8 @@
 //!
 //! Other jobs shared the machine, so times are not compared here. The user CPU time of a
 //! whole run was 118 to 125 s under Keccak and 109 to 124 s under Blake3 at either arity, and
-//! grinding takes 0.8 to 1.1 s of the last layer under either hash.
+//! grinding takes 0.8 to 1.1 s of the last layer under either hash. The default packed
+//! `--layers 3` took 64 s against 72 s for `--hash keccak --layers 3`.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits count field cells
 //! or graph entries, not bytes.
@@ -167,7 +171,7 @@ struct Args {
     #[arg(long, default_value_t = 3)]
     packed_log_inv_rate: usize,
     /// Hash of the source proof's commitments and transcript; every layer inherits it.
-    #[arg(long, value_enum, default_value_t = Hash::Keccak)]
+    #[arg(long, value_enum, default_value_t = Hash::Blake3)]
     hash: Hash,
     /// Digests per Merkle tree node of every recursive output commitment. Defaults to `4`
     /// under Keccak and `2` under Blake3.

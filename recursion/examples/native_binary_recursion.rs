@@ -1,49 +1,53 @@
 //! Native Tower128 proving followed by native Tower128 recursion. `--pcs whir|folding`
 //! selects the polynomial commitment of the source proof and of every recursion layer. Under
-//! WHIR, `--hash keccak|blake3` selects the hash of every commitment and transcript,
+//! WHIR, `--hash blake3|keccak` selects the hash of every commitment and transcript (default
+//! Blake3; `--pcs folding` supports only Keccak and defaults to it),
 //! `--hash-commitment packed|dense` (alias `--keccak-commitment`) selects how every layer
 //! commits its hash table: as packed bits, 128 per field element, beside a dense commitment of
 //! every other table, or as field elements like every other table, and `--merkle-arity 4|2`
-//! selects four-digest or pairwise Merkle trees for every layer's commitments (default 4 under
-//! Keccak and 2 under Blake3, whose four-digest node costs two compressions). With
+//! selects four-digest or pairwise Merkle trees for every layer's commitments (default 2, and 4
+//! under Keccak, since a four-digest node costs two Blake3 compressions). With
 //! `--pcs folding`, which commits every table densely, `--leaves coset|symbol` selects whether
 //! each Merkle leaf is one fold coset or one codeword symbol.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_binary_recursion -- --layers 3
 //!
-//! The defaults (WHIR with packed Keccak tables at log inverse rate 3 and every other table at
-//! rate 1, PCS security level 32 with 24 grinding bits, four-digest Merkle trees under a cap of
-//! 2 levels) keep every layer within the default limits. When a layer exceeds one anyway, the
+//! The defaults (WHIR with Blake3 and packed hash tables at log inverse rate 3 and every other
+//! table at rate 1, PCS security level 32 with 24 grinding bits, pairwise Merkle trees under a
+//! cap of 4 levels) keep every layer within the default limits. When a layer exceeds one anyway, the
 //! error names the flag that raises it and a value to start from.
 //!
 //! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
 //! last layer; wall time, maximum resident set and peak memory footprint of the whole run;
-//! arity is `--merkle-arity`):
+//! arity is `--merkle-arity`). The first row is the default configuration, the median of two
+//! runs, and the others ran under Keccak:
 //!
-//! | Command                                | arity | witnesses | codeword cells |
-//! |----------------------------------------|-------|-----------|----------------|
-//! | `--layers 2`                           | 4     | 541,479   | 58,720,256     |
-//! | `--layers 2`                           | 2     | 549,023   | 58,720,256     |
-//! | `--layers 3`                           | 4     | 746,649   | 58,720,256     |
-//! | `--layers 3`                           | 2     | 761,839   | 58,720,256     |
-//! | `--keccak-commitment dense --layers 3` | 4     | 690,872   | 301,989,888    |
-//! | `--keccak-commitment dense --layers 3` | 2     | 705,971   | 301,989,888    |
-//! | `--pcs folding --layers 2`             | 2     | 855,715   | 603,979,776    |
-//! | `--log-inv-rate 2 --layers 2`          | 4     | 492,193   | 104,857,600    |
-//! | `--log-inv-rate 2 --layers 2`          | 2     | 497,536   | 109,051,904    |
+//! | Command                                            | arity | witnesses | codeword cells |
+//! |----------------------------------------------------|-------|-----------|----------------|
+//! | `--layers 3`                                       | 2     | 645,589   | 58,720,256     |
+//! | `--hash keccak --layers 2`                         | 4     | 541,479   | 58,720,256     |
+//! | `--hash keccak --layers 2`                         | 2     | 549,023   | 58,720,256     |
+//! | `--hash keccak --layers 3`                         | 4     | 746,649   | 58,720,256     |
+//! | `--hash keccak --layers 3`                         | 2     | 761,839   | 58,720,256     |
+//! | `--hash keccak --hash-commitment dense --layers 3` | 4     | 690,872   | 301,989,888    |
+//! | `--hash keccak --hash-commitment dense --layers 3` | 2     | 705,971   | 301,989,888    |
+//! | `--pcs folding --layers 2`                         | 2     | 855,715   | 603,979,776    |
+//! | `--hash keccak --log-inv-rate 2 --layers 2`        | 4     | 492,193   | 104,857,600    |
+//! | `--hash keccak --log-inv-rate 2 --layers 2`        | 2     | 497,536   | 109,051,904    |
 //!
-//! | Command                                | arity | last layer | wall   | resident | footprint |
-//! |----------------------------------------|-------|------------|--------|----------|-----------|
-//! | `--layers 2`                           | 4     | 9.6 s      | 11.8 s | 4.0 GB   | 3.9 GB    |
-//! | `--layers 2`                           | 2     | 10.9 s     | 12.3 s | 4.0 GB   | 3.9 GB    |
-//! | `--layers 3`                           | 4     | 9.4 s      | 20.5 s | 4.3 GB   | 4.0 GB    |
-//! | `--layers 3`                           | 2     | 10.0 s     | 22.6 s | 4.3 GB   | 4.1 GB    |
-//! | `--keccak-commitment dense --layers 3` | 4     | 12.9 s     | 27.4 s | 16.1 GB  | 10.8 GB   |
-//! | `--keccak-commitment dense --layers 3` | 2     | 13.2 s     | 27.6 s | 16.5 GB  | 11.4 GB   |
-//! | `--pcs folding --layers 2`             | 2     | 22.1 s     | 23.3 s | 26.8 GB  | 27.8 GB   |
-//! | `--log-inv-rate 2 --layers 2`          | 4     | 6.6 s      | 8.1 s  | 4.0 GB   | 3.9 GB    |
-//! | `--log-inv-rate 2 --layers 2`          | 2     | 10.7 s     | 11.9 s | 5.0 GB   | 4.9 GB    |
+//! | Command                                            | arity | last layer | wall   | resident | footprint |
+//! |----------------------------------------------------|-------|------------|--------|----------|-----------|
+//! | `--layers 3`                                       | 2     | 4.3 s      | 9.9 s  | 3.8 GB   | 3.3 GB    |
+//! | `--hash keccak --layers 2`                         | 4     | 9.6 s      | 11.8 s | 4.0 GB   | 3.9 GB    |
+//! | `--hash keccak --layers 2`                         | 2     | 10.9 s     | 12.3 s | 4.0 GB   | 3.9 GB    |
+//! | `--hash keccak --layers 3`                         | 4     | 9.4 s      | 20.5 s | 4.3 GB   | 4.0 GB    |
+//! | `--hash keccak --layers 3`                         | 2     | 10.0 s     | 22.6 s | 4.3 GB   | 4.1 GB    |
+//! | `--hash keccak --hash-commitment dense --layers 3` | 4     | 12.9 s     | 27.4 s | 16.1 GB  | 10.8 GB   |
+//! | `--hash keccak --hash-commitment dense --layers 3` | 2     | 13.2 s     | 27.6 s | 16.5 GB  | 11.4 GB   |
+//! | `--pcs folding --layers 2`                         | 2     | 22.1 s     | 23.3 s | 26.8 GB  | 27.8 GB   |
+//! | `--hash keccak --log-inv-rate 2 --layers 2`        | 4     | 6.6 s      | 8.1 s  | 4.0 GB   | 3.9 GB    |
+//! | `--hash keccak --log-inv-rate 2 --layers 2`        | 2     | 10.7 s     | 11.9 s | 5.0 GB   | 4.9 GB    |
 //!
 //! `--hash blake3` measured against `--hash keccak` on the same machine. Each command also
 //! takes the row's `--hash` and `--merkle-arity`. A hash call is one Keccak-f or one Blake3
@@ -78,7 +82,8 @@
 //! runs, so times are not compared here. The user CPU time of a whole run varied far less:
 //! 193 to 208 s under Keccak and 98 to 107 s under Blake3 at either arity for `--layers 3`,
 //! and 144 to 148 s against 79 to 85 s for `--hash-commitment dense --layers 2`. Grinding takes
-//! 0.6 to 0.7 s of the last layer under either hash.
+//! 0.6 to 0.7 s of the last layer under either hash. The default `--layers 3` took 96 s of user
+//! CPU time against 205 s for `--hash keccak --layers 3` on the same code.
 //!
 //! Layer 1 takes 0.7 s with 7,819 witnesses, and 0.5 s with 16,285 under `--pcs folding`. The
 //! default codeword-cell limit is 2^29 at `--log-inv-rate 1`, doubled for each further rate bit
@@ -189,16 +194,16 @@ struct Args {
     #[arg(long, value_enum, default_value_t = Leaves::Coset)]
     leaves: Leaves,
     /// Hash of the source proof's commitments and transcript; every layer inherits it.
-    /// `blake3` requires `--pcs whir`.
-    #[arg(long, value_enum, default_value_t = Hash::Keccak)]
-    hash: Hash,
+    /// Defaults to `blake3` with `--pcs whir` and `keccak` with `--pcs folding`, which supports
+    /// only `keccak`.
+    #[arg(long, value_enum)]
+    hash: Option<Hash>,
     /// Commitment of every recursion layer's hash table. Defaults to `packed` with
     /// `--pcs whir` and `dense` with `--pcs folding`, which supports only `dense`.
     #[arg(long, value_enum, alias = "keccak-commitment")]
     hash_commitment: Option<HashCommitment>,
-    /// Digests per Merkle tree node of every recursive output commitment. Defaults to `4` with
-    /// `--pcs whir` under Keccak, and `2` under Blake3 and with `--pcs folding`, which supports
-    /// only `2`.
+    /// Digests per Merkle tree node of every recursive output commitment. Defaults to `2`, and to
+    /// `4` with `--pcs whir` under Keccak.
     #[arg(long, value_enum)]
     merkle_arity: Option<Arity>,
     /// Log inverse rate of the packed hash-table commitment; ignored unless the hash table is
@@ -282,19 +287,28 @@ impl Args {
             Pcs::Folding => HashCommitment::Dense,
         })
     }
+    /// `--hash`, or the default for the selected commitment.
+    fn hash(&self) -> Hash {
+        self.hash.unwrap_or(match self.pcs {
+            Pcs::Whir => Hash::Blake3,
+            Pcs::Folding => Hash::Keccak,
+        })
+    }
     /// The selected hash as a circuit hash.
-    const fn byte_hash(&self) -> ByteHash {
-        match self.hash {
+    fn byte_hash(&self) -> ByteHash {
+        match self.hash() {
             Hash::Keccak => ByteHash::Keccak256,
             Hash::Blake3 => ByteHash::Blake3,
         }
     }
     /// `--merkle-arity`, or the default for the selected commitment and hash.
     fn merkle_arity(&self) -> MerkleArity {
-        let arity = self.merkle_arity.unwrap_or(match (self.pcs, self.hash) {
-            (Pcs::Whir, Hash::Keccak) => Arity::Four,
-            (Pcs::Whir, Hash::Blake3) | (Pcs::Folding, _) => Arity::Two,
-        });
+        let arity = self
+            .merkle_arity
+            .unwrap_or_else(|| match (self.pcs, self.hash()) {
+                (Pcs::Whir, Hash::Keccak) => Arity::Four,
+                (Pcs::Whir, Hash::Blake3) | (Pcs::Folding, _) => Arity::Two,
+            });
         match arity {
             Arity::Two => MerkleArity::Two,
             Arity::Four => MerkleArity::Four,
@@ -464,7 +478,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.security_target.is_none() && args.pow_bits >= args.pcs_security_level {
         return Err("--pow-bits must be below --pcs-security-level".into());
     }
-    if args.pcs == Pcs::Folding && args.hash == Hash::Blake3 {
+    if args.pcs == Pcs::Folding && args.hash() == Hash::Blake3 {
         return Err("--hash blake3 requires --pcs whir".into());
     }
     if args.pcs == Pcs::Folding && args.hash_commitment() == HashCommitment::Packed {
