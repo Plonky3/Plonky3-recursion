@@ -48,24 +48,24 @@ const CAP_HEIGHT: usize = 2;
 /// Initial fold of every recursive commitment, and so the bus tables' minimum log height.
 const FOLD: usize = 4;
 
-/// About 12% above the measured second-layer construction: 596,337 expression nodes, 60,160
-/// pending connections, 17,921 non-primitive calls and 897,258 slots.
+/// About 12% above the measured second-layer construction: 564,173 expression nodes, 38,210
+/// pending connections, 17,474 non-primitive calls and 881,918 slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 668_000,
-    max_pending_connects: 67_400,
-    max_non_primitive_calls: 20_100,
-    max_non_primitive_slots: 1_005_000,
+    max_expression_nodes: 632_000,
+    max_pending_connects: 42_800,
+    max_non_primitive_calls: 19_600,
+    max_non_primitive_slots: 988_000,
 };
-/// About 12% above the measured 538,298 witnesses and 336,698 operations. The trace cells
+/// About 12% above the measured 514,195 witnesses and 311,772 operations. The trace cells
 /// follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 603_000,
-    max_operations: 377_200,
+    max_witnesses: 576_000,
+    max_operations: 349_200,
     max_trace_cells: 1 << 27,
 };
-/// About 12% above the measured 575,910 expression nodes of the child's mixed verifier.
-const MAX_VERIFIER_NODES: usize = 645_100;
-/// About 12% above the measured 4,188 native BLAKE3 compressions.
+/// About 12% above the measured 543,744 expression nodes of the child's mixed verifier.
+const MAX_VERIFIER_NODES: usize = 609_000;
+/// About 12% above the measured 4,187 native BLAKE3 compressions.
 const MAX_COMPRESSIONS: usize = 4_700;
 /// Measured padded witness, gate, public and BLAKE3 table heights: the fanout and gate rows
 /// fit 2^21 and 2^19 rows, and the compressions 2^13. One more row of growth at a
