@@ -1029,9 +1029,10 @@ fn native_keccak_lanes_range_check_poly64_leaf_words_in_both_blocks() {
 /// Each WHIR site that grinds splits its witness into `base_bits / 16` hinted
 /// words bound by `witness = sum_j word_j * x_(16j)` and observes them, so the
 /// refill of the draw after it absorbs each word as a Keccak lane or a BLAKE3
-/// block word; a site without grinding splits nothing. Returns each split witness's private input
-/// position and words, given the rows of every site's witness, and asserts
-/// that the first hint on each witness row is that word split.
+/// block word; a site without grinding splits nothing. Returns each split
+/// witness's private input position and words, given the rows of every site's
+/// witness, and asserts that the first hint on each witness row is that word
+/// split.
 fn grinding_words<'a, F: Field>(
     circuit: &'a Circuit<F>,
     witnesses: &[WitnessId],
