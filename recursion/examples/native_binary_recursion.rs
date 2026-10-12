@@ -1,9 +1,11 @@
 //! Native Tower128 proving followed by native Tower128 recursion. `--pcs whir|folding`
 //! selects the polynomial commitment of the source proof and of every recursion layer. Under
-//! WHIR, `--keccak-commitment packed|dense` selects how every layer commits its Keccak table:
-//! as packed bits, 128 per field element, beside a dense commitment of every other table, or
-//! as field elements like every other table, and `--merkle-arity 4|2` selects four-digest or
-//! pairwise Merkle trees for every layer's commitments. With `--pcs folding`, which commits
+//! WHIR, `--hash keccak|blake3` selects the hash of every commitment and transcript,
+//! `--hash-commitment packed|dense` (alias `--keccak-commitment`) selects how every layer
+//! commits its hash table: as packed bits, 128 per field element, beside a dense commitment of
+//! every other table, or as field elements like every other table, and `--merkle-arity 4|2`
+//! selects four-digest or pairwise Merkle trees for every layer's commitments (default 4 under
+//! Keccak and 2 under Blake3, whose four-digest node costs two compressions). With `--pcs folding`, which commits
 //! every table densely, `--leaves coset|symbol` selects whether each Merkle leaf is one fold
 //! coset or one codeword symbol.
 //!
@@ -112,11 +114,18 @@ enum Pcs {
     Folding,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-enum KeccakCommitment {
+enum HashCommitment {
     /// The Keccak table as packed bits, beside a dense commitment of every other table.
     Packed,
     /// Every table as field elements.
     Dense,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Hash {
+    /// Keccak-256.
+    Keccak,
+    /// Blake3.
+    Blake3,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum Arity {
@@ -144,12 +153,17 @@ struct Args {
     /// smallest coset-leaf tree has `2^log_inv_rate` leaves.
     #[arg(long, value_enum, default_value_t = Leaves::Coset)]
     leaves: Leaves,
-    /// Commitment of every recursion layer's Keccak table. Defaults to `packed` with
+    /// Hash of the source proof's commitments and transcript; every layer inherits it.
+    /// `blake3` requires `--pcs whir`.
+    #[arg(long, value_enum, default_value_t = Hash::Keccak)]
+    hash: Hash,
+    /// Commitment of every recursion layer's hash table. Defaults to `packed` with
     /// `--pcs whir` and `dense` with `--pcs folding`, which supports only `dense`.
-    #[arg(long, value_enum)]
-    keccak_commitment: Option<KeccakCommitment>,
+    #[arg(long, value_enum, alias = "keccak-commitment")]
+    hash_commitment: Option<HashCommitment>,
     /// Digests per Merkle tree node of every recursive output commitment. Defaults to `4` with
-    /// `--pcs whir` and `2` with `--pcs folding`, which supports only `2`.
+    /// `--pcs whir` under Keccak, and `2` under Blake3 and with `--pcs folding`, which supports
+    /// only `2`.
     #[arg(long, value_enum)]
     merkle_arity: Option<Arity>,
     /// Log inverse rate of the packed Keccak commitment; ignored unless the Keccak commitment
@@ -227,17 +241,24 @@ impl Args {
         })
     }
     /// `--keccak-commitment`, or the default for the selected commitment.
-    fn keccak_commitment(&self) -> KeccakCommitment {
-        self.keccak_commitment.unwrap_or(match self.pcs {
-            Pcs::Whir => KeccakCommitment::Packed,
-            Pcs::Folding => KeccakCommitment::Dense,
+    fn hash_commitment(&self) -> HashCommitment {
+        self.hash_commitment.unwrap_or(match self.pcs {
+            Pcs::Whir => HashCommitment::Packed,
+            Pcs::Folding => HashCommitment::Dense,
         })
     }
-    /// `--merkle-arity`, or the default for the selected commitment.
+    /// The selected hash as a circuit hash.
+    const fn byte_hash(&self) -> ByteHash {
+        match self.hash {
+            Hash::Keccak => ByteHash::Keccak256,
+            Hash::Blake3 => ByteHash::Blake3,
+        }
+    }
+    /// `--merkle-arity`, or the default for the selected commitment and hash.
     fn merkle_arity(&self) -> MerkleArity {
-        let arity = self.merkle_arity.unwrap_or(match self.pcs {
-            Pcs::Whir => Arity::Four,
-            Pcs::Folding => Arity::Two,
+        let arity = self.merkle_arity.unwrap_or(match (self.pcs, self.hash) {
+            (Pcs::Whir, Hash::Keccak) => Arity::Four,
+            (Pcs::Whir, Hash::Blake3) | (Pcs::Folding, _) => Arity::Two,
         });
         match arity {
             Arity::Two => MerkleArity::Two,
@@ -406,7 +427,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.security_target.is_none() && args.pow_bits >= args.pcs_security_level {
         return Err("--pow-bits must be below --pcs-security-level".into());
     }
-    if args.pcs == Pcs::Folding && args.keccak_commitment() == KeccakCommitment::Packed {
+    if args.pcs == Pcs::Folding && args.hash == Hash::Blake3 {
+        return Err("--hash blake3 requires --pcs whir".into());
+    }
+    if args.pcs == Pcs::Folding && args.hash_commitment() == HashCommitment::Packed {
         return Err("--keccak-commitment packed requires --pcs whir".into());
     }
     if args.pcs == Pcs::Folding && args.merkle_arity() == MerkleArity::Four {
@@ -416,9 +440,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("--security-target requires --pcs whir".into());
     }
     match args.pcs {
-        Pcs::Whir => match args.keccak_commitment() {
-            KeccakCommitment::Packed => run_mixed(&args),
-            KeccakCommitment::Dense => run_whir(&args),
+        Pcs::Whir => match args.hash_commitment() {
+            HashCommitment::Packed => run_mixed(&args),
+            HashCommitment::Dense => run_whir(&args),
         },
         Pcs::Folding => match args.leaves {
             Leaves::Coset => run_grouped_folding(&args),
@@ -484,13 +508,13 @@ type WhirSource = (
     BinaryNativeWhirAuthority<F, SquaringAir>,
     VerifiedBinaryNativeWhirProof<F>,
 );
-fn whir_source() -> Result<WhirSource, Box<dyn Error>> {
+fn whir_source(args: &Args) -> Result<WhirSource, Box<dyn Error>> {
     let (input, output, values) = source_trace();
     let expected = vec![vec![input, output]];
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativeWhirPcsParameters::<F>::new(2, protocol(), ByteHash::Keccak256, 0)?,
+        main: BinaryNativeWhirPcsParameters::<F>::new(2, protocol(), args.byte_hash(), 0)?,
         preprocessed: None,
-        transcript_hash: ByteHash::Keccak256,
+        transcript_hash: args.byte_hash(),
         initial_bytes: b"native-binary-recursion-source-v1".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
@@ -532,7 +556,7 @@ fn print_security(depth: usize, report: &MultiStarkSecurityReport) {
     }
 }
 fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
-    let (mut expected, authority, mut checked) = whir_source()?;
+    let (mut expected, authority, mut checked) = whir_source(args)?;
     let (limits, construction_limits) = circuit_limits(args);
     println!("Preparing native recursion layer 1...");
     let start = Instant::now();
@@ -645,7 +669,7 @@ fn prove_mixed<S>(
 /// Every layer commits its Keccak table as packed bits. The first layer verifies the dense
 /// source; every later layer verifies a packed-Keccak child.
 fn run_mixed(args: &Args) -> Result<(), Box<dyn Error>> {
-    let (expected, authority, source) = whir_source()?;
+    let (expected, authority, source) = whir_source(args)?;
     let (limits, construction_limits) = circuit_limits(args);
     println!("Preparing native recursion layer 1...");
     let start = Instant::now();

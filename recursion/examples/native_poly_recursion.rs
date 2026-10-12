@@ -2,7 +2,8 @@
 //! packed|dense` selects how every layer commits its Keccak table: as packed bits, 64 per field
 //! element, beside a dense commitment of every other table, or as field elements like every
 //! other table. `--merkle-arity 4|2` selects four-digest or pairwise Merkle trees for every
-//! layer's commitments.
+//! layer's commitments. `--hash keccak|blake3` selects the hash of every commitment and
+//! transcript; the default Merkle arity is 4 under Keccak and 2 under Blake3.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_poly_recursion -- --layers 3
@@ -87,6 +88,13 @@ enum KeccakCommitment {
     Dense,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Hash {
+    /// Keccak-256.
+    Keccak,
+    /// Blake3.
+    Blake3,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum Arity {
     /// Pairwise nodes.
     #[value(name = "2")]
@@ -135,9 +143,13 @@ struct Args {
     /// is packed.
     #[arg(long, default_value_t = 3)]
     packed_log_inv_rate: usize,
-    /// Digests per Merkle tree node of every recursive output commitment.
-    #[arg(long, value_enum, default_value_t = Arity::Four)]
-    merkle_arity: Arity,
+    /// Hash of the source proof's commitments and transcript; every layer inherits it.
+    #[arg(long, value_enum, default_value_t = Hash::Keccak)]
+    hash: Hash,
+    /// Digests per Merkle tree node of every recursive output commitment. Defaults to `4`
+    /// under Keccak and `2` under Blake3.
+    #[arg(long, value_enum)]
+    merkle_arity: Option<Arity>,
     /// Merkle cap height of the recursive output proofs, in tree levels: `h` levels hold `2^h`
     /// roots of pairwise trees or `4^h` of four-digest trees. Defaults to 16 roots, 2 levels at
     /// `--merkle-arity 4` and 4 at `--merkle-arity 2`.
@@ -148,15 +160,28 @@ struct Args {
     pow_bits: usize,
 }
 impl Args {
+    const fn byte_hash(&self) -> ByteHash {
+        match self.hash {
+            Hash::Keccak => ByteHash::Keccak256,
+            Hash::Blake3 => ByteHash::Blake3,
+        }
+    }
+    const fn arity(&self) -> Arity {
+        match (self.merkle_arity, self.hash) {
+            (Some(arity), _) => arity,
+            (None, Hash::Keccak) => Arity::Four,
+            (None, Hash::Blake3) => Arity::Two,
+        }
+    }
     const fn merkle_arity(&self) -> MerkleArity {
-        match self.merkle_arity {
+        match self.arity() {
             Arity::Two => MerkleArity::Two,
             Arity::Four => MerkleArity::Four,
         }
     }
     /// `--cap-height`, or the default for the selected arity.
     fn cap_height(&self) -> usize {
-        self.cap_height.unwrap_or(match self.merkle_arity {
+        self.cap_height.unwrap_or_else(|| match self.arity() {
             Arity::Two => DEFAULT_CAP_HEIGHT,
             Arity::Four => DEFAULT_FOUR_DIGEST_CAP_HEIGHT,
         })
@@ -251,9 +276,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let output = *values.last().unwrap();
     let expected = vec![vec![input, output]];
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativePolyWhirPcsParameters::new(2, protocol(), ByteHash::Keccak256, 0)?,
+        main: BinaryNativePolyWhirPcsParameters::new(2, protocol(), args.byte_hash(), 0)?,
         preprocessed: None,
-        transcript_hash: ByteHash::Keccak256,
+        transcript_hash: args.byte_hash(),
         initial_bytes: b"native-poly-recursion-source-v1".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
