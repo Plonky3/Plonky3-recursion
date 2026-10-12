@@ -25,10 +25,11 @@ pub(crate) trait BinaryWhirPolicy<CF: Field + Eq + Hash>: BinaryProtocolPolicy<C
         mode: BinaryOracleWord,
     ) -> Result<Vec<ExprId>, VerificationError>;
     /// Low-first sixteen-bit words of the bytes [`Self::oracle_bytes`]
-    /// returns, bound to `value` but range-checked only by the leaf hash that
-    /// absorbs them. Once range-checked, the words also constrain Base
-    /// membership. `None` keeps the value on [`Self::oracle_bytes`], before
-    /// any constraint is added.
+    /// returns, bound to `value` but range-checked only by the hash that
+    /// absorbs them (a leaf hash, or the transcript refill of the next draw).
+    /// Once range-checked, the words also constrain Base membership. `None`
+    /// keeps the value on [`Self::oracle_bytes`], before any constraint is
+    /// added.
     fn oracle_words(
         _b: &mut CircuitBuilder<CF>,
         _value: &Self::ChallengeTarget,
