@@ -48,29 +48,29 @@ const CAP_HEIGHT: usize = 2;
 /// Initial fold of every recursive commitment, and so the bus tables' minimum log height.
 const FOLD: usize = 4;
 
-/// About 12% above the measured second-layer construction: 526,485 expression nodes, 32,852
+/// About 12% above the measured second-layer construction: 504,458 expression nodes, 32,852
 /// pending connections, 17,474 non-primitive calls and 879,998 slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 590_000,
+    max_expression_nodes: 565_000,
     max_pending_connects: 36_800,
     max_non_primitive_calls: 19_600,
     max_non_primitive_slots: 986_000,
 };
-/// About 12% above the measured 477,531 witnesses and 300,001 operations. The trace cells
+/// About 12% above the measured 455,504 witnesses and 289,681 operations. The trace cells
 /// follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 535_000,
-    max_operations: 336_100,
+    max_witnesses: 511_000,
+    max_operations: 324_500,
     max_trace_cells: 1 << 27,
 };
-/// About 12% above the measured 506,056 expression nodes of the child's mixed verifier.
-const MAX_VERIFIER_NODES: usize = 567_000;
+/// About 12% above the measured 484,029 expression nodes of the child's mixed verifier.
+const MAX_VERIFIER_NODES: usize = 543_000;
 /// About 12% above the measured 4,187 native BLAKE3 compressions.
 const MAX_COMPRESSIONS: usize = 4_700;
 /// Measured padded witness, gate, public and BLAKE3 table heights: the fanout and gate rows
-/// fit 2^21 and 2^18 rows, and the compressions 2^13. One more row of growth at a
+/// fit 2^20 and 2^18 rows, and the compressions 2^13. One more row of growth at a
 /// power-of-two boundary doubles that table.
-const MAX_LOG_HEIGHTS: [usize; 4] = [21, 18, 4, 13];
+const MAX_LOG_HEIGHTS: [usize; 4] = [20, 18, 4, 13];
 /// Measured variables of the packed BLAKE3 table: 14 column and 13 row variables.
 const MAX_PACKED_BIT_VARIABLES: usize = 27;
 /// Measured initial codeword cells: 2^23 main, 2^25 preprocessing and 2^21 packed cells.

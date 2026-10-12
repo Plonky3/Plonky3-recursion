@@ -41,42 +41,42 @@ struct Case {
 }
 
 /// Pairwise output trees under a cap of two levels: 4 roots. The second layer
-/// measures 354,201 expression nodes, 10,642 pending connections, 6,263
-/// non-primitive calls, 701,736 slots, 340,728 witnesses, 143,094 operations
+/// measures 350,842 expression nodes, 10,642 pending connections, 6,263
+/// non-primitive calls, 701,736 slots, 337,369 witnesses, 143,046 operations
 /// and 1,523 native Keccak-f calls.
 const PAIRWISE: Case = Case {
     arity: MerkleArity::Two,
     cap_height: 2,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 397_000,
+        max_expression_nodes: 393_000,
         max_pending_connects: 12_000,
         max_non_primitive_calls: 7_020,
         max_non_primitive_slots: 786_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 382_000,
+        max_witnesses: 378_000,
         max_operations: 161_000,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_710,
 };
 /// Four-digest output trees under a cap of one level: the same 4 roots. The
-/// second layer measures 358,066 expression nodes, 10,642 pending
-/// connections, 6,054 non-primitive calls, 618,136 slots, 344,802 witnesses,
-/// 164,003 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
+/// second layer measures 354,708 expression nodes, 10,642 pending
+/// connections, 6,054 non-primitive calls, 618,136 slots, 341,444 witnesses,
+/// 163,956 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
 /// below the pairwise layer's count, so a layer whose trees fell back to
 /// pairwise nodes fails it.
 const FOUR_DIGEST: Case = Case {
     arity: MerkleArity::Four,
     cap_height: 1,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 402_000,
+        max_expression_nodes: 398_000,
         max_pending_connects: 12_000,
         max_non_primitive_calls: 6_790,
         max_non_primitive_slots: 693_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 387_000,
+        max_witnesses: 383_000,
         max_operations: 184_000,
         max_trace_cells: 1 << 27,
     },
