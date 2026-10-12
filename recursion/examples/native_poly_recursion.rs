@@ -13,58 +13,28 @@
 //! limits. When a layer exceeds one anyway, the error names the flag that raises it and a value
 //! to start from.
 //!
-//! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
-//! last layer; wall time, maximum resident set and peak memory footprint of the whole run;
-//! arity is `--merkle-arity`, table is `--hash-commitment`, with packed log inverse rate 3). The
-//! first row is the default configuration, the median of two runs, and the others ran under
-//! `--hash keccak`:
+//! Measured at `--layers 3` without any limit flag on a 14-core Apple M-series machine with
+//! 48 GB (time of the last layer; wall time, maximum resident set and peak memory footprint of
+//! the whole run; arity is `--merkle-arity`, packed hash tables at log inverse rate 3). The
+//! first row is the default configuration, the second ran under `--hash keccak` and the third
+//! under `--merkle-arity 4`. The first two are the median of two runs:
 //!
-//! | hash   | arity | table  | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
-//! |--------|-------|--------|----------|-----------|----------------|------------|--------|----------|-----------|
-//! | blake3 | 2     | packed | 3        | 1,387,129 | 184,549,376    | 3.0 s      | 7.4 s  | 9.2 GB   | 7.8 GB    |
-//! | keccak | 4     | packed | 2        | 857,033   | 117,440,512    | 4.8 s      | 6.4 s  | 6.5 GB   | 5.7 GB    |
-//! | keccak | 4     | packed | 3        | 1,145,424 | 117,440,512    | 4.6 s      | 10.2 s | 6.5 GB   | 6.0 GB    |
-//! | keccak | 4     | dense  | 2        | 1,049,178 | 335,544,320    | 6.1 s      | 8.1 s  | 12.2 GB  | 11.1 GB   |
-//! | keccak | 4     | dense  | 3        | 1,362,313 | 335,544,320    | 7.0 s      | 17.1 s | 14.5 GB  | 12.3 GB   |
-//! | keccak | 2     | dense  | 2        | 1,057,676 | 335,544,320    | 6.5 s      | 7.8 s  | 12.8 GB  | 12.5 GB   |
-//! | keccak | 2     | dense  | 3        | 1,380,220 | 603,979,776    | 10.9 s     | 19.1 s | 23.5 GB  | 21.9 GB   |
+//! | hash   | arity | witnesses | codeword cells | last layer | wall   | resident | footprint |
+//! |--------|-------|-----------|----------------|------------|--------|----------|-----------|
+//! | blake3 | 2     | 1,387,129 | 184,549,376    | 3.0 s      | 7.4 s  | 9.2 GB   | 7.8 GB    |
+//! | keccak | 4     | 954,320   | 117,440,512    | 4.3 s      | 9.3 s  | 6.4 GB   | 5.9 GB    |
+//! | blake3 | 4     | 1,451,316 | 218,103,808    | 3.6 s      | 8.5 s  | 9.7 GB   | 8.1 GB    |
 //!
-//! At arity 4, layer 1 has 8,284 witnesses and 1,048,576 codeword cells when packed and
-//! 4,718,592 when dense, and takes 0.8 to 1.2 s either way. Layers 2 and 3 pad the witness
-//! table to 2^22 rows and the gates table to 2^20 rows either way, so the packed layers stay
-//! clear of the 2^21 gates cliff.
+//! Blake3 proves the last layer in less time than Keccak but needs about 45% more witnesses,
+//! 57% more codeword cells and 44% more resident memory. A four-digest node costs two Blake3
+//! compressions instead of one, so under Blake3 arity 2 is faster than arity 4. Layer 1 has
+//! 4,778 witnesses and 524,288 codeword cells and takes 0.65 s under the default, and 8,264
+//! witnesses and 1,048,576 cells under `--hash keccak`.
 //!
-//! A four-digest node absorbs one Keccak-f block, as a pairwise node does, and an opening walks
-//! half as many levels. At arity 4, layer 2 takes 1,602 Keccak-f calls when packed and 1,781
-//! when dense, and layer 3 takes 2,143 when packed and 2,227 when dense, against 2,798 for a
-//! dense layer 3 at arity 2. More than 2,621 calls (25 trace rows each) give the Keccak table
-//! 2^17 rows instead of 2^16, so with dense Keccak tables only at `--merkle-arity 2` does layer
-//! 3 need the default limit of 2^30 codeword cells, 8 GiB of Poly64 cells; at arity 4, layers 1
-//! to 3 stay within 2^29.
-//!
-//! `--hash blake3` measured against `--hash keccak` at `--layers 3` with `--hash-commitment
-//! dense` on the same machine. Each run also takes the row's `--hash` and `--merkle-arity`. A
-//! hash call is one Keccak-f or one Blake3 compression. Of the last layer's gate rows, AIR check
-//! counts those that check the hash table's constraints and column batch those that observe and
-//! batch the opened values of the commitment holding the table. Resident is the largest maximum
-//! resident set of the runs:
-//!
-//! | hash   | arity | witnesses | hash calls | gate rows | AIR check | column batch | codeword cells | resident |
-//! |--------|-------|-----------|------------|-----------|-----------|--------------|----------------|----------|
-//! | keccak | 4     | 1,362,313 | 2,227      | 1,047,133 | 124,003   | 467,541      | 335,544,320    | 15.1 GB  |
-//! | blake3 | 2     | 3,316,725 | 7,000      | 3,022,401 | 483,498   | 2,172,182    | 536,870,912    | 19.2 GB  |
-//! | blake3 | 4     | 3,359,011 | 7,033      | 3,053,855 | 483,498   | 2,172,187    | 536,870,912    | 18.5 GB  |
-//!
-//! The Blake3 table holds 2^13 rows at layer 3, but the verifier opens its 11,536 columns
-//! densely over Poly192. Observing and batching their values takes 2.17M gate rows, 1.80M of
-//! them weighting each column, against 0.47M under Keccak, and the AIR check 0.48M against
-//! 0.12M. The layer has 2.4 times the witnesses and 2.9 times the gate rows of the Keccak
-//! layer, which pads the fanout to 2^24 rows and the gate table to 2^22.
-//!
-//! Other jobs shared the machine, so times are not compared here. The user CPU time of a
-//! whole run was 118 to 125 s under Keccak and 109 to 124 s under Blake3 at either arity, and
-//! grinding takes 0.8 to 1.1 s of the last layer under either hash. The default packed
-//! `--layers 3` took 64 s against 72 s for `--hash keccak --layers 3`.
+//! Other jobs shared the machine, so wall times are noisy. The user CPU time of a whole run
+//! was 64 s for the default against 72 s for `--hash keccak`. Under Keccak, a four-digest node
+//! absorbs one Keccak-f block, as a pairwise node does, and an opening walks half as many
+//! levels.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits count field cells
 //! or graph entries, not bytes.
@@ -126,7 +96,8 @@ enum Arity {
     /// Pairwise nodes.
     #[value(name = "2")]
     Two,
-    /// Four-digest nodes, each one Keccak-f block like a pairwise node, over half the levels.
+    /// Four-digest nodes over half the levels; a node is one Keccak-f block, like a pairwise
+    /// node, or two Blake3 compressions.
     #[value(name = "4")]
     Four,
 }

@@ -15,85 +15,41 @@
 //!
 //! The defaults (WHIR with Blake3 and packed hash tables at log inverse rate 3 and every other
 //! table at rate 1, PCS security level 32 with 24 grinding bits, pairwise Merkle trees under a
-//! cap of 4 levels) keep every layer within the default limits. When a layer exceeds one anyway, the
-//! error names the flag that raises it and a value to start from.
+//! cap of 4 levels) keep every layer within the default limits. When a layer exceeds one
+//! anyway, the error names the flag that raises it and a value to start from.
 //!
-//! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
-//! last layer; wall time, maximum resident set and peak memory footprint of the whole run;
-//! arity is `--merkle-arity`). The first row is the default configuration, the median of two
-//! runs, and the others ran under Keccak:
+//! Measured at `--layers 3` without any limit flag on a 14-core Apple M-series machine with
+//! 48 GB (time of the last layer; wall time, maximum resident set and peak memory footprint of
+//! the whole run; arity is `--merkle-arity`). The first row is the default configuration, the
+//! second ran under `--hash keccak` and the third under `--merkle-arity 4`. The first two are
+//! the median of two runs:
 //!
-//! | Command                                            | arity | witnesses | codeword cells |
-//! |----------------------------------------------------|-------|-----------|----------------|
-//! | `--layers 3`                                       | 2     | 645,589   | 58,720,256     |
-//! | `--hash keccak --layers 2`                         | 4     | 541,479   | 58,720,256     |
-//! | `--hash keccak --layers 2`                         | 2     | 549,023   | 58,720,256     |
-//! | `--hash keccak --layers 3`                         | 4     | 746,649   | 58,720,256     |
-//! | `--hash keccak --layers 3`                         | 2     | 761,839   | 58,720,256     |
-//! | `--hash keccak --hash-commitment dense --layers 3` | 4     | 690,872   | 301,989,888    |
-//! | `--hash keccak --hash-commitment dense --layers 3` | 2     | 705,971   | 301,989,888    |
-//! | `--pcs folding --layers 2`                         | 2     | 855,715   | 603,979,776    |
-//! | `--hash keccak --log-inv-rate 2 --layers 2`        | 4     | 492,193   | 104,857,600    |
-//! | `--hash keccak --log-inv-rate 2 --layers 2`        | 2     | 497,536   | 109,051,904    |
+//! | Command                       | arity | witnesses | codeword cells | proof bytes |
+//! |-------------------------------|-------|-----------|----------------|-------------|
+//! | `--layers 3`                  | 2     | 645,589   | 58,720,256     | 266,367     |
+//! | `--hash keccak --layers 3`    | 4     | 606,399   | 58,720,256     | 158,847     |
+//! | `--merkle-arity 4 --layers 3` | 4     | 705,307   | 58,720,256     | 284,575     |
 //!
-//! | Command                                            | arity | last layer | wall   | resident | footprint |
-//! |----------------------------------------------------|-------|------------|--------|----------|-----------|
-//! | `--layers 3`                                       | 2     | 4.3 s      | 9.9 s  | 3.8 GB   | 3.3 GB    |
-//! | `--hash keccak --layers 2`                         | 4     | 9.6 s      | 11.8 s | 4.0 GB   | 3.9 GB    |
-//! | `--hash keccak --layers 2`                         | 2     | 10.9 s     | 12.3 s | 4.0 GB   | 3.9 GB    |
-//! | `--hash keccak --layers 3`                         | 4     | 9.4 s      | 20.5 s | 4.3 GB   | 4.0 GB    |
-//! | `--hash keccak --layers 3`                         | 2     | 10.0 s     | 22.6 s | 4.3 GB   | 4.1 GB    |
-//! | `--hash keccak --hash-commitment dense --layers 3` | 4     | 12.9 s     | 27.4 s | 16.1 GB  | 10.8 GB   |
-//! | `--hash keccak --hash-commitment dense --layers 3` | 2     | 13.2 s     | 27.6 s | 16.5 GB  | 11.4 GB   |
-//! | `--pcs folding --layers 2`                         | 2     | 22.1 s     | 23.3 s | 26.8 GB  | 27.8 GB   |
-//! | `--hash keccak --log-inv-rate 2 --layers 2`        | 4     | 6.6 s      | 8.1 s  | 4.0 GB   | 3.9 GB    |
-//! | `--hash keccak --log-inv-rate 2 --layers 2`        | 2     | 10.7 s     | 11.9 s | 5.0 GB   | 4.9 GB    |
+//! | Command                       | arity | last layer | wall   | resident | footprint |
+//! |-------------------------------|-------|------------|--------|----------|-----------|
+//! | `--layers 3`                  | 2     | 4.3 s      | 9.9 s  | 3.8 GB   | 3.3 GB    |
+//! | `--hash keccak --layers 3`    | 4     | 9.9 s      | 21.5 s | 4.2 GB   | 4.0 GB    |
+//! | `--merkle-arity 4 --layers 3` | 4     | 5.0 s      | 12.4 s | 3.5 GB   | 3.2 GB    |
 //!
-//! `--hash blake3` measured against `--hash keccak` on the same machine. Each command also
-//! takes the row's `--hash` and `--merkle-arity`. A hash call is one Keccak-f or one Blake3
-//! compression. Of the last layer's gate rows, AIR check counts those that check the hash
-//! table's constraints and column batch those that observe and batch the opened values of the
-//! commitment holding the table. Resident is the largest maximum resident set of the runs:
+//! Blake3 proves the last layer in under half the time of Keccak with less memory, and its
+//! proofs are 68% larger. A four-digest node costs two Blake3 compressions instead of one, so
+//! under Blake3 arity 2 is faster than arity 4.
 //!
-//! | Command                              | hash   | arity | witnesses | hash calls | gate rows | codeword cells |
-//! |--------------------------------------|--------|-------|-----------|------------|-----------|----------------|
-//! | `--layers 3`                         | keccak | 4     | 746,649   | 1,748      | 491,140   | 58,720,256     |
-//! | `--layers 3`                         | blake3 | 2     | 793,020   | 5,336      | 574,091   | 109,051,904    |
-//! | `--layers 3`                         | blake3 | 4     | 834,249   | 5,375      | 604,520   | 109,051,904    |
-//! | `--hash-commitment dense --layers 2` | keccak | 4     | 520,997   | 1,513      | 311,150   | 301,989,888    |
-//! | `--hash-commitment dense --layers 2` | blake3 | 2     | 687,556   | 4,356      | 502,166   | 301,989,888    |
+//! Other jobs shared the machine, so wall times are noisy. The user CPU time of a whole run
+//! varied far less: 94 to 98 s for the default against 195 to 214 s for `--hash keccak
+//! --layers 3`. Layer 1 has 4,518 witnesses and takes 0.6 s under the default, and 7,817
+//! witnesses and 0.6 s under `--hash keccak`. The default codeword-cell limit is 2^29 at
+//! `--log-inv-rate 1`, doubled for each further rate bit and for `--pcs folding`, which
+//! multiplies every dense codeword.
 //!
-//! | Command                              | hash   | arity | AIR check | column batch | resident | proof bytes |
-//! |--------------------------------------|--------|-------|-----------|--------------|----------|-------------|
-//! | `--layers 3`                         | keccak | 4     | 18,152    | 58,960       | 4.3 GB   | 158,495     |
-//! | `--layers 3`                         | blake3 | 2     | 104,703   | 115,659      | 5.6 GB   | 269,871     |
-//! | `--layers 3`                         | blake3 | 4     | 104,703   | 115,663      | 5.5 GB   | 289,455     |
-//! | `--hash-commitment dense --layers 2` | keccak | 4     | 24,541    | 62,930       | 12.6 GB  | 145,007     |
-//! | `--hash-commitment dense --layers 2` | blake3 | 2     | 108,273   | 231,080      | 11.9 GB  | 257,263     |
-//!
-//! At layer 3 the Blake3 table has 2^13 rows, 5,336 of the 8,192 compressions it holds. Its
-//! AIR check and the column batch of its 11,536 packed columns add 143k gate rows to the
-//! Keccak layer's, and at arity 2 the rest of the verifier takes 60k fewer. The gate rows fill
-//! 55% of 2^20 (58% at arity 4) and so pad to 2^20 rows where Keccak's pad to 2^19, and the
-//! fanout pads to 2^22 rows instead of 2^21, which raises the initial codeword cells of a
-//! packed layer from 58.7M to 109.1M. A dense layer has the same cells under either hash.
-//!
-//! Other jobs shared the machine, and the last layer's time varied by up to 3.3 times between
-//! runs, so times are not compared here. The user CPU time of a whole run varied far less:
-//! 193 to 208 s under Keccak and 98 to 107 s under Blake3 at either arity for `--layers 3`,
-//! and 144 to 148 s against 79 to 85 s for `--hash-commitment dense --layers 2`. Grinding takes
-//! 0.6 to 0.7 s of the last layer under either hash. The default `--layers 3` took 96 s of user
-//! CPU time against 205 s for `--hash keccak --layers 3` on the same code.
-//!
-//! Layer 1 takes 0.7 s with 7,819 witnesses, and 0.5 s with 16,285 under `--pcs folding`. The
-//! default codeword-cell limit is 2^29 at `--log-inv-rate 1`, doubled for each further rate bit
-//! and for `--pcs folding`, which multiplies every dense codeword.
-//!
-//! A four-digest node absorbs one Keccak-f block, as a pairwise node does, and an opening walks
-//! half as many levels. At layer 3, a packed layer takes 1,748 Keccak-f calls instead of 2,306
-//! and a dense one 1,864 instead of 2,411, its bridge table has 2^12 rows instead of 2^13, and
-//! its proof is 13 to 14% larger. At `--log-inv-rate 2`, layer 2 takes 1,170 calls instead of
-//! 1,372, few enough for a 2^15-row Keccak table.
+//! Under Keccak, a four-digest node absorbs one Keccak-f block, as a pairwise node does, and an
+//! opening walks half as many levels, so a packed layer takes fewer Keccak-f calls and its
+//! bridge table fewer rows, at the price of a larger proof.
 //!
 //! `--pcs folding` takes the same security level and grinding bits. Its coset leaves default to
 //! cap height 1.
@@ -172,7 +128,8 @@ enum Arity {
     /// Pairwise nodes.
     #[value(name = "2")]
     Two,
-    /// Four-digest nodes, each one Keccak-f block like a pairwise node, over half the levels.
+    /// Four-digest nodes over half the levels; a node is one Keccak-f block, like a pairwise
+    /// node, or two Blake3 compressions.
     #[value(name = "4")]
     Four,
 }
@@ -203,7 +160,7 @@ struct Args {
     #[arg(long, value_enum, alias = "keccak-commitment")]
     hash_commitment: Option<HashCommitment>,
     /// Digests per Merkle tree node of every recursive output commitment. Defaults to `2`, and to
-    /// `4` with `--pcs whir` under Keccak.
+    /// `4` with `--pcs whir` under Keccak. `--pcs folding` supports only `2`.
     #[arg(long, value_enum)]
     merkle_arity: Option<Arity>,
     /// Log inverse rate of the packed hash-table commitment; ignored unless the hash table is
@@ -239,11 +196,11 @@ struct Args {
     /// Maximum combined trace, preprocessing, and temporary field cells.
     #[arg(long, default_value_t = 1 << 28)]
     max_trace_cells: usize,
-    /// Maximum combined initial main, packed Keccak and preprocessing codeword cells. Defaults
+    /// Maximum combined initial main, packed hash-table and preprocessing codeword cells. Defaults
     /// to 2^29 for WHIR at `--log-inv-rate 1`, doubled for each further rate bit and for
-    /// `--pcs folding`, since each multiplies every dense codeword. The packed Keccak codeword
-    /// stores 128 bits per cell, so with `--packed-log-inv-rate` at most 6 above
-    /// `--log-inv-rate` it is smaller than the dense Keccak codeword it replaces.
+    /// `--pcs folding`, since each multiplies every dense codeword. The packed hash-table
+    /// codeword stores 128 bits per cell, so with `--packed-log-inv-rate` at most 6 above
+    /// `--log-inv-rate` it is smaller than the dense hash-table codeword it replaces.
     #[arg(long)]
     max_pcs_codeword_cells: Option<usize>,
     /// Maximum aggregate verifier rounds in each recursive output authority. It bounds the
@@ -678,7 +635,7 @@ fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// The next expected statement and the checked output of one packed-Keccak layer.
+/// The next expected statement and the checked output of one packed hash-table layer.
 type MixedOutput = (Vec<Vec<F>>, VerifiedBinaryNativeMixedWhirProof);
 /// Proves layer `depth` from `prove`, verifies it against the expected child statement, and
 /// returns the next expected statement with the checked output.
@@ -719,8 +676,8 @@ fn prove_mixed<S>(
     Ok((next_expected, checked))
 }
 
-/// Every layer commits its Keccak table as packed bits. The first layer verifies the dense
-/// source; every later layer verifies a packed-Keccak child.
+/// Every layer commits its hash table as packed bits. The first layer verifies the dense
+/// source; every later layer verifies a packed hash-table child.
 fn run_mixed(args: &Args) -> Result<(), Box<dyn Error>> {
     let (expected, authority, source) = whir_source(args)?;
     let (limits, construction_limits) = circuit_limits(args);

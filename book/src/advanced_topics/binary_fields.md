@@ -14,7 +14,7 @@ prime fields this repository is built on:
 ## What this repository supports today
 
 The repository supports complete native binary recursion for Tower128, and for
-Poly64 with Poly192 challenges, using additive WHIR, product buses and native Keccak.
+Poly64 with Poly192 challenges, using additive WHIR, product buses and native Keccak or Blake3 hash tables.
 The Tower128 owner also accepts Tower32 children. It separately verifies binary
 PCS and additive-WHIR proofs inside prime-field circuits, including indexed
 lookup variants. `recursion/examples/native_binary_recursion.rs` and
@@ -109,7 +109,7 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
   `prepared::PreparedNativeBinaryWhirLayer` builds a complete native scalar
   verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark authority, including product
   GKR, generic sumcheck, AIR evaluation and both main/preprocessing openings.
-  It proves that verifier over Tower128 using native Keccak and product buses,
+  It proves that verifier over Tower128 using native hash tables (Keccak or Blake3) and product buses,
   and verifies against independently supplied child public values. Checked
   child tokens must match the retained authority identity before packing or
   witness execution. The output authority can be used as the next layer's

@@ -46,8 +46,8 @@ output authority can prepare another binary layer. The example uses development
 security parameters, non-hiding proofs and explicit allocation limits; its
 recursive verifier levels off from layer 4. Under WHIR its layers commit with
 pairwise Merkle trees; `--merkle-arity 4` selects four-digest trees, the default
-under `--hash keccak`, each node one Keccak-f block like a pairwise node over
-half the levels.
+under `--hash keccak`, over half the levels; under Keccak each node is one Keccak-f
+block like a pairwise node, under Blake3 two compressions.
 
 The [native polynomial recursion example](examples/native_poly_recursion.rs) proves
 and verifies a Poly64 verifier circuit over Poly64 with Poly192 challenges:
