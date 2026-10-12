@@ -44,8 +44,13 @@ use crate::native_blake3::{
 use crate::primitive_plan::{PrimitiveConstraint, PrimitivePlan};
 
 const MAX_NAMESPACE_BYTES: usize = BusName::MAX_LEN - ".witness".len();
-/// Gate selectors: the six of the frozen primitive codec, then the two fused gates.
+/// Gate selectors: the six of the frozen primitive codec, then the two fused gates. No
+/// addition row reaches the table, so the codec's addition selector is [`SELECT`].
 const GATE_SELECTORS: usize = 8;
+/// `out = a * (c - addend) + addend`: `c` when `a` is one, `addend` when it is zero.
+const SELECT: usize = 1;
+/// The frozen codec's `out = a * c + addend`.
+const MUL_ADD: usize = 4;
 /// `out = a * k + addend`, with the constant `k` in preprocessing.
 const MUL_ADD_CONSTANT: usize = 6;
 /// [`MUL_ADD_CONSTANT`] with `a` constrained to be Boolean.
@@ -264,7 +269,26 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             .iter()
             .filter(|call| call.swapped.is_some())
             .count();
-        let gate_rows = gate_rows(&plan.constraints, plan.width);
+        // The witness reads of the public, Keccak boundary and BLAKE3 rows.
+        let mut external: Vec<usize> = plan.public.iter().map(|&w| w + 1).collect();
+        for call in &calls {
+            let swapped = call.swapped.iter().flatten();
+            external.extend(
+                call.input
+                    .iter()
+                    .chain(&call.output)
+                    .chain(swapped)
+                    .map(|&w| w + 1),
+            );
+        }
+        for call in &blake3_calls {
+            external.extend(call.ids().map(|&w| w + 1));
+        }
+        let gate_rows = fuse_selects(
+            gate_rows(&plan.constraints, plan.width),
+            &external,
+            plan.width,
+        );
         let gate_occurrences = gate_rows.iter().try_fold(0, |total, row| {
             add(
                 total,
@@ -390,20 +414,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     .filter_map(|(slot, &id)| gate_slot_used(row.selector, slot).then_some(id)),
             );
         }
-        occurrences.extend(plan.public.iter().map(|&w| w + 1));
-        for call in &calls {
-            let swapped = call.swapped.iter().flatten();
-            occurrences.extend(
-                call.input
-                    .iter()
-                    .chain(&call.output)
-                    .chain(swapped)
-                    .map(|&w| w + 1),
-            );
-        }
-        for call in &blake3_calls {
-            occurrences.extend(call.ids().map(|&w| w + 1));
-        }
+        occurrences.extend(external);
         occurrences.sort_unstable();
         let fanout = Arc::new(Fanout {
             ids: occurrences,
@@ -751,9 +762,10 @@ fn label<F: BinaryCoordinateField>(label: usize) -> Result<F, NativeBusCircuitEr
 
 /// One row per primitive constraint in the frozen codec, except that a multiply-add with a
 /// constant operand becomes a [`MUL_ADD_CONSTANT`] row reading the constant from
-/// preprocessing. A Boolean check moves into the first multiply-add or product with a constant
-/// whose other operand it checks, which becomes a [`BOOLEAN_MUL_ADD_CONSTANT`] row. The fanout
-/// table equates every occurrence of a witness ID, so one check covers all of them.
+/// preprocessing, and an addition `a + b` one with constant one and addend `b`. A Boolean
+/// check moves into the first multiply-add or product with a constant whose other operand it
+/// checks, which becomes a [`BOOLEAN_MUL_ADD_CONSTANT`] row. The fanout table equates every
+/// occurrence of a witness ID, so one check covers all of them.
 fn gate_rows<F: Field>(constraints: &[PrimitiveConstraint<F>], width: usize) -> Vec<GateRow<F>> {
     // A witness fixed to two different values keeps its reads.
     let mut constants = HashMap::<usize, Option<F>>::new();
@@ -818,28 +830,118 @@ fn gate_rows<F: Field>(constraints: &[PrimitiveConstraint<F>], width: usize) -> 
                     constant,
                 }
             }
-            _ => {
-                let (ids, selector, constant) = gate(constraint);
-                GateRow {
-                    ids,
-                    selector,
-                    constant,
+            _ => match *constraint {
+                PrimitiveConstraint::Add { a, b, out } => GateRow {
+                    ids: [a + 1, 0, b + 1, 0, out + 1],
+                    selector: MUL_ADD_CONSTANT,
+                    constant: F::ONE,
+                },
+                _ => {
+                    let (ids, selector, constant) = gate(constraint);
+                    GateRow {
+                        ids,
+                        selector,
+                        constant,
+                    }
                 }
-            }
+            },
         })
         .collect()
 }
 
-// Selectors below six come from the shared frozen primitive gate codec.
-// MulAdd and the fused gates retain the optional addend slot: an absent addend
-// uses the checked zero sentinel. Every other inactive slot can be omitted from
-// the product bus.
+/// Fuses selects into [`SELECT`] rows. In characteristic two, an addition row (a
+/// [`MUL_ADD_CONSTANT`] row with constant one) over three distinct witnesses makes each of them
+/// the difference `t - e` of the other two. Take one of them, `d`, whose every other read is one
+/// factor of a [`MUL_ADD`] row `s * d + e`, with `e` one of the other two and `t` the remaining
+/// one: each such row becomes `SELECT(s, t, e)` and the addition row is dropped, since nothing
+/// reads `d` any more. A row is rewritten once, so a selector `s` that is itself such a
+/// difference keeps its addition. `external` holds the reads outside the gate table, so that
+/// `d`'s count covers its every fanout occurrence.
+fn fuse_selects<F: BinaryCoordinateField>(
+    rows: Vec<GateRow<F>>,
+    external: &[usize],
+    width: usize,
+) -> Vec<GateRow<F>> {
+    let mut reads = vec![0usize; width + 1];
+    for row in &rows {
+        for slot in (0..5).filter(|&slot| gate_slot_used(row.selector, slot)) {
+            reads[row.ids[slot]] += 1;
+        }
+    }
+    for &id in external {
+        reads[id] += 1;
+    }
+    // The multiply-adds reading each ID as exactly one of their two factors.
+    let mut factor_of = HashMap::<usize, Vec<usize>>::new();
+    for (i, row) in rows.iter().enumerate() {
+        let [a, c, ..] = row.ids;
+        if row.selector == MUL_ADD && a != c {
+            factor_of.entry(a).or_default().push(i);
+            factor_of.entry(c).or_default().push(i);
+        }
+    }
+    let mut selects: Vec<Option<[usize; 5]>> = vec![None; rows.len()];
+    let mut fused = vec![false; rows.len()];
+    for (i, row) in rows.iter().enumerate() {
+        let [a, _, addend, _, out] = row.ids;
+        let trio = [a, addend, out];
+        if row.selector != MUL_ADD_CONSTANT
+            || row.constant != F::ONE
+            || trio.contains(&0)
+            || a == addend
+            || a == out
+            || addend == out
+        {
+            continue;
+        }
+        for k in 0..3 {
+            let d = trio[k];
+            let others = [trio[(k + 1) % 3], trio[(k + 2) % 3]];
+            let Some(readers) = factor_of.get(&d) else {
+                continue;
+            };
+            if reads[d] != readers.len() + 1
+                || readers
+                    .iter()
+                    .any(|&r| selects[r].is_some() || !others.contains(&rows[r].ids[2]))
+            {
+                continue;
+            }
+            for &r in readers {
+                let [x, y, e, _, product] = rows[r].ids;
+                let s = if x == d { y } else { x };
+                let t = if others[0] == e { others[1] } else { others[0] };
+                selects[r] = Some([s, t, e, 0, product]);
+            }
+            fused[i] = true;
+            break;
+        }
+    }
+    rows.into_iter()
+        .zip(selects)
+        .zip(fused)
+        .filter(|&(_, fused)| !fused)
+        .map(|((row, select), _)| {
+            select.map_or(row, |ids| GateRow {
+                ids,
+                selector: SELECT,
+                constant: F::ZERO,
+            })
+        })
+        .collect()
+}
+
+// Selectors below six other than SELECT come from the shared frozen primitive gate
+// codec. MulAdd and the fused gates retain the optional addend slot: an absent
+// addend uses the checked zero sentinel. Every other inactive slot can be omitted
+// from the product bus.
 fn gate_slot_used(selector: usize, slot: usize) -> bool {
     match selector {
         0 => slot == 4,
-        1 | 2 => matches!(slot, 0 | 1 | 4),
+        SELECT => matches!(slot, 0 | 1 | 2 | 4),
+        2 => matches!(slot, 0 | 1 | 4),
         3 => matches!(slot, 0 | 4),
-        4 => slot != 3,
+        MUL_ADD => slot != 3,
         5 => true,
         MUL_ADD_CONSTANT | BOOLEAN_MUL_ADD_CONSTANT => matches!(slot, 0 | 2 | 4),
         _ => unreachable!("native bus gate selector"),
@@ -954,7 +1056,8 @@ where
                 }
                 let [a, c, addend, accumulator, out] = core::array::from_fn::<_, 5, _>(|i| row[i]);
                 b.when(pp[6]).assert_eq(out, pp[5]);
-                b.when(pp[7]).assert_eq(out, a + c);
+                b.when(pp[6 + SELECT])
+                    .assert_eq(out, a * (c - addend) + addend);
                 b.when(pp[8]).assert_eq(out, a * c);
                 b.when(pp[9]).assert_bool(a);
                 b.when(pp[9]).assert_eq(out, a);

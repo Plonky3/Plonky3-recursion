@@ -419,7 +419,7 @@ fn blake3_table_shape_and_preprocessing() {
             .map(|row| {
                 row[6..14]
                     .iter()
-                    .zip([1, 3, 3, 2, 4, 5, 3, 3])
+                    .zip([1, 4, 3, 2, 4, 5, 3, 3])
                     .filter_map(|(&selector, reads)| (selector == F::ONE).then_some(reads))
                     .sum::<usize>()
             })

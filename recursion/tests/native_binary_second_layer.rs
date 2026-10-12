@@ -41,8 +41,8 @@ struct Case {
 }
 
 /// Pairwise output trees under a cap of two levels: 4 roots. The second layer
-/// measures 362,204 expression nodes, 10,642 pending connections, 6,263
-/// non-primitive calls, 701,736 slots, 348,731 witnesses, 143,168 operations
+/// measures 362,215 expression nodes, 10,642 pending connections, 6,263
+/// non-primitive calls, 701,736 slots, 348,742 witnesses, 143,178 operations
 /// and 1,523 native Keccak-f calls.
 const PAIRWISE: Case = Case {
     arity: MerkleArity::Two,
@@ -61,9 +61,9 @@ const PAIRWISE: Case = Case {
     max_keccak_calls: 1_710,
 };
 /// Four-digest output trees under a cap of one level: the same 4 roots. The
-/// second layer measures 363,564 expression nodes, 10,642 pending
-/// connections, 6,054 non-primitive calls, 618,136 slots, 350,300 witnesses,
-/// 161,572 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
+/// second layer measures 363,574 expression nodes, 10,642 pending
+/// connections, 6,054 non-primitive calls, 618,136 slots, 350,310 witnesses,
+/// 161,581 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
 /// below the pairwise layer's count, so a layer whose trees fell back to
 /// pairwise nodes fails it.
 const FOUR_DIGEST: Case = Case {

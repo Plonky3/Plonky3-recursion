@@ -1,9 +1,10 @@
 //! Fanout adjacency, sentinel values and native hash schedules are local AIR relations.
 
 use p3_air::{BaseAir, check_constraints};
-use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::keccak_state_to_limbs;
+use p3_circuit::tables::WitnessTrace;
+use p3_circuit::{CircuitBuilder, ExprId, WitnessId};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::indexed::IndexedCircuit;
 use p3_circuit_prover::native_binary::NativeBinaryCircuit;
@@ -115,7 +116,7 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
             .map(|row| {
                 row[6..14]
                     .iter()
-                    .zip([1, 3, 3, 2, 4, 5, 3, 3])
+                    .zip([1, 4, 3, 2, 4, 5, 3, 3])
                     .filter_map(|(&selector, count)| (selector == F::ONE).then_some(count))
                     .sum::<usize>()
             })
@@ -217,7 +218,7 @@ fn constant_products_check_their_multiplicands_in_one_row() {
         .map(|row| {
             row[6..14]
                 .iter()
-                .zip([1, 3, 3, 2, 4, 5, 3, 3])
+                .zip([1, 4, 3, 2, 4, 5, 3, 3])
                 .filter_map(|(&selector, count)| (selector == F::ONE).then_some(count))
                 .sum::<usize>()
         })
@@ -242,6 +243,181 @@ fn constant_products_check_their_multiplicands_in_one_row() {
     assert!(rejects(&|cells, weight| {
         cells[4] = cells[0] * (weight + F::ONE) + cells[2];
     }));
+}
+
+/// A select `s * (t - e) + e` is one gate of four reads: nothing else reads its difference, so
+/// the addition defining it is dropped. The gate is that polynomial rather than a multiplexer, so
+/// a selector outside {0, 1} needs nothing more. A difference that a third gate also reads keeps
+/// its addition, a multiply-add by one, so forging it with the square read from it is refused.
+#[test]
+fn selects_fuse_only_differences_their_select_alone_reads() {
+    let mut b = CircuitBuilder::<F>::new();
+    let [s, t, e, selected] = b.alloc_public_input_array::<4>("select");
+    let select = b.select(s, t, e);
+    b.connect(select, selected);
+    let [u, v, w, mixed, squared] = b.alloc_public_input_array::<5>("shared difference");
+    let difference = b.sub(v, w);
+    let mix = b.mul_add(u, difference, w);
+    let square = b.mul(difference, difference);
+    b.connect(mix, mixed);
+    b.connect(square, squared);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "select").unwrap();
+    let witness_of = |expr: ExprId| circuit.expr_to_widx[&expr].0 as usize;
+    let label = |expr: ExprId| witness_of(expr) + 1;
+
+    let raw = |x: u128| F::from_raw_coordinates(x).unwrap();
+    let [s_value, t_value, e_value, u_value, v_value, w_value] = [
+        0x8123456789abcdef,
+        0x5a5a,
+        0x12345678,
+        3,
+        0xdeadbeef,
+        0xfeed,
+    ]
+    .map(raw);
+    let statement = [
+        s_value,
+        t_value,
+        e_value,
+        s_value * (t_value - e_value) + e_value,
+        u_value,
+        v_value,
+        w_value,
+        u_value * (v_value - w_value) + w_value,
+        (v_value - w_value).square(),
+    ];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let traces = prepared.traces(&witness).unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let rows = gate_pp.values.as_chunks::<14>().0;
+    let labels = |row: usize| {
+        core::array::from_fn::<_, 5, _>(|i| rows[row][i].to_raw_coordinates() as usize)
+    };
+    let selected_rows = |selector: usize| -> Vec<usize> {
+        (0..rows.len())
+            .filter(|&row| rows[row][6 + selector] == F::ONE)
+            .collect()
+    };
+    let selects = selected_rows(1);
+    assert_eq!(selects.len(), 1);
+    assert_eq!(
+        labels(selects[0]),
+        [label(s), label(t), label(e), 0, label(selected)]
+    );
+    let additions: Vec<_> = selected_rows(6)
+        .into_iter()
+        .filter(|&row| rows[row][5] == F::ONE)
+        .collect();
+    assert_eq!(additions.len(), 1);
+    let [a, unused, addend, accumulator, out] = labels(additions[0]);
+    assert_eq!([unused, accumulator], [0, 0]);
+    let mut read = [a, addend, out];
+    read.sort_unstable();
+    let mut expected = [label(v), label(w), label(difference)];
+    expected.sort_unstable();
+    assert_eq!(read, expected);
+    let products = selected_rows(4);
+    assert_eq!(products.len(), 1);
+    assert!(labels(products[0])[..2].contains(&label(difference)));
+
+    let mut forged = traces[1].clone();
+    forged.values[5 * selects[0] + 4] += F::ONE;
+    assert!(
+        std::panic::catch_unwind(|| check_constraints(&prepared.airs()[1], &forged, &[])).is_err()
+    );
+
+    // Only the gate table refuses a forged difference whose square is claimed.
+    let mut values: Vec<F> = (0..witness.num_rows() as u32)
+        .map(|id| *witness.get_value(WitnessId(id)).unwrap())
+        .collect();
+    let forged_difference = v_value - w_value + F::ONE;
+    values[witness_of(difference)] = forged_difference;
+    values[witness_of(square)] = forged_difference.square();
+    let mut forged_statement = statement;
+    forged_statement[8] = forged_difference.square();
+    let traces = prepared.traces(&WitnessTrace::new(values)).unwrap();
+    let public = prepared.public_values(&forged_statement).unwrap();
+    for (table, ((air, trace), public)) in
+        prepared.airs().iter().zip(&traces).zip(&public).enumerate()
+    {
+        let refused = std::panic::catch_unwind(|| check_constraints(air, trace, public)).is_err();
+        assert_eq!(refused, table == 1, "table {table}");
+    }
+}
+
+/// A product of two differences `(t - e) * (u - e) + e` fuses one of them into a select whose
+/// selector is the other, so the other keeps its addition and a forged selector is refused.
+#[test]
+fn a_difference_read_as_a_selector_keeps_its_addition() {
+    let mut b = CircuitBuilder::<F>::new();
+    let [t, u, e, expected] = b.alloc_public_input_array::<4>("differences");
+    let first = b.sub(t, e);
+    let second = b.sub(u, e);
+    let out = b.mul_add(first, second, e);
+    b.connect(out, expected);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "selector").unwrap();
+    let witness_of = |expr: ExprId| circuit.expr_to_widx[&expr].0 as usize;
+
+    let raw = |x: u128| F::from_raw_coordinates(x).unwrap();
+    let [t_value, u_value, e_value] = [0x8123456789abcdef, 0x5a5a, 0x1234].map(raw);
+    let statement = [
+        t_value,
+        u_value,
+        e_value,
+        (t_value - e_value) * (u_value - e_value) + e_value,
+    ];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let traces = prepared.traces(&witness).unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let rows = gate_pp.values.as_chunks::<14>().0;
+    let count = |selector: usize, constant: F| {
+        rows.iter()
+            .filter(|row| row[6 + selector] == F::ONE && row[5] == constant)
+            .count()
+    };
+    assert_eq!([count(1, F::ZERO), count(6, F::ONE)], [1, 1]);
+    let select = rows.iter().find(|row| row[7] == F::ONE).unwrap();
+    let selector = select[0].to_raw_coordinates() as usize - 1;
+    let [kept, fused] = if selector == witness_of(first) {
+        [first, second]
+    } else {
+        [second, first]
+    };
+    assert_eq!(selector, witness_of(kept));
+
+    let mut values: Vec<F> = (0..witness.num_rows() as u32)
+        .map(|id| *witness.get_value(WitnessId(id)).unwrap())
+        .collect();
+    let forged = values[witness_of(kept)] + F::ONE;
+    values[witness_of(kept)] = forged;
+    let forged_out = forged * values[witness_of(fused)] + e_value;
+    values[witness_of(out)] = forged_out;
+    let mut forged_statement = statement;
+    forged_statement[3] = forged_out;
+    let traces = prepared.traces(&WitnessTrace::new(values)).unwrap();
+    let public = prepared.public_values(&forged_statement).unwrap();
+    for (table, ((air, trace), public)) in
+        prepared.airs().iter().zip(&traces).zip(&public).enumerate()
+    {
+        let refused = std::panic::catch_unwind(|| check_constraints(air, trace, public)).is_err();
+        assert_eq!(refused, table == 1, "table {table}");
+    }
 }
 
 #[test]
