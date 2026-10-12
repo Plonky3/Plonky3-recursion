@@ -1,33 +1,35 @@
 //! Native Poly64 proving and recursion with Poly192 challenges. `--keccak-commitment
-//! dense|packed` selects how every layer commits its Keccak table: as field elements like every
-//! other table, or as packed bits, 64 per field element, beside a dense commitment of every
+//! packed|dense` selects how every layer commits its Keccak table: as packed bits, 64 per field
+//! element, beside a dense commitment of every other table, or as field elements like every
 //! other table. `--merkle-arity 4|2` selects four-digest or pairwise Merkle trees for every
 //! layer's commitments.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_poly_recursion -- --layers 3
 //!
-//! The defaults (dense Keccak tables, WHIR security level 32 with 24 grinding bits, four-digest Merkle trees under a
-//! cap of 2 levels) keep every layer within the default limits. When a layer exceeds one anyway,
-//! the error names the flag that raises it and a value to start from.
+//! The defaults (packed Keccak tables, WHIR security level 32 with 24 grinding bits,
+//! four-digest Merkle trees under a cap of 2 levels) keep every layer within the default
+//! limits. When a layer exceeds one anyway, the error names the flag that raises it and a value
+//! to start from.
 //!
 //! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
 //! last layer; wall time, maximum resident set and peak memory footprint of the whole run;
-//! arity is `--merkle-arity`):
+//! arity is `--merkle-arity`, Keccak is `--keccak-commitment`, with packed log inverse rate 3):
 //!
-//! | arity | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
-//! |-------|----------|-----------|----------------|------------|--------|----------|-----------|
-//! | 4     | 2        | 1,049,178 | 335,544,320    | 6.1 s      | 8.4 s  | 12.3 GB  | 12.0 GB   |
-//! | 4     | 3        | 1,362,313 | 335,544,320    | 7.1 s      | 15.1 s | 14.2 GB  | 12.4 GB   |
-//! | 2     | 2        | 1,057,676 | 335,544,320    | 6.5 s      | 7.8 s  | 12.8 GB  | 12.5 GB   |
-//! | 2     | 3        | 1,380,220 | 603,979,776    | 10.9 s     | 19.1 s | 23.5 GB  | 21.9 GB   |
+//! | arity | Keccak | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
+//! |-------|--------|----------|-----------|----------------|------------|--------|----------|-----------|
+//! | 4     | packed | 2        | 857,033   | 117,440,512    | 4.8 s      | 6.4 s  | 6.5 GB   | 5.7 GB    |
+//! | 4     | packed | 3        | 1,145,424 | 117,440,512    | 4.6 s      | 10.2 s | 6.5 GB   | 6.0 GB    |
+//! | 4     | dense  | 2        | 1,049,178 | 335,544,320    | 6.1 s      | 8.1 s  | 12.2 GB  | 11.1 GB   |
+//! | 4     | dense  | 3        | 1,362,313 | 335,544,320    | 7.0 s      | 17.1 s | 14.5 GB  | 12.3 GB   |
+//! | 2     | dense  | 2        | 1,057,676 | 335,544,320    | 6.5 s      | 7.8 s  | 12.8 GB  | 12.5 GB   |
+//! | 2     | dense  | 3        | 1,380,220 | 603,979,776    | 10.9 s     | 19.1 s | 23.5 GB  | 21.9 GB   |
 //!
-//! With `--keccak-commitment packed` (packed log inverse rate 3, arity 4), layer 1 has 8,284
-//! witnesses and 1,048,576 codeword cells, layer 2 has 857,033 witnesses and 117,440,512 cells,
-//! and layer 3 has 1,145,424 witnesses and 117,440,512 cells, with a maximum resident set of
-//! 6.8 GB and a peak footprint of 6.0 GB over `--layers 3`.
+//! At arity 4, layer 1 has 8,284 witnesses and 1,048,576 codeword cells when packed and
+//! 4,718,592 when dense. Layers 2 and 3 pad the witness table to 2^22 rows and the gates table
+//! to 2^20 rows either way, so the packed layers stay clear of the 2^21 gates cliff.
 //!
-//! Layer 1 takes 0.84 s with 8,284 witnesses and 4,718,592 codeword cells. A four-digest node
+//! With dense Keccak tables, layer 1 takes 0.84 s. A four-digest node
 //! absorbs one Keccak-f block, as a pairwise node does, and an opening walks half as many
 //! levels, so layer 3 takes 2,227 Keccak-f calls instead of 2,798. More than 2,621 calls (25
 //! trace rows each) give the Keccak table 2^17 rows instead of 2^16, so only at
@@ -125,7 +127,7 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
     /// Commitment of every recursion layer's Keccak table.
-    #[arg(long, value_enum, default_value_t = KeccakCommitment::Dense)]
+    #[arg(long, value_enum, default_value_t = KeccakCommitment::Packed)]
     keccak_commitment: KeccakCommitment,
     /// Log inverse rate of the packed Keccak commitment; ignored unless the Keccak commitment
     /// is packed.
