@@ -357,7 +357,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             )?,
         )?;
         let pp_cells = add(
-            add(cells(witness_height, 4)?, cells(gate_height, GATE_PP)?)?,
+            add(cells(witness_height, 3)?, cells(gate_height, GATE_PP)?)?,
             add(
                 cells(hash_height, hash_pp)?,
                 cells(bridge_height, BRIDGE_PP)?,
@@ -411,11 +411,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             );
         }
         occurrences.extend(external);
-        occurrences.sort_unstable();
-        let fanout = Arc::new(Fanout {
-            ids: occurrences,
-            height: witness_height,
-        });
+        let fanout = Arc::new(Fanout::new(occurrences, witness_height));
         let gates = Arc::new(Gates {
             rows: gate_rows,
             height: gate_height,
@@ -693,11 +689,23 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
 }
 
 impl Fanout {
-    /// Columns: label, active, same ID as the next row, zero sentinel.
+    fn new(mut ids: Vec<usize>, height: usize) -> Self {
+        ids.sort_unstable();
+        Self { ids, height }
+    }
+
+    /// Whether a gate reads ID 0, the zero sentinel of an absent addend. Sorted, those reads
+    /// are the first rows, each but the last marked the same as the next, so checking the
+    /// first row's value checks them all.
+    fn reads_zero(&self) -> bool {
+        self.ids.first() == Some(&0)
+    }
+
+    /// Columns: label, active, same ID as the next row.
     fn preprocessed<F: BinaryCoordinateField>(&self) -> RowMajorMatrix<F> {
-        let mut pp = vec![F::ZERO; 4 * self.height];
+        let mut pp = vec![F::ZERO; 3 * self.height];
         for ((i, row), &id) in pp
-            .as_chunks_mut::<4>()
+            .as_chunks_mut::<3>()
             .0
             .iter_mut()
             .enumerate()
@@ -706,9 +714,8 @@ impl Fanout {
             row[0] = checked_label(id);
             row[1] = F::ONE;
             row[2] = F::from_bool(self.ids.get(i + 1) == Some(&id));
-            row[3] = F::from_bool(id == 0);
         }
-        RowMajorMatrix::new(pp, 4)
+        RowMajorMatrix::new(pp, 3)
     }
 }
 
@@ -1017,8 +1024,8 @@ fn bind_blake3_elements<F: BinaryCoordinateField>(
 
 // Selectors below six other than SELECT come from the shared frozen primitive gate
 // codec. MulAdd and the fused gates retain the optional addend slot: an absent
-// addend uses the checked zero sentinel. Every other inactive slot can be omitted
-// from the product bus.
+// addend reads the zero sentinel, ID 0, which the fanout checks to be zero. Every
+// other inactive slot can be omitted from the product bus.
 fn gate_slot_used(selector: usize, slot: usize) -> bool {
     match selector {
         0 => slot == 4,
@@ -1057,7 +1064,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
     }
     fn preprocessed_width(&self) -> usize {
         match self.table {
-            Table::Witness(_) => 4,
+            Table::Witness(_) => 3,
             Table::Gates(_) => GATE_PP,
             Table::Public(_) => 0,
             Table::Keccak { .. } => 3,
@@ -1112,9 +1119,11 @@ where
         let preprocessed = b.preprocessed().clone();
         let pp = preprocessed.current_slice();
         match &self.table {
-            Table::Witness(_) => {
+            Table::Witness(fanout) => {
                 b.when(pp[2]).assert_eq(row[0], main.next_slice()[0]);
-                b.when(pp[3]).assert_zero(row[0]);
+                if fanout.reads_zero() {
+                    b.when_first_row().assert_zero(row[0]);
+                }
                 b.push_bus_interaction(
                     BusName::new(self.witness_bus.as_ref()),
                     BusDirection::Pull,

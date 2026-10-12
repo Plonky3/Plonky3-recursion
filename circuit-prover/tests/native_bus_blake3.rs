@@ -526,7 +526,7 @@ fn blake3_table_shape_and_preprocessing() {
         let fanout = prepared.airs()[0].preprocessed_trace().unwrap();
         let reads = fanout
             .values
-            .as_chunks::<4>()
+            .as_chunks::<3>()
             .0
             .iter()
             .filter(|row| row[1] == F::ONE)
@@ -866,7 +866,7 @@ fn fanout_reads<F: BinaryCoordinateField>(prepared: &NativeBusCircuit<F>, id: us
     let pp = prepared.airs()[0].preprocessed_trace().unwrap();
     let label = F::from_raw_coordinates(id as u128 + 1).unwrap();
     pp.values
-        .as_chunks::<4>()
+        .as_chunks::<3>()
         .0
         .iter()
         .filter(|row| row[1] == F::ONE && row[0] == label)

@@ -94,7 +94,7 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
     assert_eq!(prepared.airs()[0].main_next_row_columns(), vec![0]);
     let adjacent = pp
         .values
-        .as_chunks::<4>()
+        .as_chunks::<3>()
         .0
         .iter()
         .position(|row| row[0] != F::ZERO && row[2] == F::ONE)
@@ -130,7 +130,7 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
             .sum::<usize>();
     assert_eq!(
         pp.values
-            .as_chunks::<4>()
+            .as_chunks::<3>()
             .0
             .iter()
             .filter(|row| row[1] == F::ONE)
@@ -139,14 +139,14 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
     );
     let last_live = pp
         .values
-        .as_chunks::<4>()
+        .as_chunks::<3>()
         .0
         .iter()
         .rposition(|row| row[1] == F::ONE)
         .unwrap();
-    assert_eq!(pp.values[4 * last_live + 2], F::ZERO);
-    for row in pp.values.as_chunks::<4>().0.iter().skip(last_live + 1) {
-        assert_eq!(row, &[F::ZERO; 4]);
+    assert_eq!(pp.values[3 * last_live + 2], F::ZERO);
+    for row in pp.values.as_chunks::<3>().0.iter().skip(last_live + 1) {
+        assert_eq!(row, &[F::ZERO; 3]);
     }
     assert!(prepared.public_values(&[a]).is_err());
     for namespace in ["", "0bus", "bad/name", "bad name", "memοry"] {
@@ -164,6 +164,133 @@ fn fanout_copies_and_unused_gate_slots_are_constrained() {
             }
         )
         .is_err()
+    );
+}
+
+/// A Boolean bit times a constant has no addend, so its gate reads the zero sentinel, ID 0, in
+/// the addend slot. The zero reads sort to the fanout's first rows, chained by the same-as-next
+/// column, and the first row's value is checked to be zero. A gate row accepts any value under
+/// label 0, so the fanout alone refuses a forged sentinel: at the first row even when every
+/// zero read agrees, and at a later zero read through the chain.
+#[test]
+fn absent_addends_read_a_zero_sentinel_checked_at_the_first_fanout_row() {
+    let mut b = CircuitBuilder::<F>::new();
+    let expected = [b.public_input(), b.public_input()];
+    let bits = b.alloc_private_input_array::<2>("bits");
+    for (k, (&bit, &expected)) in bits.iter().zip(&expected).enumerate() {
+        b.assert_bool(bit);
+        let weight = b.define_const(F::from_raw_coordinates(3 + k as u128).unwrap());
+        let product = b.mul(bit, weight);
+        b.connect(product, expected);
+    }
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "zero").unwrap();
+    let statement = [F::from_raw_coordinates(3).unwrap(), F::ZERO];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    runner.set_private_inputs(&[F::ONE, F::ZERO]).unwrap();
+    let traces = prepared
+        .traces(&runner.run().unwrap().witness_trace)
+        .unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+
+    let fanout = &prepared.airs()[0];
+    assert_eq!(fanout.preprocessed_width(), 3);
+    let pp = fanout.preprocessed_trace().unwrap();
+    let rows = pp.values.as_chunks::<3>().0;
+    let zero_reads: Vec<usize> = (0..rows.len())
+        .filter(|&row| rows[row][1] == F::ONE && rows[row][0] == F::ZERO)
+        .collect();
+    assert_eq!(zero_reads, [0, 1]);
+    assert_eq!([rows[0][2], rows[1][2]], [F::ONE, F::ZERO]);
+
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let gate_rows = gate_pp.values.as_chunks::<14>().0;
+    // Rows of selector 7, a Boolean multiplicand times the constant, whose addend reads ID 0.
+    let absent: Vec<usize> = (0..gate_rows.len())
+        .filter(|&row| gate_rows[row][6 + 7] == F::ONE && gate_rows[row][2] == F::ZERO)
+        .collect();
+    assert_eq!(absent.len(), 2);
+    let mut gates = traces[1].clone();
+    for &row in &absent {
+        let cells = &mut gates.values[5 * row..5 * (row + 1)];
+        cells[2] = F::ONE;
+        cells[4] = cells[0] * gate_rows[row][5] + F::ONE;
+    }
+    check_constraints(&prepared.airs()[1], &gates, &[]);
+
+    let refuses = |forged_rows: &[usize]| {
+        let mut forged = traces[0].clone();
+        for &row in forged_rows {
+            forged.values[row] = F::ONE;
+        }
+        std::panic::catch_unwind(|| check_constraints(fanout, &forged, &[])).is_err()
+    };
+    assert!(refuses(&[0, 1]));
+    assert!(refuses(&[0]));
+    assert!(refuses(&[1]));
+}
+
+/// Without an absent addend nothing reads the zero sentinel, and the fanout leaves its first row
+/// unchecked. Here that row reads witness 0, the constant zero, which its constant gate checks:
+/// every read of it forged to one passes the fanout and is refused by the gate table.
+#[test]
+fn a_fanout_without_zero_reads_leaves_its_first_row_unchecked() {
+    let mut b = CircuitBuilder::<F>::new();
+    let input = b.public_input();
+    let expected = b.public_input();
+    let square = b.mul(input, input);
+    b.connect(square, expected);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "free").unwrap();
+    let a = F::from_raw_coordinates(0x8123).unwrap();
+    let statement = [a, a * a];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let traces = prepared
+        .traces(&runner.run().unwrap().witness_trace)
+        .unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+    let fanout = &prepared.airs()[0];
+    assert_eq!(fanout.preprocessed_width(), 3);
+    let pp = fanout.preprocessed_trace().unwrap();
+    let rows = pp.values.as_chunks::<3>().0;
+    assert!(
+        rows.iter()
+            .all(|row| row[1] == F::ZERO || row[0] != F::ZERO)
+    );
+    let first = rows[0][0];
+    assert_eq!(first, F::ONE);
+
+    let mut forged = traces[0].clone();
+    for (value, row) in forged.values.iter_mut().zip(rows) {
+        if row[1] == F::ONE && row[0] == first {
+            *value = F::ONE;
+        }
+    }
+    check_constraints(fanout, &forged, &[]);
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let mut gates = traces[1].clone();
+    for (cell, &label) in gates.values.iter_mut().zip(
+        gate_pp
+            .values
+            .as_chunks::<14>()
+            .0
+            .iter()
+            .flat_map(|row| &row[..5]),
+    ) {
+        if label == first {
+            *cell = F::ONE;
+        }
+    }
+    assert!(
+        std::panic::catch_unwind(|| check_constraints(&prepared.airs()[1], &gates, &[])).is_err()
     );
 }
 
@@ -215,7 +342,7 @@ fn constant_products_check_their_multiplicands_in_one_row() {
     let fanout = prepared.airs()[0].preprocessed_trace().unwrap();
     let reads = fanout
         .values
-        .as_chunks::<4>()
+        .as_chunks::<3>()
         .0
         .iter()
         .filter(|row| row[1] == F::ONE)
