@@ -6,7 +6,7 @@
 //! commits its hash table: as packed bits, 128 per field element, beside a dense commitment of
 //! every other table, or as field elements like every other table, and `--merkle-arity 4|2`
 //! selects four-digest or pairwise Merkle trees for every layer's commitments (default 2, and 4
-//! under Keccak, since a four-digest node costs two Blake3 compressions). With
+//! under Keccak, since under Blake3 a four-digest tree saves no compressions). With
 //! `--pcs folding`, which commits every table densely, `--leaves coset|symbol` selects whether
 //! each Merkle leaf is one fold coset or one codeword symbol.
 //!
@@ -37,11 +37,12 @@
 //! | `--merkle-arity 4 --layers 3` | 4     | 5.0 s      | 12.4 s | 3.5 GB   | 3.2 GB    |
 //!
 //! Blake3 proves the last layer in under half the time of Keccak with less memory, and its
-//! proofs are 68% larger. A four-digest node costs two Blake3 compressions instead of one, so
-//! under Blake3 arity 2 is faster than arity 4.
+//! proofs are 68% larger. A four-digest node costs two Blake3 compressions, so under Blake3 a
+//! four-digest tree saves no compressions over half the levels while it opens three siblings
+//! per level, and arity 2 is faster.
 //!
 //! Other jobs shared the machine, so wall times are noisy. The user CPU time of a whole run
-//! varied far less: 94 to 98 s for the default against 195 to 214 s for `--hash keccak
+//! varied far less: 94 to 97 s for the default against 195 to 214 s for `--hash keccak
 //! --layers 3`. Layer 1 has 4,518 witnesses and takes 0.6 s under the default, and 7,817
 //! witnesses and 0.6 s under `--hash keccak`. The default codeword-cell limit is 2^29 at
 //! `--log-inv-rate 1`, doubled for each further rate bit and for `--pcs folding`, which

@@ -14,7 +14,8 @@ prime fields this repository is built on:
 ## What this repository supports today
 
 The repository supports complete native binary recursion for Tower128, and for
-Poly64 with Poly192 challenges, using additive WHIR, product buses and native Keccak or Blake3 hash tables.
+Poly64 with Poly192 challenges, using additive WHIR, product buses and native
+Keccak or Blake3 hash tables.
 The Tower128 owner also accepts Tower32 children. It separately verifies binary
 PCS and additive-WHIR proofs inside prime-field circuits, including indexed
 lookup variants. `recursion/examples/native_binary_recursion.rs` and
@@ -107,10 +108,11 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
   from constrained bits, avoiding the indexed backend's 100 extra limb columns.
 - **Full native Tower128 recursion.**
   `prepared::PreparedNativeBinaryWhirLayer` builds a complete native scalar
-  verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark authority, including product
-  GKR, generic sumcheck, AIR evaluation and both main/preprocessing openings.
-  It proves that verifier over Tower128 using native hash tables (Keccak or Blake3) and product buses,
-  and verifies against independently supplied child public values. Checked
+  verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark
+  authority, including product GKR, generic sumcheck, AIR evaluation and both
+  main/preprocessing openings. It proves that verifier over Tower128 using
+  native hash tables (Keccak or Blake3) and product buses, and verifies
+  against independently supplied child public values. Checked
   child tokens must match the retained authority identity before packing or
   witness execution. The output authority can be used as the next layer's
   trusted child. `recursion/examples/native_binary_recursion.rs` demonstrates
@@ -198,11 +200,12 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
   still supplies trusted row widths, heights and serialization rules.
   `verify_byte_hash_mmcs_opening_bytes_with_host_arity::<_, 4>` opens trees
   whose nodes compress four digests, in the level order of p3's
-  `MerkleTreeMmcs`. A four-digest node hashes 128 bytes, one Keccak-f block like a
-  pairwise node, so a path takes about half the Keccak-f calls. A native WHIR
-  recursion layer chooses its output trees' arity in
-  `NativeBinaryRecursionOptions::arity`; both native recursion examples use four
-  digests unless given `--merkle-arity 2`.
+  `MerkleTreeMmcs`. Under Keccak a four-digest node hashes 128 bytes, one
+  Keccak-f block like a pairwise node, so a path takes about half the Keccak-f
+  calls. A native WHIR recursion layer chooses its output trees' arity in
+  `NativeBinaryRecursionOptions::arity`; both native recursion examples use
+  pairwise trees by default and four-digest trees under `--hash keccak`, and
+  `--merkle-arity` overrides the arity.
 - **Binary hash configurations.** `p3_test_utils::binary_field_params` provides the
   configuration `p3-binary-pcs` tests with, once per hash (`keccak` and `blake3` submodules
   with identical item names):
