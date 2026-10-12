@@ -13,9 +13,29 @@ use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId, NpoTypeId};
 use p3_keccak::Keccak256Hash;
 use p3_recursion::BinaryTower128Challenger;
-use p3_symmetric::Hash;
+use p3_symmetric::{CryptographicHasher, Hash};
 
 type E = NativeBinaryEncoding;
+
+/// A byte hash with its native hasher, so a script runs under either.
+trait NativeHash: CryptographicHasher<u8, [u8; 32]> + Clone + Send + Sync + 'static {
+    const HASH: ByteHash;
+}
+
+impl NativeHash for Keccak256Hash {
+    const HASH: ByteHash = ByteHash::Keccak256;
+}
+
+impl NativeHash for Blake3 {
+    const HASH: ByteHash = ByteHash::Blake3;
+}
+
+fn enable_hash<F: BinaryCoordinateField, H: NativeHash>(b: &mut CircuitBuilder<F>) {
+    match H::HASH {
+        ByteHash::Keccak256 => b.enable_native_keccak_f1600().unwrap(),
+        ByteHash::Blake3 => b.enable_native_blake3_compress().unwrap(),
+    }
+}
 
 fn bind_bits<F: BinaryCoordinateField>(b: &mut CircuitBuilder<F>, bits: &[ExprId], raw: u128) {
     for (i, &bit) in bits.iter().enumerate() {
@@ -24,19 +44,15 @@ fn bind_bits<F: BinaryCoordinateField>(b: &mut CircuitBuilder<F>, bits: &[ExprId
     }
 }
 
-fn bytes_and_tower<F: BinaryCoordinateField>() {
+fn bytes_and_tower<F: BinaryCoordinateField, H: NativeHash>(hasher: H) {
     let initial = [3u8, 251, 7, 129, 11, 17, 193];
-    let mut native =
-        BinaryChallenger::<BinaryField8, _>::from_hasher(initial.to_vec(), Keccak256Hash);
+    let mut native = BinaryChallenger::<BinaryField8, _>::from_hasher(initial.to_vec(), hasher);
     let mut b = CircuitBuilder::<F>::new();
-    b.enable_native_keccak_f1600().unwrap();
+    enable_hash::<F, H>(&mut b);
     let input = b.alloc_public_input_array::<7>("initial bytes");
-    let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(
-        &mut b,
-        ByteHash::Keccak256,
-        &input,
-    )
-    .unwrap();
+    let mut ch =
+        BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(&mut b, H::HASH, &input)
+            .unwrap();
     for count in [1, 16, 7, 24, 17, 0] {
         let bytes = ch.sample_bytes_with_host::<E, F>(&mut b, count).unwrap();
         for byte in bytes {
@@ -79,22 +95,28 @@ fn bytes_and_tower<F: BinaryCoordinateField>() {
 
 #[test]
 fn native_tower_and_polynomial_carriers_match_byte_and_tower_draws() {
-    bytes_and_tower::<BinaryField128>();
-    bytes_and_tower::<Poly64>();
+    bytes_and_tower::<BinaryField128, _>(Keccak256Hash);
+    bytes_and_tower::<Poly64, _>(Keccak256Hash);
 }
 
 #[test]
-fn native_poly192_draws_preserve_coefficients_and_partial_refills() {
+fn native_blake3_tower_and_polynomial_carriers_match_byte_and_tower_draws() {
+    bytes_and_tower::<BinaryField128, _>(Blake3);
+    bytes_and_tower::<Poly64, _>(Blake3);
+}
+
+fn poly192_draws<H: NativeHash>(hasher: H) {
+    type F = Poly64;
     let mut native = BinaryChallenger::<Poly64, HashChallenger<u8, _, 32>>::from_hasher(
         vec![129, 3, 251],
-        Keccak256Hash,
+        hasher,
     );
     let mut b = CircuitBuilder::<Poly64>::new();
-    b.enable_native_keccak_f1600().unwrap();
+    enable_hash::<F, H>(&mut b);
     let initial = [129u16, 3, 251].map(|word| b.define_const(E::encode_u16(word).unwrap()));
     let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<E, Poly64>(
         &mut b,
-        ByteHash::Keccak256,
+        H::HASH,
         &initial,
     )
     .unwrap();
@@ -119,6 +141,16 @@ fn native_poly192_draws_preserve_coefficients_and_partial_refills() {
             .unwrap();
     }
     b.build().unwrap().runner().run().unwrap();
+}
+
+#[test]
+fn native_poly192_draws_preserve_coefficients_and_partial_refills() {
+    poly192_draws(Keccak256Hash);
+}
+
+#[test]
+fn native_blake3_poly192_draws_preserve_coefficients_and_partial_refills() {
+    poly192_draws(Blake3);
 }
 
 #[test]
@@ -167,24 +199,20 @@ fn failed_refill_can_be_retried_and_zero_work_preserves_state() {
     b.build().unwrap().runner().run().unwrap();
 }
 
-#[test]
-fn native_limbs_digest_and_grinding_keep_the_next_draw_bound() {
+fn limbs_digest_and_grinding<H: NativeHash>(hasher: H) {
     type F = BinaryField128;
     let initial = [0xabcdu16, 0x9812];
     let digest: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(129));
     let mut native = BinaryChallenger::<F, _>::from_hasher(
         initial.into_iter().flat_map(u16::to_le_bytes).collect(),
-        Keccak256Hash,
+        hasher,
     );
     let mut b = CircuitBuilder::<F>::new();
-    b.enable_native_keccak_f1600().unwrap();
+    enable_hash::<F, H>(&mut b);
     let input = b.alloc_public_input_array::<2>("initial words");
-    let mut ch = BinaryTower128Challenger::with_initial_limbs_with_host::<E, F>(
-        &mut b,
-        ByteHash::Keccak256,
-        &input,
-    )
-    .unwrap();
+    let mut ch =
+        BinaryTower128Challenger::with_initial_limbs_with_host::<E, F>(&mut b, H::HASH, &input)
+            .unwrap();
     let raw = 0x9123456789abcdef0123456789abcdef;
     let observed = b.binary128_constant(raw).unwrap();
     native.observe(F::from_repr(raw));
@@ -242,32 +270,37 @@ fn native_limbs_digest_and_grinding_keep_the_next_draw_bound() {
     );
 }
 
+#[test]
+fn native_limbs_digest_and_grinding_keep_the_next_draw_bound() {
+    limbs_digest_and_grinding(Keccak256Hash);
+}
+
+#[test]
+fn native_blake3_limbs_digest_and_grinding_keep_the_next_draw_bound() {
+    limbs_digest_and_grinding(Blake3);
+}
+
 /// Words observed whole sample exactly like the same values observed as
 /// checked bytes, and like the native transcript: in an odd-length input, a
 /// word-aligned input, words at odd offsets and a two-block input.
-#[test]
-fn native_word_observations_sample_like_byte_observations() {
+fn word_observations<H: NativeHash>(hasher: H) {
     type F = BinaryField128;
     const BYTE: u8 = 201;
     let initial = [3u8, 251, 7];
     let values: [u128; 12] = core::array::from_fn(|i| {
         0x8123_4567_89ab_cdef_0fed_cba9_8765_4321u128.rotate_left(11 * i as u32) ^ i as u128
     });
-    let mut native =
-        BinaryChallenger::<BinaryField8, _>::from_hasher(initial.to_vec(), Keccak256Hash);
+    let mut native = BinaryChallenger::<BinaryField8, _>::from_hasher(initial.to_vec(), hasher);
     let mut b = CircuitBuilder::<F>::new();
-    b.enable_native_keccak_f1600().unwrap();
+    enable_hash::<F, H>(&mut b);
     let input = b.alloc_public_input_array::<3>("initial bytes");
     let observed = b.alloc_public_input_array::<12>("observed values");
     // The byte challenger reads its own copy of the values, so a change to
     // `observed` reaches the samples only through the word challenger.
     let copies = b.alloc_public_input_array::<12>("checked copies");
-    let mut words = BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(
-        &mut b,
-        ByteHash::Keccak256,
-        &input,
-    )
-    .unwrap();
+    let mut words =
+        BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(&mut b, H::HASH, &input)
+            .unwrap();
     let mut bytes = words.clone();
     let byte = [b.define_const(E::encode_u16(u16::from(BYTE)).unwrap())];
     // Values observed before each draw; the third phase brackets them with a
@@ -346,22 +379,32 @@ fn native_word_observations_sample_like_byte_observations() {
     }
 }
 
+#[test]
+fn native_word_observations_sample_like_byte_observations() {
+    word_observations(Keccak256Hash);
+}
+
+#[test]
+fn native_blake3_word_observations_sample_like_byte_observations() {
+    word_observations(Blake3);
+}
+
 /// A public word observed whole is range-checked by every refill path:
 /// absorbed as a lane at an even offset, split at an odd offset, and split
 /// in an odd-length input. A seventeenth coordinate is rejected, although
 /// the low sixteen coordinates hash and sample honestly.
-fn out_of_range_observed_words<F: BinaryCoordinateField>() {
+fn out_of_range_observed_words<F: BinaryCoordinateField, H: NativeHash>(hasher: &H) {
     const WORD: u16 = 0xb7e5;
     // Bytes before and after the word: even offset, odd offset, odd length.
     for (before, after) in [(&[3u8, 251][..], &[][..]), (&[3], &[7]), (&[3, 251], &[7])] {
         let mut native =
-            BinaryChallenger::<BinaryField8, _>::from_hasher(before.to_vec(), Keccak256Hash);
+            BinaryChallenger::<BinaryField8, _>::from_hasher(before.to_vec(), hasher.clone());
         for &byte in WORD.to_le_bytes().iter().chain(after) {
             native.observe(BinaryField8::from_repr(byte));
         }
         let expected: BinaryField128 = native.sample();
         let mut b = CircuitBuilder::<F>::new();
-        b.enable_native_keccak_f1600().unwrap();
+        enable_hash::<F, H>(&mut b);
         let initial: Vec<_> = before
             .iter()
             .map(|&byte| b.define_const(E::encode_u16(u16::from(byte)).unwrap()))
@@ -373,7 +416,7 @@ fn out_of_range_observed_words<F: BinaryCoordinateField>() {
         let word = b.public_input();
         let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(
             &mut b,
-            ByteHash::Keccak256,
+            H::HASH,
             &initial,
         )
         .unwrap();
@@ -404,6 +447,88 @@ fn out_of_range_observed_words<F: BinaryCoordinateField>() {
 
 #[test]
 fn native_out_of_range_observed_words_are_rejected_on_every_absorb_path() {
-    out_of_range_observed_words::<BinaryField128>();
-    out_of_range_observed_words::<Poly64>();
+    out_of_range_observed_words::<BinaryField128, _>(&Keccak256Hash);
+    out_of_range_observed_words::<Poly64, _>(&Keccak256Hash);
+}
+
+#[test]
+fn native_blake3_out_of_range_observed_words_are_rejected_on_every_absorb_path() {
+    out_of_range_observed_words::<BinaryField128, _>(&Blake3);
+    out_of_range_observed_words::<Poly64, _>(&Blake3);
+}
+
+/// Observations longer than a kibibyte, of odd lengths and mixed bytes and
+/// words, refill like the native transcript, and the draws bind every
+/// observed value. Under BLAKE3 the first refill hashes several chunks.
+fn long_observations<F: BinaryCoordinateField, H: NativeHash>(hasher: H) {
+    const INITIAL: usize = 5;
+    // (bytes observed, words observed) before each draw.
+    const PHASES: [(usize, usize); 5] = [(1100, 0), (33, 0), (0, 700), (1, 513), (7, 1)];
+    let byte = |i: usize| (i * 73 + 11) as u8;
+    let word = |i: usize| (i * 40503 + 7) as u16;
+    let mut native =
+        BinaryChallenger::<BinaryField8, _>::from_hasher((0..INITIAL).map(byte).collect(), hasher);
+    let mut b = CircuitBuilder::<F>::new();
+    enable_hash::<F, H>(&mut b);
+    let initial = b.alloc_public_input_array::<INITIAL>("initial bytes");
+    let mut ch =
+        BinaryTower128Challenger::with_initial_bytes_with_host::<E, F>(&mut b, H::HASH, &initial)
+            .unwrap();
+    let encode = |limb: u16| -> F { E::encode_u16(limb).unwrap() };
+    let mut public: Vec<F> = (0..INITIAL).map(|i| encode(u16::from(byte(i)))).collect();
+    for (bytes, words) in PHASES {
+        let observed = b.alloc_public_inputs(bytes, "observed bytes");
+        public.extend((0..bytes).map(|i| encode(u16::from(byte(i)))));
+        for i in 0..bytes {
+            native.observe(BinaryField8::from_repr(byte(i)));
+        }
+        ch.observe_bytes_with_host::<E, F>(&mut b, &observed)
+            .unwrap();
+        let observed = b.alloc_public_inputs(words, "observed words");
+        public.extend((0..words).map(|i| encode(word(i))));
+        for i in 0..words {
+            for byte in word(i).to_le_bytes() {
+                native.observe(BinaryField8::from_repr(byte));
+            }
+        }
+        ch.observe_words_with_host::<E, F>(&mut b, &observed)
+            .unwrap();
+        let expected: BinaryField128 = native.sample();
+        let actual = ch.sample_with_host::<E, F>(&mut b).unwrap();
+        bind_bits(&mut b, actual.bits(), expected.to_repr());
+        let expected = native.sample_bits(21);
+        let bits = ch.sample_bits_with_host::<E, F>(&mut b, 21).unwrap();
+        bind_bits(&mut b, &bits, expected as u128);
+    }
+    let circuit = b.build().unwrap();
+    let runs = |public: &[F]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    assert!(runs(&public));
+    for index in [
+        0,
+        INITIAL + 1099,
+        INITIAL + 1100 + 33 + 699,
+        public.len() - 1,
+    ] {
+        let mut wrong = public.clone();
+        wrong[index] += F::ONE;
+        assert!(!runs(&wrong), "changed observed value {index}");
+    }
+}
+
+#[test]
+fn native_long_observations_refill_like_the_native_transcript() {
+    long_observations::<BinaryField128, _>(Keccak256Hash);
+    long_observations::<Poly64, _>(Keccak256Hash);
+}
+
+#[test]
+fn native_blake3_long_observations_refill_like_the_native_transcript() {
+    long_observations::<BinaryField128, _>(Blake3);
+    long_observations::<Poly64, _>(Blake3);
 }

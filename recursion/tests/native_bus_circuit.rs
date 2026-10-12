@@ -2057,12 +2057,145 @@ fn native_blake3_bytes_prove_the_digest_of_a_multi_chunk_message() {
     assert!(tower_accepts(&prepared, public)(traces));
 }
 
-/// A message limb reaches the table as a block input, read by no gate. A limb with a
-/// seventeenth coordinate passes the fanout rows; the table's bits cannot carry it, so the
-/// witness bus refuses the traces, and lifting the limb's lowest bit to carry it leaves a cell
-/// outside {0, 1}, which the dense table refuses. `LIMBS` private limbs span three blocks.
-#[test]
-fn native_blake3_blocks_range_check_message_limbs() {
+/// The honest run of a circuit with native BLAKE3 calls, against which one wide input limb is
+/// forged at a time.
+struct Blake3Forgery<'a, F: BinaryCoordinateField> {
+    circuit: &'a Circuit<F>,
+    prepared: &'a NativeBusCircuit<F>,
+    statement: &'a [F],
+    public: Vec<Vec<F>>,
+    honest: Vec<F>,
+    traces: Vec<RowMajorMatrix<F>>,
+    calls: Vec<(Vec<WitnessId>, Vec<WitnessId>)>,
+    table: usize,
+    accepts: Accepts<F>,
+}
+
+impl<'a, F: BinaryCoordinateField> Blake3Forgery<'a, F> {
+    /// Runs `circuit` honestly and asserts that `accepts` proves its traces.
+    fn new(
+        circuit: &'a Circuit<F>,
+        prepared: &'a NativeBusCircuit<F>,
+        statement: &'a [F],
+        private: &[F],
+        accepts: Accepts<F>,
+    ) -> Self {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(statement).unwrap();
+        runner.set_private_inputs(private).unwrap();
+        let witness = runner.run().unwrap().witness_trace;
+        let traces = prepared.traces(&witness).unwrap();
+        assert!(accepts(traces.clone()), "the honest traces prove");
+        Self {
+            circuit,
+            prepared,
+            statement,
+            public: prepared.public_values(statement).unwrap(),
+            honest: witness_values(&witness),
+            traces,
+            calls: blake3_calls(circuit),
+            table: blake3_table(prepared),
+            accepts,
+        }
+    }
+
+    /// Whether the local constraints of the BLAKE3 table fail on `trace`.
+    fn table_fails_locally(&self, trace: &RowMajorMatrix<F>) -> bool {
+        catch_unwind(AssertUnwindSafe(|| {
+            check_constraints(&self.prepared.airs()[self.table], trace, &[]);
+        }))
+        .is_err()
+    }
+
+    /// Forges `forged_private`, whose one changed private input is a limb with a seventeenth
+    /// coordinate, and returns the `(call, input)` of the only BLAKE3 input it changes. The
+    /// runner refuses the limb. A prover who keeps the `claimed` hint and call outputs satisfies
+    /// every fanout and gate row, and the BLAKE3 table, which holds no bridge, cannot carry the
+    /// limb in its bits, so the witness bus refuses the traces. Lifting the limb's lowest bit to
+    /// carry it balances the bus and leaves a cell outside {0, 1}. `through_gates` is whether
+    /// gate rows read the forged value. The limb must be a block input of its call.
+    fn reject_wide_limb(
+        &self,
+        claimed: &[F],
+        forged_private: &[F],
+        through_gates: bool,
+    ) -> (usize, usize) {
+        let wide = F::from_raw_coordinates(1 << 16).unwrap();
+        let mut runner = self.circuit.runner();
+        runner.set_public_inputs(self.statement).unwrap();
+        runner.set_private_inputs(forged_private).unwrap();
+        assert!(runner.run().is_err(), "the runner refuses a wide limb");
+
+        let forged = replay(self.circuit, claimed, self.statement, forged_private);
+        let changed: Vec<_> = self
+            .calls
+            .iter()
+            .enumerate()
+            .flat_map(|(c, (inputs, _))| {
+                inputs
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, id)| forged[id.0 as usize] != self.honest[id.0 as usize])
+                    .map(move |(i, _)| (c, i))
+            })
+            .collect();
+        let [(call, index)] = changed[..] else {
+            panic!("exactly one wide BLAKE3 input limb, got {changed:?}");
+        };
+        assert!(index < 32, "a block input");
+        let mut traces = self.traces.clone();
+        let [fanout, gates, bridge] =
+            patch_witness_cells(self.prepared.airs(), &mut traces, &self.honest, &forged);
+        assert!(fanout > 0 && bridge == 0 && (gates > 0) == through_gates);
+        // Only the witness bus can reject this: every table holds locally.
+        for ((air, trace), public) in self.prepared.airs().iter().zip(&traces).zip(&self.public) {
+            check_constraints(air, trace, public);
+        }
+        assert!(
+            !(self.accepts)(traces.clone()),
+            "the table carries a wide limb"
+        );
+
+        // The limb's bits are bits `16 * (index % 2)..` of block word `index / 2`.
+        let bit = |t: usize| {
+            call * NUM_BLAKE3_BINARY_COLS
+                + blake3_column(|cols| cols.block[index / 2][16 * (index % 2) + t])
+        };
+        let packed = (0..16).fold(F::ZERO, |sum, t| {
+            sum + traces[self.table].values[bit(t)] * F::from_raw_coordinates(1 << t).unwrap()
+        });
+        assert_eq!(packed, self.honest[self.calls[call].0[index].0 as usize]);
+        traces[self.table].values[bit(0)] += wide;
+        assert!(
+            self.table_fails_locally(&traces[self.table]),
+            "the lifted bit leaves a non-Boolean cell"
+        );
+        assert!(
+            !(self.accepts)(traces),
+            "the dense table carries a wide limb"
+        );
+        (call, index)
+    }
+
+    /// A padding row of the table has a bit outside {0, 1}: its constraints refuse it, although
+    /// no bus row reads it.
+    fn reject_non_boolean_padding_cell(&self) {
+        let height = self.traces[self.table].values.len() / NUM_BLAKE3_BINARY_COLS;
+        assert!(self.calls.len() < height, "a padding row");
+        let mut padded = self.traces.clone();
+        let cell = (height - 1) * NUM_BLAKE3_BINARY_COLS + blake3_column(|cols| cols.block[0][0]);
+        padded[self.table].values[cell] = F::from_raw_coordinates(1 << 16).unwrap();
+        assert!(self.table_fails_locally(&padded[self.table]));
+        assert!(!(self.accepts)(padded));
+    }
+}
+
+/// 80 private limbs are hashed in three blocks. `hash` binds the BLAKE3 digest of the limbs'
+/// bytes to the 16 public digest words. Limb 5 is input 5 of the first block; limb 70 is input
+/// 6 of the third.
+fn reject_wide_blake3_message_words(
+    hash: impl FnOnce(&mut CircuitBuilder<F>, &[ExprId], &[ExprId]),
+) {
     const LIMBS: usize = 80;
     let limbs: Vec<u16> = (0..LIMBS as u16)
         .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
@@ -2074,10 +2207,7 @@ fn native_blake3_blocks_range_check_message_limbs() {
     b.enable_native_blake3_compress().unwrap();
     let expected = b.alloc_public_input_array::<16>("digest");
     let message = b.alloc_private_inputs(LIMBS, "message limbs");
-    let actual = b.native_blake3_words(&message).unwrap();
-    for (&actual, &expected) in actual.iter().zip(&expected) {
-        b.connect(actual, expected);
-    }
+    hash(&mut b, &message, &expected);
     let circuit = b.build().unwrap();
     let statement: Vec<F> = bytes_to_limbs(&digest)
         .into_iter()
@@ -2086,67 +2216,535 @@ fn native_blake3_blocks_range_check_message_limbs() {
     let private: Vec<F> = limbs.iter().map(|&limb| limb_value(limb)).collect();
 
     let prepared = NativeBusCircuit::new(&circuit, "words").unwrap();
-    let table = blake3_table(&prepared);
     let public = prepared.public_values(&statement).unwrap();
-    let mut runner = circuit.runner();
-    runner.set_public_inputs(&statement).unwrap();
-    runner.set_private_inputs(&private).unwrap();
-    let witness = runner.run().unwrap().witness_trace;
-    let honest = witness_values(&witness);
-    let honest_traces = prepared.traces(&witness).unwrap();
-    let accepts = tower_accepts(&prepared, public.clone());
-    assert!(accepts(honest_traces.clone()));
-
-    let calls = blake3_calls(&circuit);
-    assert_eq!(calls.len(), 3, "three blocks");
+    let forgery = Blake3Forgery::new(
+        &circuit,
+        &prepared,
+        &statement,
+        &private,
+        tower_accepts(&prepared, public),
+    );
+    assert_eq!(forgery.calls.len(), 3, "three blocks");
     let wide = F::from_raw_coordinates(1 << 16).unwrap();
-    // Limb 5 is input 5 of the first block; limb 70 is input 6 of the third.
-    for (limb, call, index) in [(5, 0, 5), (70, 2, 6)] {
+    for (limb, at) in [(5, (0, 5)), (70, (2, 6))] {
         let mut forged_private = private.clone();
         forged_private[limb] += wide;
-        let mut runner = circuit.runner();
-        runner.set_public_inputs(&statement).unwrap();
-        runner.set_private_inputs(&forged_private).unwrap();
-        assert!(runner.run().is_err(), "the runner refuses a wide limb");
-
-        let forged = replay(&circuit, &honest, &statement, &forged_private);
-        let changed: Vec<_> = calls
-            .iter()
-            .enumerate()
-            .flat_map(|(c, (inputs, _))| {
-                inputs
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, id)| forged[id.0 as usize] != honest[id.0 as usize])
-                    .map(move |(i, _)| (c, i))
-            })
-            .collect();
-        assert_eq!(changed, [(call, index)], "limb {limb}");
-        let mut traces = honest_traces.clone();
-        let [fanout, gates, bridge] =
-            patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
-        assert!(fanout > 0 && gates == 0 && bridge == 0);
-        for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
-            check_constraints(air, trace, public);
-        }
-        assert!(!accepts(traces.clone()), "the table carries a wide limb");
-
-        // The limb's bits are bits `16 * (index % 2)..` of block word `index / 2`.
-        let bit = |t: usize| {
-            call * NUM_BLAKE3_BINARY_COLS
-                + blake3_column(|cols| cols.block[index / 2][16 * (index % 2) + t])
-        };
-        let packed = (0..16).fold(F::ZERO, |sum, t| {
-            sum + traces[table].values[bit(t)] * F::from_raw_coordinates(1 << t).unwrap()
-        });
-        assert_eq!(packed, honest[calls[call].0[index].0 as usize]);
-        traces[table].values[bit(0)] += wide;
-        let local = catch_unwind(AssertUnwindSafe(|| {
-            check_constraints(&prepared.airs()[table], &traces[table], &[]);
-        }));
-        assert!(local.is_err(), "the lifted bit leaves a non-Boolean cell");
-        assert!(!accepts(traces), "the dense table carries a wide limb");
+        let forged = forgery.reject_wide_limb(&forgery.honest, &forged_private, false);
+        assert_eq!(forged, at, "limb {limb}");
     }
+    forgery.reject_non_boolean_padding_cell();
+}
+
+/// The host word hash that absorbs observed transcript words.
+#[test]
+fn native_blake3_words_range_check_words_in_blocks() {
+    reject_wide_blake3_message_words(|b, message, expected| {
+        let digest = NativeBinaryEncoding::hash_words(b, ByteHash::Blake3, message).unwrap();
+        for (&limb, &expected) in digest.iter().zip(expected) {
+            b.connect(limb, expected);
+        }
+    });
+}
+
+/// The subtree gadget that hashes grouped coset leaves: one leaf of a one-row tree, whose
+/// digest is the only cap root.
+#[test]
+fn native_blake3_words_range_check_subtree_leaf_words_in_blocks() {
+    reject_wide_blake3_message_words(|b, message, expected| {
+        b.verify_byte_hash_mmcs_subtree_words_with_host::<NativeBinaryEncoding>(
+            ByteHash::Blake3,
+            &[message.to_vec()],
+            1,
+            &[],
+            &[],
+            &[expected.to_vec()],
+        )
+        .unwrap();
+    });
+}
+
+/// A native WHIR leaf splits each opened value into `count` hinted words bound by
+/// `value = sum_j word_j * x_(16j)`, where `x_c` has the single raw coordinate `c`, and hashes
+/// them as BLAKE3 block limbs. `split` emits that split and `accepts` proves traces of the
+/// prepared circuit. Each forgery `(value, word, moved)` flips coordinate `moved` of a value and
+/// adds `x_moved / x_(16 * word)` to that word, which keeps the sum. The quotient has no
+/// coordinate below sixteen, so every limb keeps the sixteen low coordinates it hashes and only
+/// the table's range check separates the forged opening from the committed one: limb
+/// `value * count + word` of the leaf turns wide, the fanout and gate rows accept it, the
+/// witness bus does not, and lifting the table's bit instead leaves a cell outside {0, 1}.
+fn reject_wide_blake3_leaf_words<F: BinaryCoordinateField>(
+    values: &[F],
+    count: usize,
+    forgeries: &[(usize, usize, usize)],
+    split: impl Fn(&mut CircuitBuilder<F>, ExprId, usize) -> Vec<ExprId>,
+    setup: impl FnOnce(&NativeBusCircuit<F>, Vec<Vec<F>>) -> Accepts<F>,
+) {
+    let bytes: Vec<u8> = values
+        .iter()
+        .flat_map(|value| {
+            value
+                .to_raw_coordinates()
+                .to_le_bytes()
+                .into_iter()
+                .take(2 * count)
+        })
+        .collect();
+    let root = Blake3.hash_iter(bytes.iter().copied());
+
+    // One leaf of a one-row tree: its digest is the only cap root.
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let cap = b.alloc_public_input_array::<16>("root");
+    let row = b.alloc_private_inputs(values.len(), "row values");
+    let mut words = Vec::new();
+    for &value in &row {
+        words.extend(split(&mut b, value, count));
+    }
+    b.verify_byte_hash_mmcs_opening_words_with_host::<NativeBinaryEncoding>(
+        ByteHash::Blake3,
+        &[words],
+        &[1],
+        &[],
+        &[],
+        &[cap.to_vec()],
+    )
+    .unwrap();
+    let circuit = b.build().unwrap();
+    let statement: Vec<F> = bytes_to_limbs(&root).into_iter().map(limb_value).collect();
+    let private = values.to_vec();
+
+    let prepared = NativeBusCircuit::new(&circuit, "leaf").unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let accepts = setup(&prepared, public);
+    let forgery = Blake3Forgery::new(&circuit, &prepared, &statement, &private, accepts);
+    let limbs = values.len() * count;
+    assert_eq!(forgery.calls.len(), limbs.div_ceil(32), "hashed blocks");
+    let monomial = |coordinate: usize| F::from_raw_coordinates(1 << coordinate).unwrap();
+    for &(value, word, moved) in forgeries {
+        let wide = monomial(moved) * monomial(16 * word).inverse();
+        assert_eq!(wide.to_raw_coordinates() & 0xffff, 0, "limb bits unchanged");
+        let split = circuit
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                Op::Hint {
+                    inputs, outputs, ..
+                } if inputs[..] == [circuit.private_input_rows[value]] => Some(outputs),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(split.len(), count);
+        let mut hinted = forgery.honest.clone();
+        hinted[split[word].0 as usize] += wide;
+        let mut forged_private = private.clone();
+        forged_private[value] += monomial(moved);
+        let limb = value * count + word;
+        let forged = forgery.reject_wide_limb(&hinted, &forged_private, true);
+        assert_eq!(forged, (limb / 32, limb % 32), "value {value} word {word}");
+    }
+}
+
+/// Sixteen Tower128 values form a 256-byte leaf of eight limbs per value, hashed in four
+/// blocks; limb 68 is input 4 of the third.
+#[test]
+fn native_blake3_words_range_check_word_leaves_in_blocks() {
+    let values: Vec<F> = (0..16)
+        .map(|i| F::from_repr(0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i + 13)))
+        .collect();
+    reject_wide_blake3_leaf_words(
+        &values,
+        8,
+        &[(0, 0, 16), (8, 4, 80), (15, 6, 120)],
+        tower_words,
+        tower_accepts,
+    );
+}
+
+/// Sixteen Tower32 base values form a 64-byte leaf of two limbs per value. Moving coordinate 32
+/// of a value into its second limb gives a value outside Tower32 with the same leaf bytes, so
+/// the table's range check is also what keeps base rows in Tower32.
+#[test]
+fn native_blake3_words_range_check_tower32_leaf_words() {
+    let values: Vec<F> = (0..16)
+        .map(|i| F::from_repr(u128::from(0x9bfa3e51u32.wrapping_mul(i + 13))))
+        .collect();
+    reject_wide_blake3_leaf_words(
+        &values,
+        2,
+        &[(0, 0, 16), (15, 1, 32)],
+        tower_words,
+        tower_accepts,
+    );
+}
+
+/// Twenty-four Poly64 values form a 192-byte leaf of four limbs per value, hashed in three
+/// blocks. A limb of degree below sixteen times `x^(16j)` needs no reduction, so moving a
+/// coefficient at or above `16 * (j + 1)` of a value into its limb `j` keeps the value and the
+/// leaf bytes; only the table's range check rejects it.
+#[test]
+fn native_blake3_words_range_check_poly64_leaf_words_in_blocks() {
+    use p3_binary_field::Poly64;
+    let values: Vec<Poly64> = (0..24)
+        .map(|i| Poly64::new(0x9bfa_3e51_4379_dc5bu64.wrapping_mul(i + 13)))
+        .collect();
+    reject_wide_blake3_leaf_words(
+        &values,
+        4,
+        &[(0, 0, 16), (16, 2, 48), (17, 0, 16), (18, 1, 40)],
+        |b, value, count| b.native_poly64_unchecked_words(value, count).unwrap(),
+        poly64_accepts,
+    );
+}
+
+/// A proof-supplied Merkle sibling reaches the hash only through a level's `select`: under a
+/// constant index bit the sibling limb itself is a block input of the compression, and under a
+/// private bit the input is a gate output equal to it. A prover who claims the honest digests
+/// for a sibling limb with a seventeenth coordinate satisfies every fanout and gate row, but
+/// the table cannot carry that limb in bits that stay Boolean.
+#[test]
+fn native_blake3_words_range_check_merkle_siblings() {
+    let leaf_bytes: Vec<[u8; 4]> = (0..4u8)
+        .map(|k| [k, 0x80 | k, 0x5a ^ k, 0xff - k])
+        .collect();
+    let hash = |bytes: &[u8]| Blake3.hash_iter(bytes.iter().copied());
+    let compress = |left: &[u8; 32], right: &[u8; 32]| hash(&[*left, *right].concat());
+    let leaves: Vec<_> = leaf_bytes.iter().map(|bytes| hash(bytes)).collect();
+    let nodes = [
+        compress(&leaves[0], &leaves[1]),
+        compress(&leaves[2], &leaves[3]),
+    ];
+    let root = compress(&nodes[0], &nodes[1]);
+    let words =
+        |bytes: &[u8]| -> Vec<F> { bytes_to_limbs(bytes).into_iter().map(limb_value).collect() };
+
+    // Leaf 1 of four: a constant low index bit, as for a per-symbol leaf of a coset, and a
+    // private high bit.
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let leaf = b.alloc_public_input_array::<2>("leaf words");
+    let cap = b.alloc_public_input_array::<16>("root");
+    let low = b.define_const(F::ONE);
+    let high = b.alloc_private_input("high index bit");
+    let siblings: Vec<_> = (0..2)
+        .map(|_| b.alloc_private_inputs(16, "sibling"))
+        .collect();
+    b.verify_byte_hash_mmcs_subtree_words_with_host::<NativeBinaryEncoding>(
+        ByteHash::Blake3,
+        &[leaf.to_vec()],
+        4,
+        &[low, high],
+        &siblings,
+        &[cap.to_vec()],
+    )
+    .unwrap();
+    let circuit = b.build().unwrap();
+    let statement = [words(&leaf_bytes[1]), words(&root)].concat();
+    let private = [vec![F::ZERO], words(&leaves[0]), words(&nodes[1])].concat();
+
+    let prepared = NativeBusCircuit::new(&circuit, "merkle").unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    let forgery = Blake3Forgery::new(
+        &circuit,
+        &prepared,
+        &statement,
+        &private,
+        tower_accepts(&prepared, public),
+    );
+    assert_eq!(forgery.calls.len(), 3, "one leaf hash and two compressions");
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    // (private input, its call and block input, whether gates read it)
+    for (input, at, through_gates) in [(1 + 3, (1, 3), false), (1 + 16 + 5, (2, 16 + 5), true)] {
+        let mut forged_private = private.clone();
+        forged_private[input] += wide;
+        let forged = forgery.reject_wide_limb(&forgery.honest, &forged_private, through_gates);
+        assert_eq!(forged, at, "private input {input}");
+    }
+    forgery.reject_non_boolean_padding_cell();
+}
+
+/// A native WHIR verifier gives proof-supplied Merkle siblings no range check of their own.
+/// Each level selects its compression inputs from the current digest and the sibling under a
+/// Boolean index bit, sampled or a constant stratum bit, so each sibling limb equals a block
+/// input of that compression's native BLAKE3 call. In a complete native WHIR verifier, a prover
+/// who claims the honest digests for a sibling limb with a seventeenth coordinate satisfies
+/// every fanout and gate row, but the witness bus rejects it, and lifting the table's bit
+/// instead leaves a cell outside {0, 1}. A padding row isolates that Booleanity constraint.
+#[test]
+fn native_blake3_words_range_check_whir_merkle_siblings() {
+    use p3_binary_pcs::whir::BinaryWhirDomain;
+    use p3_commit::MultilinearPcs;
+    use p3_multilinear_util::point::Point;
+    use p3_recursion::BinaryTower128Challenger;
+    use p3_recursion::pcs::binary::BinaryWhirVerifier;
+    use p3_sumcheck::layout::{Layout, SuffixProver, Table, plan_stacked_layout};
+    use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
+    use p3_test_utils::binary_field_params::blake3;
+    use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
+    type Ch = blake3::LevelChallenger<F>;
+    type L = SuffixProver<F, F>;
+    const CAP_HEIGHT: usize = 1;
+    const VARIABLES: usize = 6;
+
+    let protocol = OpeningProtocol::new(vec![TableSpec::new(
+        TableShape::new(VARIABLES, 1),
+        vec![OpeningBatch::new(vec![0], vec![0])],
+    )]);
+    let domain = BinaryWhirDomain::<F>::default();
+    let config = WhirConfig::<F, F, Ch>::new_with_domain(
+        plan_stacked_layout(&protocol.table_shapes()).0,
+        ProtocolParameters {
+            security_level: 8,
+            pow_bits: 0,
+            round_log_inv_rates: vec![],
+            folding_factor: FoldingFactor::Constant(2),
+            soundness_type: SecurityAssumption::JohnsonBound,
+            starting_log_inv_rate: 1,
+        },
+        &domain,
+    )
+    .unwrap();
+    let mmcs = blake3::LevelMmcs::<F>::new(
+        blake3::FieldHash::new(blake3::byte_hash()),
+        blake3::Compress::new(blake3::byte_hash()),
+        CAP_HEIGHT,
+    );
+    let pcs = WhirProver::<F, F, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
+    let recursive = BinaryWhirVerifier::<F>::new(
+        &config,
+        protocol.clone(),
+        L::variable_order(),
+        ByteHash::Blake3,
+        CAP_HEIGHT,
+    )
+    .unwrap();
+    let shape = recursive.input_shape();
+    let make = || Ch::from_hasher(vec![129, 9, 251], blake3::byte_hash());
+    let dense = |i: usize| {
+        F::from_repr(0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i as u128 + 13))
+    };
+    let table = Table::new(RowMajorMatrix::new(
+        (0..1 << VARIABLES).map(dense).collect(),
+        1 << VARIABLES,
+    ));
+    let witness = L::new_witness(vec![table], config.round_folding_factor(0));
+    let points = vec![Point::new((0..VARIABLES).map(|j| dense(j + 71)).collect())];
+    let mut prover_ch = make();
+    let (commitment, data) = pcs.commit(witness, &mut prover_ch).unwrap();
+    let opened = pcs
+        .open_at(data, &protocol, &points, &mut prover_ch)
+        .unwrap();
+    let mut entry = make();
+    pcs.observe_commitment(&commitment, &mut entry);
+    let imported = recursive
+        .import_native(&config, &mmcs, &commitment, &points, &opened, &mut entry)
+        .unwrap();
+
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let cap: Vec<_> = (0..1 << CAP_HEIGHT)
+        .map(|_| b.alloc_public_input_array::<16>("root").to_vec())
+        .collect();
+    let point: Vec<_> = (0..VARIABLES)
+        .map(|_| {
+            let coordinate = b.public_input();
+            b.native_tower128_from_expr(coordinate)
+        })
+        .collect();
+    let proof = shape.allocate_native_targets(&mut b).unwrap();
+    let initial =
+        [129u8, 9, 251].map(|byte| b.define_const(F::from_raw_coordinates(byte.into()).unwrap()));
+    let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<NativeBinaryEncoding, F>(
+        &mut b,
+        ByteHash::Blake3,
+        &initial,
+    )
+    .unwrap();
+    recursive
+        .observe_commitment_with_host::<NativeBinaryEncoding, F>(&mut b, &mut ch, &cap)
+        .unwrap();
+    recursive
+        .verify_at_native(&mut b, ch, &cap, &[point], &proof)
+        .unwrap();
+    let circuit = b.build().unwrap();
+    let statement: Vec<F> = commitment
+        .roots()
+        .iter()
+        .flat_map(|root| bytes_to_limbs(root))
+        .map(|word| F::from_raw_coordinates(word.into()).unwrap())
+        .chain(points[0].iter().copied())
+        .collect();
+    let private = imported.private_native_values(&shape).unwrap();
+
+    let prepared = NativeBusCircuit::new(&circuit, "whir").unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    reject_wide_blake3_whir_siblings(
+        &circuit,
+        &prepared,
+        &statement,
+        &private,
+        &proof.final_paths[0],
+        tower_accepts(&prepared, public),
+    );
+}
+
+/// The forgeries of [`native_blake3_words_range_check_whir_merkle_siblings`] against the native
+/// WHIR verifier `circuit`: `path` is its first final-round query path, and `accepts` proves
+/// traces of `prepared` and reports whether the proof verifies.
+fn reject_wide_blake3_whir_siblings<F: BinaryCoordinateField>(
+    circuit: &Circuit<F>,
+    prepared: &NativeBusCircuit<F>,
+    statement: &[F],
+    private: &[F],
+    path: &[Vec<ExprId>],
+    accepts: Accepts<F>,
+) {
+    let forgery = Blake3Forgery::new(circuit, prepared, statement, private, accepts);
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    // The first query's lowest index bit is sampled, so its first sibling reaches the hash
+    // through `select` gates. Its next bit is a constant stratum bit, which makes the second
+    // sibling itself a block input.
+    assert!(path.len() >= 2, "a path through two compressions");
+    for (level, word, through_gates) in [(0, 3, true), (1, 5, false)] {
+        let id = circuit.expr_to_widx[&path[level][word]];
+        let input = circuit
+            .private_input_rows
+            .iter()
+            .position(|&row| row == id)
+            .unwrap();
+        let mut forged_private = private.to_vec();
+        forged_private[input] += wide;
+        let (_, index) = forgery.reject_wide_limb(&forgery.honest, &forged_private, through_gates);
+        assert!(
+            index % 16 == word,
+            "a digest limb of the compression's block"
+        );
+    }
+    forgery.reject_non_boolean_padding_cell();
+}
+
+/// [`native_blake3_words_range_check_whir_merkle_siblings`] for a Poly64
+/// native WHIR verifier, which shares the WHIR kernel and draws Poly192
+/// challenges.
+#[test]
+fn native_blake3_words_range_check_poly64_whir_merkle_siblings() {
+    use p3_binary_field::{Poly64, Poly192};
+    use p3_binary_pcs::whir::BinaryWhirDomain;
+    use p3_commit::MultilinearPcs;
+    use p3_multilinear_util::point::Point;
+    use p3_recursion::BinaryTower128Challenger;
+    use p3_recursion::pcs::binary::BinaryPolyWhirVerifier;
+    use p3_sumcheck::layout::{Layout, SuffixProver, Table, plan_stacked_layout};
+    use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
+    use p3_test_utils::binary_field_params::blake3;
+    use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
+    type P = Poly64;
+    type Ch = blake3::LevelChallenger<P>;
+    type L = SuffixProver<P, Poly192>;
+    const CAP_HEIGHT: usize = 1;
+    const VARIABLES: usize = 6;
+
+    let protocol = OpeningProtocol::new(vec![TableSpec::new(
+        TableShape::new(VARIABLES, 1),
+        vec![OpeningBatch::new(vec![0], vec![0])],
+    )]);
+    let domain = BinaryWhirDomain::<P>::default();
+    let config = WhirConfig::<Poly192, P, Ch>::new_with_domain(
+        plan_stacked_layout(&protocol.table_shapes()).0,
+        ProtocolParameters {
+            security_level: 8,
+            pow_bits: 0,
+            round_log_inv_rates: vec![],
+            folding_factor: FoldingFactor::Constant(2),
+            soundness_type: SecurityAssumption::JohnsonBound,
+            starting_log_inv_rate: 1,
+        },
+        &domain,
+    )
+    .unwrap();
+    let mmcs = blake3::LevelMmcs::<P>::new(
+        blake3::FieldHash::new(blake3::byte_hash()),
+        blake3::Compress::new(blake3::byte_hash()),
+        CAP_HEIGHT,
+    );
+    let pcs = WhirProver::<Poly192, P, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
+    let recursive = BinaryPolyWhirVerifier::new(
+        &config,
+        protocol.clone(),
+        L::variable_order(),
+        ByteHash::Blake3,
+        CAP_HEIGHT,
+    )
+    .unwrap();
+    let shape = recursive.input_shape();
+    let make = || Ch::from_hasher(vec![129, 9, 251], blake3::byte_hash());
+    let dense = |i: usize| P::new(0x8123456789abcdefu64.wrapping_mul(i as u64 + 13));
+    let table = Table::new(RowMajorMatrix::new(
+        (0..1 << VARIABLES).map(dense).collect(),
+        1 << VARIABLES,
+    ));
+    let witness = L::new_witness(vec![table], config.round_folding_factor(0));
+    let points = vec![Point::new(
+        (0..VARIABLES)
+            .map(|j| Poly192::new(core::array::from_fn(|k| dense(3 * j + k + 71))))
+            .collect(),
+    )];
+    let mut prover_ch = make();
+    let (commitment, data) = pcs.commit(witness, &mut prover_ch).unwrap();
+    let opened = pcs
+        .open_at(data, &protocol, &points, &mut prover_ch)
+        .unwrap();
+    let mut entry = make();
+    pcs.observe_commitment(&commitment, &mut entry);
+    let imported = recursive
+        .import_native(&config, &mmcs, &commitment, &points, &opened, &mut entry)
+        .unwrap();
+
+    let mut b = CircuitBuilder::<P>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let cap: Vec<_> = (0..1 << CAP_HEIGHT)
+        .map(|_| b.alloc_public_input_array::<16>("root").to_vec())
+        .collect();
+    let point: Vec<_> = (0..VARIABLES)
+        .map(|_| {
+            let coefficients = core::array::from_fn(|_| b.public_input());
+            b.native_poly192_from_coefficients(coefficients)
+        })
+        .collect();
+    let proof = shape.allocate_native_targets(&mut b).unwrap();
+    let initial =
+        [129u8, 9, 251].map(|byte| b.define_const(P::from_raw_coordinates(byte.into()).unwrap()));
+    let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<NativeBinaryEncoding, P>(
+        &mut b,
+        ByteHash::Blake3,
+        &initial,
+    )
+    .unwrap();
+    recursive
+        .observe_commitment_with_host::<NativeBinaryEncoding, P>(&mut b, &mut ch, &cap)
+        .unwrap();
+    recursive
+        .verify_at_native(&mut b, ch, &cap, &[point], &proof)
+        .unwrap();
+    let circuit = b.build().unwrap();
+    let statement: Vec<P> = commitment
+        .roots()
+        .iter()
+        .flat_map(|root| bytes_to_limbs(root))
+        .map(|word| P::from_raw_coordinates(word.into()).unwrap())
+        .chain(points[0].iter().flat_map(|value| value.coefficients()))
+        .collect();
+    let private = imported.private_native_values(&shape).unwrap();
+
+    let prepared = NativeBusCircuit::new(&circuit, "polywhir").unwrap();
+    let public = prepared.public_values(&statement).unwrap();
+    reject_wide_blake3_whir_siblings(
+        &circuit,
+        &prepared,
+        &statement,
+        &private,
+        &proof.final_paths[0],
+        poly64_accepts(&prepared, public),
+    );
 }
 
 /// A prover who claims a different output limb of a call than the table computes is refused:
