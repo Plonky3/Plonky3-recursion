@@ -61,9 +61,9 @@ const PAIRWISE: Case = Case {
     max_keccak_calls: 1_710,
 };
 /// Four-digest output trees under a cap of one level: the same 4 roots. The
-/// second layer measures 363,574 expression nodes, 10,642 pending
-/// connections, 6,054 non-primitive calls, 618,136 slots, 350,310 witnesses,
-/// 161,581 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
+/// second layer measures 366,084 expression nodes, 10,642 pending
+/// connections, 6,054 non-primitive calls, 618,136 slots, 352,820 witnesses,
+/// 164,091 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
 /// below the pairwise layer's count, so a layer whose trees fell back to
 /// pairwise nodes fails it.
 const FOUR_DIGEST: Case = Case {
@@ -77,7 +77,7 @@ const FOUR_DIGEST: Case = Case {
     },
     circuit: DirectCircuitLimits {
         max_witnesses: 393_000,
-        max_operations: 181_000,
+        max_operations: 184_000,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_480,

@@ -416,8 +416,10 @@ where
     /// and the siblings in increasing position in the other slots.
     ///
     /// Under Boolean bits the slots hold exactly the current digest and the
-    /// siblings, each once. Four slots use the one-hot flags `h_p` of the
-    /// position `p = b0 + 2 b1`, six products per word.
+    /// siblings, each once. For the position `p = b0 + 2 b1` of four slots, a
+    /// field of characteristic two takes six selects per word under the flags
+    /// `p >= 1`, `p >= 2` and `p >= 3`, one native bus gate each; another field
+    /// takes the one-hot flags `h_p`, six products per word.
     fn mmcs_group_slots(
         &mut self,
         node: &[ExprId],
@@ -428,6 +430,24 @@ where
             (&[bit], [sibling]) => {
                 let (left, right) = self.order_digest_pair(bit, node, sibling);
                 Ok(vec![left, right])
+            }
+            (&[low, high], [first, second, third]) if F::TWO == F::ZERO => {
+                let at_least_three = self.mul(low, high);
+                let either = self.add(low, high);
+                let at_least_one = self.sub(either, at_least_three);
+                let at_least_two = high;
+                let mut slots = vec![Vec::new(); 4];
+                for (((&current, &s0), &s1), &s2) in node.iter().zip(first).zip(second).zip(third) {
+                    // Slot `k` holds `s_{k-1}` when `p < k`, the current word when
+                    // `p = k` and `s_k` when `p > k`.
+                    slots[0].push(self.select(at_least_one, s0, current));
+                    let from_one = self.select(at_least_two, s1, current);
+                    slots[1].push(self.select(at_least_one, from_one, s0));
+                    let from_two = self.select(at_least_three, s2, current);
+                    slots[2].push(self.select(at_least_two, from_two, s1));
+                    slots[3].push(self.select(at_least_three, current, s2));
+                }
+                Ok(slots)
             }
             (&[low, high], [first, second, third]) => {
                 let h3 = self.mul(low, high);

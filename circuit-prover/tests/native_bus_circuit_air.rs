@@ -1,18 +1,22 @@
 //! Fanout adjacency, sentinel values and native hash schedules are local AIR relations.
 
 use p3_air::{BaseAir, check_constraints};
+use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::keccak_state_to_limbs;
+use p3_circuit::ops::{ByteHash, DIGEST_LIMBS, bytes_to_limbs, keccak_state_to_limbs};
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::{CircuitBuilder, ExprId, WitnessId};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::indexed::IndexedCircuit;
 use p3_circuit_prover::native_binary::NativeBinaryCircuit;
 use p3_circuit_prover::native_bus::NativeBusCircuit;
+use p3_commit::Mmcs;
 use p3_field::PrimeCharacteristicRing;
-use p3_keccak::KeccakF;
-use p3_symmetric::Permutation;
-use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128};
+use p3_keccak::{Keccak256Hash, KeccakF};
+use p3_matrix::dense::RowMajorMatrix;
+use p3_merkle_tree::MerkleTreeMmcs;
+use p3_symmetric::{CompressionFunctionFromHasher, Permutation, SerializingHasher};
+use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128, TowerLevel};
 
 type F = BinaryField128;
 
@@ -418,6 +422,105 @@ fn a_difference_read_as_a_selector_keeps_its_addition() {
         let refused = std::panic::catch_unwind(|| check_constraints(air, trace, public)).is_err();
         assert_eq!(refused, table == 1, "table {table}");
     }
+}
+
+/// A four-digest Merkle level places the current digest at the position of its two index bits
+/// and the siblings in increasing position in the other slots: six selects per word, one gate
+/// each, and every position closes in the native tables. A group of four equal digests fills
+/// the slots alike under any flags, so a non-Boolean index bit leaves the root intact and only
+/// that bit's Boolean check refuses it.
+#[test]
+fn four_digest_level_slots_are_one_select_gate_each() {
+    type Mmcs = MerkleTreeMmcs<
+        BinaryField8,
+        u8,
+        SerializingHasher<Keccak256Hash>,
+        CompressionFunctionFromHasher<Keccak256Hash, 4, 32>,
+        4,
+        32,
+    >;
+    let mmcs = Mmcs::new(
+        SerializingHasher::new(Keccak256Hash),
+        CompressionFunctionFromHasher::new(Keccak256Hash),
+        0,
+    );
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let row = vec![b.public_input()];
+    let bits = [b.public_input(), b.public_input()];
+    let digests: Vec<Vec<ExprId>> = (0..4)
+        .map(|_| (0..DIGEST_LIMBS).map(|_| b.public_input()).collect())
+        .collect();
+    b.verify_byte_hash_mmcs_opening_words_with_host_arity::<NativeBinaryEncoding, 4>(
+        ByteHash::Keccak256,
+        &[row],
+        &[4],
+        &bits,
+        &digests[..3],
+        &digests[3..],
+    )
+    .unwrap();
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "arity4").unwrap();
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let selects = gate_pp
+        .values
+        .as_chunks::<14>()
+        .0
+        .iter()
+        .filter(|row| row[7] == F::ONE)
+        .count();
+    assert_eq!(selects, 6 * DIGEST_LIMBS);
+
+    let raw = |word: u16| F::from_raw_coordinates(word.into()).unwrap();
+    // Opens `index` of the tree over `rows` with index bits `bits`; whether the gate table holds.
+    let gates_hold = |rows: [[u8; 2]; 4], index: usize, bits: [F; 2]| {
+        let values = rows
+            .iter()
+            .flatten()
+            .map(|&byte| BinaryField8::from_repr(byte))
+            .collect();
+        let (commitment, data) = mmcs.commit(vec![RowMajorMatrix::new(values, 2)]);
+        let opening = mmcs.open_batch(index, &data);
+        let statement: Vec<F> = core::iter::once(raw(u16::from_le_bytes(rows[index])))
+            .chain(bits)
+            .chain(
+                opening
+                    .opening_proof
+                    .iter()
+                    .chain(commitment.roots())
+                    .flat_map(|digest| bytes_to_limbs(digest))
+                    .map(raw),
+            )
+            .collect();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&statement).unwrap();
+        let traces = prepared
+            .traces(&runner.run().unwrap().witness_trace)
+            .unwrap();
+        let public = prepared.public_values(&statement).unwrap();
+        for (table, ((air, trace), public)) in
+            prepared.airs().iter().zip(&traces).zip(&public).enumerate()
+        {
+            if table != 1 {
+                check_constraints(air, trace, public);
+            }
+        }
+        std::panic::catch_unwind(|| check_constraints(&prepared.airs()[1], &traces[1], &[])).is_ok()
+    };
+    let bit = |index: usize, k: usize| F::from_bool(index >> k & 1 == 1);
+    let distinct = [[1, 2], [3, 4], [5, 6], [7, 8]];
+    for index in 0..4 {
+        assert!(
+            gates_hold(distinct, index, [bit(index, 0), bit(index, 1)]),
+            "position {index}"
+        );
+    }
+    let equal = [[9, 9]; 4];
+    let two = F::from_raw_coordinates(2).unwrap();
+    assert!(gates_hold(equal, 0, [F::ONE, F::ONE]));
+    assert!(!gates_hold(equal, 0, [two, F::ZERO]));
+    assert!(!gates_hold(equal, 0, [F::ZERO, two]));
 }
 
 #[test]
