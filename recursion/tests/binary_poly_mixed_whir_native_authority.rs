@@ -1,7 +1,7 @@
 //! Checked native owners of a Poly64 native bus statement whose Keccak table is committed as
 //! bits packed sixty-four per element, beside a dense WHIR commitment of every other table.
 
-use p3_binary_field::{Poly64, Poly192};
+use p3_binary_field::{Poly64, Poly192, TowerLevel};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, keccak_state_to_limbs};
 use p3_circuit::{Circuit, CircuitBuilder};
@@ -38,7 +38,10 @@ const CAP_HEIGHT: usize = 1;
 /// Magic, version, kind, suite and body length.
 const HEADER_BYTES: usize = 17;
 const FIELD_BYTES: usize = 8;
+const CHALLENGE_BYTES: usize = 24;
 const DIGEST_BYTES: usize = 32;
+/// The rows of one ring-switch tensor: one Poly64 per bit coordinate of a Poly192.
+const TENSOR_ROWS: usize = 192;
 /// The row variables one Poly64 element of the packed commitment absorbs.
 const ABSORBED_VARIABLES: usize = 6;
 
@@ -229,6 +232,27 @@ fn decode(
             CanonicalBinaryStatement::new(statement, count),
         )
         .map(|_| ())
+}
+
+/// The wire bytes of Poly192 values: each coefficient's little-endian bit pattern.
+fn challenge_bytes(values: &[Poly192]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| value.coefficients())
+        .flat_map(|coefficient| coefficient.to_repr().to_le_bytes())
+        .collect()
+}
+
+/// Where `needle` sits in `bytes`, which must hold it exactly once.
+fn position(bytes: &[u8], needle: &[u8]) -> usize {
+    let mut found = bytes
+        .windows(needle.len())
+        .enumerate()
+        .filter(|(_, window)| *window == needle)
+        .map(|(offset, _)| offset);
+    let offset = found.next().expect("the encoding holds the value");
+    assert!(found.next().is_none(), "the encoding holds the value once");
+    offset
 }
 
 fn suite(bytes: &[u8]) -> u16 {
@@ -487,6 +511,51 @@ fn truncated_oversized_and_tampered_proofs_are_refused() {
     for (name, bytes) in tampers {
         assert!(
             decode(&authority, &bytes, &statement, count).is_err(),
+            "a tampered {name} was accepted"
+        );
+    }
+
+    // The packed values and the ring tensors follow one another with no length prefix, then
+    // the ring's round count and round messages; the whole values block locates them.
+    let packed = proof.opening.packed.as_ref().unwrap();
+    let ring = &packed.opening.reduction;
+    let value = position(&encoded, &challenge_bytes(&packed.values));
+    let tensor = value + packed.values.len() * CHALLENGE_BYTES;
+    let first_tensor = ring.claims[0].tensor.rows();
+    assert_eq!(first_tensor.len(), TENSOR_ROWS);
+    let tensor_bytes: Vec<u8> = first_tensor
+        .iter()
+        .flat_map(|row| row.to_repr().to_le_bytes())
+        .collect();
+    assert_eq!(
+        encoded[tensor..tensor + TENSOR_ROWS * FIELD_BYTES],
+        tensor_bytes
+    );
+    let tensors: usize = ring
+        .claims
+        .iter()
+        .map(|claim| 1 + 2 * usize::from(claim.successor.is_some()))
+        .sum();
+    let rounds = tensor + tensors * TENSOR_ROWS * FIELD_BYTES;
+    let messages = &ring.sumcheck.polynomial_evaluations;
+    assert_eq!(
+        encoded[rounds..rounds + 4],
+        u32::try_from(messages.len()).unwrap().to_le_bytes()
+    );
+    assert_eq!(
+        encoded[rounds + 4..rounds + 4 + 2 * CHALLENGE_BYTES],
+        challenge_bytes(&messages[0])
+    );
+    // Each flip decodes to a well-formed proof the verifier then refuses.
+    let decoded_tampers = [
+        ("packed opened value", flip(value)),
+        ("ring-switch tensor row", flip(tensor)),
+        ("ring round message", flip(rounds + 4)),
+    ];
+    for (name, bytes) in decoded_tampers {
+        assert_eq!(
+            decode(&authority, &bytes, &statement, count),
+            Err(ArtifactError::VerificationRejected),
             "a tampered {name} was accepted"
         );
     }
