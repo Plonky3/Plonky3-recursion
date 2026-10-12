@@ -4,8 +4,8 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
-use p3_binary_field::BinaryField128;
-use p3_circuit::ops::BinaryTower128Target;
+use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_circuit::ops::{BinaryTower128Target, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::Field;
 
@@ -398,6 +398,67 @@ where
             circuit.binary128_from_bits(bits)
         })
         .collect()
+}
+
+/// Reconstructs released tower-domain WHIR query coordinates
+/// `[W_(n-1)(x), ..., W_0(x)]` on the native Tower128 carrier from
+/// little-endian index bits, with `x = domain_point(index)` in the alphabet's
+/// own Cantor basis, embedded by its raw tower coordinates.
+/// Every index bit is constrained even when the coordinate point is empty.
+/// Targets must belong to this builder.
+pub fn native_tower128_whir_query_point<F: RecursiveBinaryTowerField>(
+    circuit: &mut CircuitBuilder<BinaryField128>,
+    index_bits: &[ExprId],
+    num_variables: usize,
+) -> Result<Vec<NativeTower128Target>, CircuitBuilderError> {
+    if index_bits.len() > F::RAW_BITS || num_variables > F::RAW_BITS {
+        return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
+            expected: F::RAW_BITS,
+            n_bits: index_bits.len().max(num_variables),
+        });
+    }
+    let coordinates = native_query_coordinates(circuit, index_bits, num_variables, |j| {
+        BinaryField128::from_repr(F::cantor_basis(j).raw_coordinates())
+    })?;
+    Ok(coordinates
+        .into_iter()
+        .map(|x| circuit.native_tower128_from_expr(x))
+        .collect())
+}
+
+/// Query coordinates `[W_(n-1)(x), ..., W_0(x)]` on a native carrier whose
+/// own arithmetic is the alphabet's field. `x = sum_j bit_j basis(j)` is the
+/// queried domain point and `W_(s+1)(x) = W_s(x)^2 + W_s(x)`, so every
+/// coordinate after `x` is one gate.
+/// Every index bit is constrained even when the coordinate point is empty.
+pub(super) fn native_query_coordinates<CF: Field + Eq + Hash>(
+    circuit: &mut CircuitBuilder<CF>,
+    index_bits: &[ExprId],
+    num_variables: usize,
+    basis: impl Fn(usize) -> CF,
+) -> Result<Vec<ExprId>, CircuitBuilderError> {
+    for &bit in index_bits {
+        circuit.assert_bool(bit);
+    }
+    circuit.check_construction_limits()?;
+    if num_variables == 0 {
+        return Ok(Vec::new());
+    }
+    let mut x = ExprId::ZERO;
+    for (j, &bit) in index_bits.iter().enumerate() {
+        let vector = circuit.define_const(basis(j));
+        x = circuit.mul_add(bit, vector, x);
+    }
+    let mut coordinates = Vec::with_capacity(num_variables);
+    coordinates.push(x);
+    while coordinates.len() < num_variables {
+        circuit.check_construction_limits()?;
+        x = circuit.mul_add(x, x, x);
+        coordinates.push(x);
+    }
+    circuit.check_construction_limits()?;
+    coordinates.reverse();
+    Ok(coordinates)
 }
 
 fn arity(op: &'static str, expected: usize, got: usize) -> CircuitBuilderError {

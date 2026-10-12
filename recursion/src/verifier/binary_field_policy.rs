@@ -530,29 +530,7 @@ where
         index_bits: &[ExprId],
         num_variables: usize,
     ) -> Result<alloc::vec::Vec<NativeTower128Target>, CircuitBuilderError> {
-        if index_bits.len() > F::RAW_BITS || num_variables > F::RAW_BITS {
-            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
-                expected: F::RAW_BITS,
-                n_bits: index_bits.len().max(num_variables),
-            });
-        }
-        for &bit in index_bits {
-            b.assert_bool(bit);
-        }
-        b.check_construction_limits()?;
-        (0..num_variables)
-            .rev()
-            .map(|shift| {
-                let mut value = b.native_tower128_constant(0);
-                for (j, &bit) in index_bits.iter().skip(shift).enumerate() {
-                    let term =
-                        Self::constant_times_bit(b, bit, F::cantor_basis(j).raw_coordinates())?;
-                    value = b.native_tower128_add(&value, &term);
-                }
-                b.check_construction_limits()?;
-                Ok(value)
-            })
-            .collect()
+        crate::pcs::binary::native_tower128_whir_query_point::<F>(b, index_bits, num_variables)
     }
     fn sample_nonzero<H: BinaryCircuitHost<BinaryField128>>(
         b: &mut CircuitBuilder<BinaryField128>,

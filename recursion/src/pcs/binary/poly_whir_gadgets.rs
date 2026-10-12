@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 
 use p3_binary_field::{Poly64, TowerLevel};
-use p3_circuit::ops::BinaryPoly192Target;
+use p3_circuit::ops::{BinaryPoly192Target, NativePoly192Target};
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
 
@@ -138,6 +138,36 @@ where
             ]))
         })
         .collect()
+}
+
+/// Reconstructs released Poly64-domain WHIR query coordinates
+/// `[W_(n-1)(x), ..., W_0(x)]` on the native Poly64 carrier from
+/// little-endian index bits, with `x = domain_point(index)` in the alphabet's
+/// own Cantor basis. Each coordinate is a base Poly192 value.
+/// Every index bit is constrained even when the coordinate point is empty.
+/// Targets must belong to this builder.
+pub fn native_poly64_whir_query_point(
+    circuit: &mut CircuitBuilder<Poly64>,
+    index_bits: &[ExprId],
+    num_variables: usize,
+) -> Result<Vec<NativePoly192Target>, CircuitBuilderError> {
+    if index_bits.len() > 64 || num_variables > 64 {
+        return Err(CircuitBuilderError::NonPrimitiveOpArity {
+            op: "BinaryWhirQueryPoint",
+            expected: alloc::format!("at most {} alphabet coordinates", 64),
+            got: index_bits.len().max(num_variables),
+        });
+    }
+    let coordinates = super::whir_gadgets::native_query_coordinates(
+        circuit,
+        index_bits,
+        num_variables,
+        Poly64::cantor_basis,
+    )?;
+    Ok(coordinates
+        .into_iter()
+        .map(|x| circuit.native_poly192_from_coefficients([x, ExprId::ZERO, ExprId::ZERO]))
+        .collect())
 }
 
 pub(crate) fn assert_equal<EF: Field + Eq + Hash>(

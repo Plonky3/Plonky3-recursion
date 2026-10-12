@@ -2,7 +2,6 @@
 
 use alloc::vec::Vec;
 
-use p3_binary_field::TowerLevel;
 use p3_circuit::ops::NativePoly192Target;
 
 use super::*;
@@ -233,30 +232,7 @@ impl BinaryWhirPolicy<Poly64> for NativePoly64Relation {
         index_bits: &[ExprId],
         num_variables: usize,
     ) -> Result<Vec<NativePoly192Target>, CircuitBuilderError> {
-        if index_bits.len() > 64 || num_variables > 64 {
-            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                op: "BinaryWhirQueryPoint",
-                expected: alloc::format!("at most {} alphabet coordinates", 64),
-                got: index_bits.len().max(num_variables),
-            });
-        }
-        for &bit in index_bits {
-            b.assert_bool(bit);
-        }
-        b.check_construction_limits()?;
-        (0..num_variables)
-            .rev()
-            .map(|shift| {
-                let mut value = ExprId::ZERO;
-                for (i, &bit) in index_bits.iter().skip(shift).enumerate() {
-                    let basis = b.define_const(Poly64::cantor_basis(i));
-                    let term = b.mul(bit, basis);
-                    value = b.add(value, term);
-                }
-                b.check_construction_limits()?;
-                Ok(b.native_poly192_from_coefficients([value, ExprId::ZERO, ExprId::ZERO]))
-            })
-            .collect()
+        crate::pcs::binary::native_poly64_whir_query_point(b, index_bits, num_variables)
     }
     fn square(b: &mut CircuitBuilder<Poly64>, value: &NativePoly192Target) -> NativePoly192Target {
         b.native_poly192_square(value)

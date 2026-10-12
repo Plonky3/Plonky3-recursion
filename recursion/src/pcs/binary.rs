@@ -67,6 +67,7 @@ mod poly_nonzero;
 pub(crate) use poly_interpolation::Poly192SumcheckInterpolator;
 pub(crate) use poly_nonzero::{sample_nonzero_bits, sample_nonzero_cells};
 mod poly_whir_gadgets;
+pub use poly_whir_gadgets::native_poly64_whir_query_point;
 pub(crate) use poly_whir_gadgets::poly_whir_query_point;
 mod poly_whir_input;
 mod poly_whir_verifier;
@@ -194,7 +195,7 @@ pub(crate) use verifier::{
 };
 pub use whir_gadgets::{
     binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,
-    binary128_select_eval,
+    binary128_select_eval, native_tower128_whir_query_point,
 };
 pub use whir_input::{
     BinaryWhirInputShape, BinaryWhirProofTargets, BinaryWhirRoundTargets,
