@@ -8,6 +8,7 @@ mod native_binary;
 mod native_binary_folding;
 mod native_binary_mixed;
 mod native_poly;
+mod native_poly_mixed;
 pub(crate) mod prover;
 mod trusted;
 
@@ -40,6 +41,9 @@ pub use native_binary_mixed::{
     PreparedNativeBinaryMixedWhirLayer,
 };
 pub use native_poly::{NativeBinaryPolyRecursiveProof, PreparedNativeBinaryPolyWhirLayer};
+pub use native_poly_mixed::{
+    NativeBinaryPolyMixedRecursiveProof, PreparedNativeBinaryPolyMixedWhirLayer,
+};
 pub use p3_circuit::VerifiedStatementTargets;
 use p3_circuit::{
     CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField, StatementSchema,

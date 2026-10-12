@@ -1,9 +1,13 @@
-//! Native Poly64 proving and recursion with Poly192 challenges.
+//! Native Poly64 proving and recursion with Poly192 challenges. `--keccak-commitment
+//! dense|packed` selects how every layer commits its Keccak table: as field elements like every
+//! other table, or as packed bits, 64 per field element, beside a dense commitment of every
+//! other table. `--merkle-arity 4|2` selects four-digest or pairwise Merkle trees for every
+//! layer's commitments.
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_poly_recursion -- --layers 3
 //!
-//! The defaults (WHIR security level 32 with 24 grinding bits, four-digest Merkle trees under a
+//! The defaults (dense Keccak tables, WHIR security level 32 with 24 grinding bits, four-digest Merkle trees under a
 //! cap of 2 levels) keep every layer within the default limits. When a layer exceeds one anyway,
 //! the error names the flag that raises it and a value to start from.
 //!
@@ -17,6 +21,11 @@
 //! | 4     | 3        | 1,362,313 | 335,544,320    | 7.1 s      | 15.1 s | 14.2 GB  | 12.4 GB   |
 //! | 2     | 2        | 1,057,676 | 335,544,320    | 6.5 s      | 7.8 s  | 12.8 GB  | 12.5 GB   |
 //! | 2     | 3        | 1,380,220 | 603,979,776    | 10.9 s     | 19.1 s | 23.5 GB  | 21.9 GB   |
+//!
+//! With `--keccak-commitment packed` (packed log inverse rate 3, arity 4), layer 1 has 8,284
+//! witnesses and 1,048,576 codeword cells, layer 2 has 857,033 witnesses and 117,440,512 cells,
+//! and layer 3 has 1,145,424 witnesses and 117,440,512 cells, with a maximum resident set of
+//! 6.8 GB and a peak footprint of 6.0 GB over `--layers 3`.
 //!
 //! Layer 1 takes 0.84 s with 8,284 witnesses and 4,718,592 codeword cells. A four-digest node
 //! absorbs one Keccak-f block, as a pairwise node does, and an opening walks half as many
@@ -40,11 +49,16 @@ use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativePolyWhirAuthority, BinaryNativePolyWhirPcsParameters,
-    BinaryNativeVerifierSpec,
+    BinaryNativeVerifierSpec, VerifiedBinaryNativePolyMixedWhirProof,
+    VerifiedBinaryNativePolyWhirProof,
 };
 use p3_recursion::pcs::binary::MerkleArity;
-use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryPolyWhirLayer};
-use p3_recursion::verifier::VerifierLimits;
+use p3_recursion::prepared::{
+    NativeBinaryMixedRecursionOptions, NativeBinaryPolyMixedRecursiveProof,
+    NativeBinaryRecursionOptions, PreparedNativeBinaryPolyMixedWhirLayer,
+    PreparedNativeBinaryPolyWhirLayer,
+};
+use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
 
 #[path = "common/limit_hint.rs"]
@@ -61,6 +75,13 @@ type F = Poly64;
 const DEFAULT_CAP_HEIGHT: usize = 4;
 /// Default cap height of four-digest trees, in levels: 16 roots.
 const DEFAULT_FOUR_DIGEST_CAP_HEIGHT: usize = 2;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum KeccakCommitment {
+    /// The Keccak table as packed bits, beside a dense commitment of every other table.
+    Packed,
+    /// Every table as field elements.
+    Dense,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum Arity {
     /// Pairwise nodes.
@@ -93,6 +114,7 @@ struct Args {
     #[arg(long, default_value_t = 1 << 29)]
     max_trace_cells: usize,
     /// Maximum combined initial main and preprocessing codeword cells.
+    /// With a packed Keccak commitment the packed codeword counts too.
     #[arg(long, default_value_t = 1 << 30)]
     max_pcs_codeword_cells: usize,
     /// Maximum aggregate verifier rounds in each recursive output authority. It bounds the
@@ -102,6 +124,13 @@ struct Args {
     /// WHIR security level per opening; composed security still requires four bits.
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
+    /// Commitment of every recursion layer's Keccak table.
+    #[arg(long, value_enum, default_value_t = KeccakCommitment::Dense)]
+    keccak_commitment: KeccakCommitment,
+    /// Log inverse rate of the packed Keccak commitment; ignored unless the Keccak commitment
+    /// is packed.
+    #[arg(long, default_value_t = 3)]
+    packed_log_inv_rate: usize,
     /// Digests per Merkle tree node of every recursive output commitment.
     #[arg(long, value_enum, default_value_t = Arity::Four)]
     merkle_arity: Arity,
@@ -192,6 +221,15 @@ fn options(depth: usize, args: &Args) -> NativeBinaryRecursionOptions {
         },
     }
 }
+fn mixed_options(depth: usize, args: &Args) -> NativeBinaryMixedRecursionOptions {
+    NativeBinaryMixedRecursionOptions {
+        base: options(depth, args),
+        packed: ProtocolParameters {
+            starting_log_inv_rate: args.packed_log_inv_rate,
+            ..recursive_protocol(args.pcs_security_level, args.pow_bits)
+        },
+    }
+}
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     if args.layers == 0 {
@@ -207,7 +245,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         values.push(value * value);
     }
     let output = *values.last().unwrap();
-    let mut expected = vec![vec![input, output]];
+    let expected = vec![vec![input, output]];
     let spec = BinaryNativeVerifierSpec {
         main: BinaryNativePolyWhirPcsParameters::new(2, protocol(), ByteHash::Keccak256, 0)?,
         preprocessed: None,
@@ -224,7 +262,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &VerifierLimits::default(),
     )?;
     let proof = prover.prove(&expected, vec![RowMajorMatrix::new(values, 1)])?;
-    let mut checked = authority.verify_native(&proof, &expected)?;
+    let checked = authority.verify_native(&proof, &expected)?;
     println!(
         "Poly64 source verified: {:#018x} -> {:#018x}",
         input.to_bits(),
@@ -241,16 +279,45 @@ fn main() -> Result<(), Box<dyn Error>> {
         max_non_primitive_calls: args.max_non_primitive_calls,
         max_non_primitive_slots: args.max_non_primitive_slots,
     };
+    drop(prover);
+    match args.keccak_commitment {
+        KeccakCommitment::Dense => run_dense(
+            &args,
+            &authority,
+            checked,
+            expected,
+            &limits,
+            &construction_limits,
+        ),
+        KeccakCommitment::Packed => run_mixed(
+            &args,
+            &authority,
+            &checked,
+            &expected,
+            &limits,
+            &construction_limits,
+        ),
+    }
+}
+
+/// Every layer commits every table as field elements.
+fn run_dense(
+    args: &Args,
+    source: &BinaryNativePolyWhirAuthority<SquaringAir>,
+    mut checked: VerifiedBinaryNativePolyWhirProof,
+    mut expected: Vec<Vec<F>>,
+    limits: &DirectCircuitLimits,
+    construction_limits: &CircuitConstructionLimits,
+) -> Result<(), Box<dyn Error>> {
     println!("Preparing native recursion layer 1...");
     let mut layer =
         PreparedNativeBinaryPolyWhirLayer::from_native_authority_with_construction_limits(
-            &authority,
-            options(1, &args),
-            &limits,
-            &construction_limits,
+            source,
+            options(1, args),
+            limits,
+            construction_limits,
         )
         .map_err(at_layer(1))?;
-    drop(prover);
     for depth in 1..=args.layers {
         let start = Instant::now();
         println!(
@@ -276,12 +343,85 @@ fn main() -> Result<(), Box<dyn Error>> {
             layer =
                 PreparedNativeBinaryPolyWhirLayer::from_native_authority_with_construction_limits(
                     &authority,
-                    options(depth + 1, &args),
-                    &limits,
-                    &construction_limits,
+                    options(depth + 1, args),
+                    limits,
+                    construction_limits,
                 )
                 .map_err(at_layer(depth + 1))?;
         }
+    }
+    Ok(())
+}
+
+/// The next expected statement and the checked output of one packed-Keccak layer.
+type MixedOutput = (Vec<Vec<F>>, VerifiedBinaryNativePolyMixedWhirProof);
+/// Proves layer `depth` from `prove`, verifies it against the expected child statement, and
+/// returns the next expected statement with the checked output.
+fn prove_mixed<S>(
+    depth: usize,
+    layer: &PreparedNativeBinaryPolyMixedWhirLayer<S>,
+    expected: &[Vec<F>],
+    prove: impl FnOnce(
+        &PreparedNativeBinaryPolyMixedWhirLayer<S>,
+    ) -> Result<NativeBinaryPolyMixedRecursiveProof, VerificationError>,
+) -> Result<MixedOutput, Box<dyn Error>> {
+    let start = Instant::now();
+    println!(
+        "Layer {depth}: {} witnesses, {} initial codeword cells",
+        layer.circuit().witness_count,
+        layer.initial_codeword_cells()
+    );
+    let next_expected = layer
+        .output_public_values(expected)
+        .map_err(at_layer(depth))?;
+    let recursive = prove(layer).map_err(at_layer(depth))?;
+    let checked = layer
+        .verify(&recursive, expected)
+        .map_err(at_layer(depth))?;
+    println!(
+        "Native Poly64/Poly192 layer {depth} proved and verified in {:.2?}",
+        start.elapsed()
+    );
+    Ok((next_expected, checked))
+}
+
+/// Every layer commits its Keccak table as packed bits. The first layer verifies the dense
+/// source; every later layer verifies a packed-Keccak child.
+fn run_mixed(
+    args: &Args,
+    source: &BinaryNativePolyWhirAuthority<SquaringAir>,
+    checked: &VerifiedBinaryNativePolyWhirProof,
+    expected: &[Vec<F>],
+    limits: &DirectCircuitLimits,
+    construction_limits: &CircuitConstructionLimits,
+) -> Result<(), Box<dyn Error>> {
+    println!("Preparing native recursion layer 1...");
+    let first =
+        PreparedNativeBinaryPolyMixedWhirLayer::from_native_authority_with_construction_limits(
+            source,
+            mixed_options(1, args),
+            limits,
+            construction_limits,
+        )
+        .map_err(at_layer(1))?;
+    let (mut expected, mut checked) =
+        prove_mixed(1, &first, expected, |layer| layer.prove_verified(checked))?;
+    let mut authority = first.authority().clone();
+    drop(first);
+    for depth in 2..=args.layers {
+        println!("Preparing native recursion layer {depth}...");
+        let layer =
+            PreparedNativeBinaryPolyMixedWhirLayer::from_mixed_authority_with_construction_limits(
+                &authority,
+                mixed_options(depth, args),
+                limits,
+                construction_limits,
+            )
+            .map_err(at_layer(depth))?;
+        (expected, checked) = prove_mixed(depth, &layer, &expected, |layer| {
+            layer.prove_verified(&checked)
+        })?;
+        authority = layer.authority().clone();
     }
     Ok(())
 }
