@@ -2473,7 +2473,8 @@ fn native_blake3_words_range_check_merkle_siblings() {
 /// input of that compression's native BLAKE3 call. In a complete native WHIR verifier, a prover
 /// who claims the honest digests for a sibling limb with a seventeenth coordinate satisfies
 /// every fanout and gate row, but the witness bus rejects it, and lifting the table's bit
-/// instead leaves a cell outside {0, 1}. A padding row isolates that Booleanity constraint.
+/// instead leaves a cell outside {0, 1}. A padding row, which no bus row reads, is still
+/// constrained by the table.
 #[test]
 fn native_blake3_words_range_check_whir_merkle_siblings() {
     use p3_binary_pcs::whir::BinaryWhirDomain;
