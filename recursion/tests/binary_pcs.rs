@@ -536,7 +536,14 @@ fn native_selectors_and_varied_table_arities_reuse_one_circuit() {
 
 #[test]
 fn native_query_grinding_is_replayed() {
-    let fixture = fixture!(keccak, 7, 1, 1, 0, [(1, 1)], 3);
+    // Under the `parallel` feature the native grind returns whichever valid witness a worker
+    // finds first, so the flipped witness below would change from run to run and could itself
+    // be valid. With one worker the grind finds the same witness on every run.
+    let fixture = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap()
+        .install(|| fixture!(keccak, 7, 1, 1, 0, [(1, 1)], 3));
     let (circuit, public, private) = build(ByteHash::Keccak256, 0, &fixture);
     assert!(runs(&circuit, &public, &private));
     let mut wrong = private.clone();
