@@ -363,8 +363,8 @@ where
     /// Each word stands for its two little-endian bytes, so a row of `n` words
     /// authenticates the same `2n`-byte string. Rows hash with
     /// [`BinaryCircuitHost::hash_words`], which range-checks every word (a
-    /// native host absorbs each one as a raw Keccak limb), and their digest
-    /// words are used directly.
+    /// native host absorbs each one as a hash block input: a Keccak lane limb
+    /// or a BLAKE3 block word), and their digest words are used directly.
     ///
     /// # Errors
     ///

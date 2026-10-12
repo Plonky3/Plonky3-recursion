@@ -387,10 +387,12 @@ where
 {
     /// Builds a full folding verifier and its native output authority. All
     /// child plans and preprocessing come from `authority`, independently of
-    /// any proof. Native Keccak is required; BLAKE3, grouped and indexed child
-    /// relations are rejected before graph allocation. Limits cover the graph
-    /// and trace preparation; native PCS codewords and proving workspaces
-    /// require additional memory.
+    /// any proof. The layer enables only native Keccak-f: a child whose
+    /// transcript or commitments use BLAKE3 fails with `OpNotAllowed` once it
+    /// reaches a BLAKE3 compression. Grouped and indexed child relations are
+    /// rejected before graph allocation. Limits cover the graph and trace
+    /// preparation; native PCS codewords and proving workspaces require
+    /// additional memory.
     pub fn from_native_authority<A>(
         authority: &BinaryNativeAuthority<Base, F, A>,
         options: NativeBinaryFoldingRecursionOptions,
@@ -532,10 +534,12 @@ where
 {
     /// Builds a full grouped folding verifier and its grouped native output
     /// authority. All child plans and preprocessing come from `authority`,
-    /// independently of any proof. Native Keccak is required; BLAKE3,
-    /// indexed child relations and child groupings whose leaves are not
-    /// exactly one fold coset are rejected before graph allocation, as is a
-    /// `cap_height` above either output `log_inv_rate`. Limits cover the graph
+    /// independently of any proof. The layer enables only native Keccak-f: a
+    /// child whose transcript or commitments use BLAKE3 fails with
+    /// `OpNotAllowed` once it reaches a BLAKE3 compression. Indexed child
+    /// relations and child groupings whose leaves are not exactly one fold
+    /// coset are rejected before graph allocation, as is a `cap_height` above
+    /// either output `log_inv_rate`. Limits cover the graph
     /// and trace preparation; native PCS codewords and proving workspaces
     /// require additional memory.
     pub fn from_native_authority<A>(
