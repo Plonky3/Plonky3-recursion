@@ -15,11 +15,11 @@ use super::*;
 use crate::verifier::{BinaryPolyWhirMultiStarkVerifier, NativeBinaryPolyWhirMultiStarkInput};
 
 /// The packing of [`Poly64`].
-type Poly64Packing = <Poly64 as Field>::Packing;
+pub(super) type Poly64Packing = <Poly64 as Field>::Packing;
 /// The packing of [`Poly192`] over [`Poly64Packing`].
-type Poly192Packing = <Poly192 as ExtensionField<Poly64>>::ExtensionPacking;
+pub(super) type Poly192Packing = <Poly192 as ExtensionField<Poly64>>::ExtensionPacking;
 /// [`Poly192`] as packed [`Poly64`] coordinates.
-type Poly192PackedExt = PackedExt<Poly64, Poly192Packing>;
+pub(super) type Poly192PackedExt = PackedExt<Poly64, Poly192Packing>;
 
 /// Trusted AIRs, matched native key and exact additive domain and layout.
 pub struct BinaryNativePolyWhirAuthority<A, L = SuffixProver<Poly64, Poly192>>

@@ -1,10 +1,13 @@
 //! Factory-owned native proofs over a dense Poly64 WHIR commitment and one packed-bit table
 //! commitment, and checked recursion input.
+use p3_air::Air;
 use p3_binary_field::{Poly64, Poly192};
+use p3_multi_stark::folder::{InteractionMultilinearFolder, MultilinearFolder};
 use p3_sumcheck::layout::Table;
 
 use super::config::{BinaryNativePolyMixedWhirConfig, BinaryNativePolyMixedWhirPcsParameters};
 use super::family::PolyMixedWhirFamily;
+use super::poly_whir::{Poly64Packing, Poly192PackedExt, Poly192Packing};
 use super::*;
 use crate::verifier::{
     BinaryPolyMixedWhirMultiStarkVerifier, NativeBinaryPolyMixedWhirMultiStarkInput,
@@ -115,7 +118,18 @@ impl<A: VerifierAir<Poly64, Poly192>> BinaryNativePolyMixedWhirAuthority<A> {
         })
     }
 }
-impl<A: ProverAir<Poly64, Poly192>> BinaryNativePolyMixedWhirProver<A> {
+// The bounds of `p3_multi_stark::folder::ProverAir<Poly64, Poly192>` under one binder, as for
+// `BinaryNativePolyWhirProver`.
+impl<A> BinaryNativePolyMixedWhirProver<A>
+where
+    A: VerifierAir<Poly64, Poly192>,
+    for<'a> A: Air<MultilinearFolder<'a, Poly64, Poly64, Poly192>>
+        + Air<MultilinearFolder<'a, Poly64, Poly64Packing, Poly192Packing>>
+        + Air<MultilinearFolder<'a, Poly64, Poly192PackedExt, Poly192PackedExt>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly64, Poly192>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly64Packing, Poly192Packing>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly192PackedExt, Poly192PackedExt>>,
+{
     /// Main tables in AIR order: field cells, or packed bits for the bit-committed table.
     /// Trusted shapes are checked before commitment or any native transcript mutation, and the
     /// commitment refuses a non-bit cell of the bit-committed table before it binds anything.
