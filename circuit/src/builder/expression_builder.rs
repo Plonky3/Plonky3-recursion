@@ -456,9 +456,15 @@ where
     ///
     /// An [`ExprId`] handle to the addition expression.
     pub fn add(&mut self, lhs: ExprId, rhs: ExprId, label: &'static str) -> ExprId {
-        // In characteristic two, identical addends cancel.
-        if F::TWO == F::ZERO && lhs == rhs {
-            return ExprId::ZERO;
+        // In characteristic two, identical addends cancel, including an addend repeated inside
+        // a nested sum: a + (a + b) = b.
+        if F::TWO == F::ZERO {
+            if lhs == rhs {
+                return ExprId::ZERO;
+            }
+            if let Some(remaining) = self.cancel_addend_in_nested_sum(lhs, rhs) {
+                return remaining;
+            }
         }
         // x + 0 = x, 0 + x = x
         if self.is_const_zero(lhs) {
@@ -496,6 +502,19 @@ where
         );
         self.cse_pool.insert(key, expr_id);
         expr_id
+    }
+
+    /// Returns `b` when one addend is `a` and the other is an `Add` node of `a` and `b`, in any
+    /// operand order. The caller applies this only in characteristic two, where
+    /// `a + (a + b) = b`.
+    fn cancel_addend_in_nested_sum(&self, lhs: ExprId, rhs: ExprId) -> Option<ExprId> {
+        [(lhs, rhs), (rhs, lhs)]
+            .into_iter()
+            .find_map(|(addend, nested)| match *self.graph.get_expr(nested) {
+                Expr::Add { lhs: a, rhs: b } if a == addend => Some(b),
+                Expr::Add { lhs: a, rhs: b } if b == addend => Some(a),
+                _ => None,
+            })
     }
 
     /// Adds a subtraction expression to the graph.
@@ -1211,6 +1230,90 @@ mod tests {
         let before = builder.graph().nodes().len();
         assert_eq!(builder.add(a, a, "cancel"), ExprId::ZERO);
         assert_eq!(builder.graph().nodes().len(), before);
+    }
+
+    /// Each placement of the repeated addend `a` in `a + (a + b)`: its position inside the nested
+    /// sum, and whether the nested sum is the left operand of the outer addition.
+    const NESTED_ADDEND_ORIENTATIONS: [(usize, bool); 4] =
+        [(0, false), (0, true), (1, false), (1, true)];
+
+    /// Builds the nested sum of `a` and `b` with `a` at `a_position`, then adds `a` to it on the
+    /// side given by `nested_on_left`. Returns `(builder, a, b, nested, outer)`.
+    fn add_addend_to_its_own_sum<F: PrimeCharacteristicRing + Eq + Hash>(
+        a_position: usize,
+        nested_on_left: bool,
+    ) -> (ExpressionBuilder<F>, ExprId, ExprId, ExprId, ExprId) {
+        let mut builder = ExpressionBuilder::<F>::new();
+        let a = builder.public(0, "a");
+        let b = builder.public(1, "b");
+        let operands = if a_position == 0 { (a, b) } else { (b, a) };
+        let nested = builder.add(operands.0, operands.1, "nested");
+        assert!(
+            matches!(builder.graph().nodes()[nested.0 as usize], Expr::Add { lhs, rhs } if (lhs, rhs) == operands)
+        );
+        let outer = if nested_on_left {
+            builder.add(nested, a, "outer")
+        } else {
+            builder.add(a, nested, "outer")
+        };
+        (builder, a, b, nested, outer)
+    }
+
+    fn check_addend_cancels_against_its_own_sum<F: PrimeCharacteristicRing + Eq + Hash>() {
+        for (a_position, nested_on_left) in NESTED_ADDEND_ORIENTATIONS {
+            let (builder, _, b, nested, outer) =
+                add_addend_to_its_own_sum::<F>(a_position, nested_on_left);
+            assert_eq!(
+                outer, b,
+                "a at nested position {a_position}, nested sum on left: {nested_on_left}"
+            );
+            assert_eq!(builder.graph().nodes().len(), nested.0 as usize + 1);
+        }
+    }
+
+    /// In characteristic two `a + (a + b) = b`, so the sum is `b` itself and allocates no node.
+    #[test]
+    fn binary_addend_cancels_against_its_own_sum_in_every_orientation() {
+        check_addend_cancels_against_its_own_sum::<p3_binary_field::BinaryField128>();
+        check_addend_cancels_against_its_own_sum::<p3_binary_field::Poly64>();
+    }
+
+    /// Only an addend of the nested sum cancels: `a + (c + b)` is a new sum.
+    #[test]
+    fn binary_addend_absent_from_the_nested_sum_is_kept() {
+        for nested_on_left in [false, true] {
+            let mut builder = ExpressionBuilder::<p3_binary_field::BinaryField128>::new();
+            let a = builder.public(0, "a");
+            let b = builder.public(1, "b");
+            let c = builder.public(2, "c");
+            let nested = builder.add(c, b, "c + b");
+            let operands = if nested_on_left {
+                (nested, a)
+            } else {
+                (a, nested)
+            };
+            let outer = builder.add(operands.0, operands.1, "a + (c + b)");
+            assert!(
+                matches!(builder.graph().nodes()[outer.0 as usize], Expr::Add { lhs, rhs } if (lhs, rhs) == operands)
+            );
+        }
+    }
+
+    /// In odd characteristic `a + (a + b) = 2a + b`, a new sum.
+    #[test]
+    fn prime_field_addend_is_not_cancelled_against_its_own_sum() {
+        for (a_position, nested_on_left) in NESTED_ADDEND_ORIENTATIONS {
+            let (builder, a, _, nested, outer) =
+                add_addend_to_its_own_sum::<BabyBear>(a_position, nested_on_left);
+            let operands = if nested_on_left {
+                (nested, a)
+            } else {
+                (a, nested)
+            };
+            assert!(
+                matches!(builder.graph().nodes()[outer.0 as usize], Expr::Add { lhs, rhs } if (lhs, rhs) == operands)
+            );
+        }
     }
 
     #[test]
