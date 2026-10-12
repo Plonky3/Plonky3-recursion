@@ -2190,13 +2190,15 @@ impl<'a, F: BinaryCoordinateField> Blake3Forgery<'a, F> {
     }
 }
 
-/// 80 private limbs are hashed in three blocks. `hash` binds the BLAKE3 digest of the limbs'
-/// bytes to the 16 public digest words. Limb 5 is input 5 of the first block; limb 70 is input
-/// 6 of the third.
+/// 520 private limbs are 1040 bytes, two chunks: the sixteen blocks of the first chunk, the one
+/// block of the second, whose counter is 1, and their parent are eighteen calls, in that order.
+/// `hash` binds the BLAKE3 digest of the limbs' bytes to the 16 public digest words. Limb 5 is
+/// input 5 of the first block, limb 262 is input 6 of block 8, in the middle of the first chunk,
+/// and limb 515 is input 3 of the last block, the second chunk's.
 fn reject_wide_blake3_message_words(
     hash: impl FnOnce(&mut CircuitBuilder<F>, &[ExprId], &[ExprId]),
 ) {
-    const LIMBS: usize = 80;
+    const LIMBS: usize = 520;
     let limbs: Vec<u16> = (0..LIMBS as u16)
         .map(|i| i.wrapping_mul(0x9e37) ^ 0x5a5a)
         .collect();
@@ -2224,9 +2226,12 @@ fn reject_wide_blake3_message_words(
         &private,
         tower_accepts(&prepared, public),
     );
-    assert_eq!(forgery.calls.len(), 3, "three blocks");
+    assert_eq!(forgery.calls.len(), 18, "two chunks and their parent");
+    // Input 48 is the low limb of a call's counter.
+    let counter = forgery.calls[16].0[48];
+    assert_eq!(forgery.honest[counter.0 as usize], limb_value(1));
     let wide = F::from_raw_coordinates(1 << 16).unwrap();
-    for (limb, at) in [(5, (0, 5)), (70, (2, 6))] {
+    for (limb, at) in [(5, (0, 5)), (262, (8, 6)), (515, (16, 3))] {
         let mut forged_private = private.clone();
         forged_private[limb] += wide;
         let forged = forgery.reject_wide_limb(&forgery.honest, &forged_private, false);
