@@ -9,7 +9,7 @@ use p3_bus::{BusDebugInstance, BusDebugReport, BusSymbolicBuilder};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{
     BLAKE3_INPUT_WORDS, ExecutionContext, NonPrimitiveExecutor, NpoTypeId, blake3_compress,
-    words_to_limbs,
+    limbs_to_words, words_to_limbs,
 };
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitError, ExprId, NonPrimitiveOpId, Op, WitnessId};
@@ -241,6 +241,104 @@ fn honest_chain_balances_and_forged_outputs_do_not<F: BinaryCoordinateField>() {
 fn honest_chains_balance_and_forged_outputs_do_not_in_both_bases() {
     honest_chain_balances_and_forged_outputs_do_not::<F>();
     honest_chain_balances_and_forged_outputs_do_not::<Poly64>();
+}
+
+/// The select rows and the multiply-adds by one of a prepared circuit's gate table.
+fn selects_and_additions(prepared: &NativeBusCircuit<F>) -> [usize; 2] {
+    let gate_pp = prepared.airs()[1].preprocessed_trace().unwrap();
+    let rows = gate_pp.values.as_chunks::<14>().0;
+    let count = |selector: usize, constant: F| {
+        rows.iter()
+            .filter(|row| row[6 + selector] == F::ONE && row[5] == constant)
+            .count()
+    };
+    [count(1, F::ZERO), count(6, F::ONE)]
+}
+
+/// A difference that a select reads and that a BLAKE3 call hashes as its first block limb keeps
+/// its addition: a select in its place would leave the hashed limb free. A prover who forges the
+/// limb, compresses the forged block and claims its digest balances every bus and satisfies
+/// every table but the gate table.
+#[test]
+fn a_difference_hashed_by_blake3_keeps_its_addition() {
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let [s, t, e, selected] = b.alloc_public_input_array::<4>("select");
+    let difference = b.sub(t, e);
+    let mix = b.mul_add(s, difference, e);
+    b.connect(mix, selected);
+    let block = b.alloc_public_input_array::<31>("block");
+    let cv = b.alloc_public_input_array::<16>("chaining value");
+    let mut input = vec![difference];
+    input.extend(block.iter().chain(&cv));
+    for limb in words_to_limbs(&tail(0)) {
+        input.push(b.define_const(raw(limb)));
+    }
+    for actual in b.add_native_blake3_compress(&input).unwrap() {
+        let expected = b.public_input();
+        b.connect(actual, expected);
+    }
+    let circuit = b.build().unwrap();
+    let prepared = build(&circuit, 1, KeccakCommitment::Dense);
+    assert_eq!(selects_and_additions(&prepared), [0, 1]);
+
+    let rest: Vec<u16> = (1..48u16)
+        .map(|i| i.wrapping_mul(0x9e37) ^ 0x6a09)
+        .collect();
+    let digest = |first: u16| -> Vec<F> {
+        let mut limbs = vec![first];
+        limbs.extend(&rest);
+        limbs.extend(words_to_limbs(&tail(0)));
+        let input: [u32; BLAKE3_INPUT_WORDS] = limbs_to_words(&limbs).try_into().unwrap();
+        words_to_limbs(&blake3_compress(&input)[..8])
+            .into_iter()
+            .map(raw)
+            .collect()
+    };
+    let s_value = F::from_raw_coordinates(0x8123456789abcdef).unwrap();
+    let [t_limb, e_limb] = [0x5a5a, 0x1234];
+    let [t_value, e_value] = [t_limb, e_limb].map(raw::<F>);
+    let mut statement = vec![
+        s_value,
+        t_value,
+        e_value,
+        s_value * (t_value - e_value) + e_value,
+    ];
+    statement.extend(rest.iter().map(|&limb| raw::<F>(limb)));
+    statement.extend(digest(t_limb ^ e_limb));
+    let honest = witness(&circuit, &statement);
+    let replay = Replay::new(&prepared);
+    assert!(replay.balanced(&honest, &statement));
+    let refusing = |witness: &WitnessTrace<F>, statement: &[F]| -> Vec<usize> {
+        let traces = prepared.traces(witness).unwrap();
+        let public = prepared.public_values(statement).unwrap();
+        (0..traces.len())
+            .filter(|&i| {
+                std::panic::catch_unwind(|| {
+                    check_constraints(&prepared.airs()[i], &traces[i], &public[i]);
+                })
+                .is_err()
+            })
+            .collect()
+    };
+    assert!(refusing(&honest, &statement).is_empty());
+
+    let forged_limb = t_limb ^ e_limb ^ 1;
+    let id = circuit.expr_to_widx[&difference].0 as usize;
+    let mut forged = replaced(&honest, id, raw(forged_limb));
+    let mut forged_statement = statement.clone();
+    let output = calls(&circuit).pop().unwrap().1;
+    let claimed = digest(forged_limb);
+    for ((limb, value), public) in output
+        .iter()
+        .zip(&claimed)
+        .zip(&mut forged_statement[statement.len() - 16..])
+    {
+        forged = replaced(&forged, limb.0 as usize, *value);
+        *public = *value;
+    }
+    assert!(replay.balanced(&forged, &forged_statement));
+    assert_eq!(refusing(&forged, &forged_statement), [1]);
 }
 
 /// The column of `cell` in a row of the table.
