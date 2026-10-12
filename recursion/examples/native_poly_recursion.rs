@@ -26,15 +26,17 @@
 //! | 2     | dense  | 3        | 1,380,220 | 603,979,776    | 10.9 s     | 19.1 s | 23.5 GB  | 21.9 GB   |
 //!
 //! At arity 4, layer 1 has 8,284 witnesses and 1,048,576 codeword cells when packed and
-//! 4,718,592 when dense. Layers 2 and 3 pad the witness table to 2^22 rows and the gates table
-//! to 2^20 rows either way, so the packed layers stay clear of the 2^21 gates cliff.
+//! 4,718,592 when dense, and takes 0.8 to 1.2 s either way. Layers 2 and 3 pad the witness
+//! table to 2^22 rows and the gates table to 2^20 rows either way, so the packed layers stay
+//! clear of the 2^21 gates cliff.
 //!
-//! With dense Keccak tables, layer 1 takes 0.84 s. A four-digest node
-//! absorbs one Keccak-f block, as a pairwise node does, and an opening walks half as many
-//! levels, so layer 3 takes 2,227 Keccak-f calls instead of 2,798. More than 2,621 calls (25
-//! trace rows each) give the Keccak table 2^17 rows instead of 2^16, so only at
-//! `--merkle-arity 2` does layer 3 need the default limit of 2^30 codeword cells, 8 GiB of
-//! Poly64 cells; at arity 4, layers 1 to 3 stay within 2^29.
+//! A four-digest node absorbs one Keccak-f block, as a pairwise node does, and an opening walks
+//! half as many levels. At arity 4, layer 2 takes 1,602 Keccak-f calls when packed and 1,781
+//! when dense, and layer 3 takes 2,143 when packed and 2,227 when dense, against 2,798 for a
+//! dense layer 3 at arity 2. More than 2,621 calls (25 trace rows each) give the Keccak table
+//! 2^17 rows instead of 2^16, so with dense Keccak tables only at `--merkle-arity 2` does layer
+//! 3 need the default limit of 2^30 codeword cells, 8 GiB of Poly64 cells; at arity 4, layers 1
+//! to 3 stay within 2^29.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits count field cells
 //! or graph entries, not bytes.
