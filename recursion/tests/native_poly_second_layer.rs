@@ -33,20 +33,20 @@ type F = Poly64;
 const ARITY: MerkleArity = MerkleArity::Four;
 const CAP_HEIGHT: usize = 1;
 
-/// About 12% above the measured second-layer verifier: 641,797 expression
-/// nodes, 20,264 pending connections, 14,963 non-primitive calls and 779,240
+/// About 12% above the measured second-layer verifier: 639,953 expression
+/// nodes, 18,920 pending connections, 14,963 non-primitive calls and 778,400
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 719_000,
-    max_pending_connects: 22_700,
+    max_expression_nodes: 717_000,
+    max_pending_connects: 21_200,
     max_non_primitive_calls: 16_800,
-    max_non_primitive_slots: 873_000,
+    max_non_primitive_slots: 872_000,
 };
-/// About 12% above the measured 610,642 witnesses and 389,627 operations.
+/// About 12% above the measured 609,246 witnesses and 388,203 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 684_000,
-    max_operations: 437_000,
+    max_witnesses: 683_000,
+    max_operations: 435_000,
     max_trace_cells: 1 << 28,
 };
 /// About 12% above the measured 1,591 native Keccak-f calls.

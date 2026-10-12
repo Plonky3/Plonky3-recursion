@@ -23,6 +23,10 @@ use p3_symmetric::CompressionFunctionFromHasher;
 use p3_test_utils::binary_field_params::keccak;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
 
+use crate::native_bus_circuit::{
+    reject_flipped_grinding_bits, reject_wide_grinding_word, tower_accepts,
+};
+
 type F = BinaryField128;
 type H = NativeBinaryEncoding;
 fn scalar(b: &mut CircuitBuilder<F>) -> NativeTower128Target {
@@ -287,6 +291,7 @@ macro_rules! check {
             .map(|round| &round.pow_witness)
             .chain([&proof.final_pow_witness])
             .chain(sumchecks.flat_map(|sumcheck| &sumcheck.pow_witnesses));
+        let mut pow_rows = Vec::new();
         for witness in pow_witnesses {
             let row = circuit.expr_to_widx[&witness.as_expr()];
             let index = circuit
@@ -297,6 +302,7 @@ macro_rules! check {
             let mut wrong = private.clone();
             wrong[index] += F::ONE;
             assert!(!run(&circuit, &public, &wrong));
+            pow_rows.push(row);
         }
         // Every site binds the first and last sibling of its paths to the cap.
         // A four-digest tree of odd height under a zero cap pads its top group
@@ -354,7 +360,7 @@ macro_rules! check {
                 .private_native_values(&other.input_shape())
                 .is_err()
         );
-        (circuit, config, padded_sites)
+        (circuit, config, padded_sites, (public, private, pow_rows))
     }};
 }
 
@@ -401,9 +407,9 @@ fn tower32_whir_keeps_base_rows_narrow_and_challenges_wide() {
 /// is split into checked bytes; the bounds sit about 25% above the former.
 #[test]
 fn native_sixteen_value_rows_authenticate_as_word_leaves() {
-    let (tower128, _, _) = check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
+    let (tower128, _, _, _) = check!(F, SuffixProver, protocol(9, 1, true), 0, 0, 4);
     assert!(tower128.witness_count <= 55_000);
-    let (tower32, _, _) = check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
+    let (tower32, _, _, _) = check!(BinaryField32, PrefixProver, protocol(9, 1, false), 0, 0, 4);
     assert!(tower32.witness_count <= 47_000);
 }
 
@@ -413,7 +419,8 @@ fn native_sixteen_value_rows_authenticate_as_word_leaves() {
 /// digests; a one-level cap holds four roots.
 #[test]
 fn native_arity_four_trees_bind_every_query_at_even_and_odd_heights() {
-    let (_, _, padded_sites) = check!(F, SuffixProver, protocol(9, 1, true), 0, 2, 2, 8, Four, 4);
+    let (_, _, padded_sites, _) =
+        check!(F, SuffixProver, protocol(9, 1, true), 0, 2, 2, 8, Four, 4);
     assert!(padded_sites > 0);
     check!(F, PrefixProver, protocol(9, 1, false), 1, 0, 2, 8, Four, 4);
     check!(
@@ -434,8 +441,32 @@ fn native_arity_four_trees_bind_every_query_at_even_and_odd_heights() {
 /// within the first byte.
 #[test]
 fn native_grinding_beyond_one_sampled_byte_binds_every_witness() {
-    let (_, config, _) = check!(F, SuffixProver, protocol(9, 1, true), 0, 12, 2, 16);
+    let (_, config, _, _) = check!(F, SuffixProver, protocol(9, 1, true), 0, 12, 2, 16);
     assert!(config.max_pow_bits() > 8);
+}
+
+/// A site that grinds observes its witness as the unchecked sixteen-bit words
+/// of its base width, which the refill of the draw after it range-checks as
+/// Keccak lanes. The runner refuses a flipped witness bit under Tower128 and
+/// Tower32. Under Tower32, moving coordinate 32 of the witness into its second
+/// word keeps the absorbed bytes but leaves the base field; only the lane
+/// range check refuses it.
+#[test]
+fn native_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word() {
+    let (circuit, _, _, (public, private, pow_rows)) =
+        check!(F, PrefixProver, protocol(3, 1, false), 0, 2);
+    reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 128);
+    let (circuit, _, _, (public, private, pow_rows)) =
+        check!(BinaryField32, PrefixProver, protocol(3, 1, false), 0, 2);
+    reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 32);
+    reject_wide_grinding_word(
+        &circuit,
+        &public,
+        &private,
+        &pow_rows,
+        (1, 32),
+        tower_accepts,
+    );
 }
 
 type Ch = keccak::LevelChallenger<F>;

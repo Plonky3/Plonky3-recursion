@@ -41,43 +41,43 @@ struct Case {
 }
 
 /// Pairwise output trees under a cap of two levels: 4 roots. The second layer
-/// measures 365,907 expression nodes, 13,330 pending connections, 6,263
-/// non-primitive calls, 703,416 slots, 351,538 witnesses, 146,031 operations
+/// measures 362,204 expression nodes, 10,642 pending connections, 6,263
+/// non-primitive calls, 701,736 slots, 348,731 witnesses, 143,168 operations
 /// and 1,523 native Keccak-f calls.
 const PAIRWISE: Case = Case {
     arity: MerkleArity::Two,
     cap_height: 2,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 410_000,
-        max_pending_connects: 15_000,
+        max_expression_nodes: 406_000,
+        max_pending_connects: 12_000,
         max_non_primitive_calls: 7_020,
-        max_non_primitive_slots: 788_000,
+        max_non_primitive_slots: 786_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 394_000,
-        max_operations: 164_000,
+        max_witnesses: 391_000,
+        max_operations: 161_000,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_710,
 };
 /// Four-digest output trees under a cap of one level: the same 4 roots. The
-/// second layer measures 367,267 expression nodes, 13,330 pending
-/// connections, 6,054 non-primitive calls, 619,816 slots, 353,107 witnesses,
-/// 164,435 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
+/// second layer measures 363,564 expression nodes, 10,642 pending
+/// connections, 6,054 non-primitive calls, 618,136 slots, 350,300 witnesses,
+/// 161,572 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
 /// below the pairwise layer's count, so a layer whose trees fell back to
 /// pairwise nodes fails it.
 const FOUR_DIGEST: Case = Case {
     arity: MerkleArity::Four,
     cap_height: 1,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 412_000,
-        max_pending_connects: 15_000,
+        max_expression_nodes: 408_000,
+        max_pending_connects: 12_000,
         max_non_primitive_calls: 6_790,
-        max_non_primitive_slots: 695_000,
+        max_non_primitive_slots: 693_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 396_000,
-        max_operations: 184_500,
+        max_witnesses: 393_000,
+        max_operations: 181_000,
         max_trace_cells: 1 << 27,
     },
     max_keccak_calls: 1_480,

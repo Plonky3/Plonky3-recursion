@@ -472,8 +472,18 @@ where
         let zero = P::constant(b, 0)?;
         P::assert_equal(b, &witness, &zero);
     } else {
-        let bytes = P::oracle_bytes::<H>(b, &witness, BinaryOracleWord::Base)?;
-        ch.observe_bytes_with_host::<H, CF>(b, &bytes)?;
+        // The refill of the draw that follows range-checks each word.
+        let words = if H::hashes_words_whole(ch.hash()) {
+            P::oracle_words(b, &witness, BinaryOracleWord::Base)?
+        } else {
+            None
+        };
+        if let Some(words) = words {
+            ch.observe_words_with_host::<H, CF>(b, &words)?;
+        } else {
+            let bytes = P::oracle_bytes::<H>(b, &witness, BinaryOracleWord::Base)?;
+            ch.observe_bytes_with_host::<H, CF>(b, &bytes)?;
+        }
         for bit in ch.sample_bits_with_host::<H, CF>(b, bits)? {
             let difference = b.sub(ExprId::ZERO, bit);
             b.assert_zero(difference);

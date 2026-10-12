@@ -732,7 +732,7 @@ fn native_keccak_lanes_range_check_subtree_leaf_words_in_both_blocks() {
 }
 
 /// Whether a proof of the given traces verifies under a fixed statement.
-type Accepts<F> = Box<dyn Fn(Vec<RowMajorMatrix<F>>) -> bool>;
+pub(crate) type Accepts<F> = Box<dyn Fn(Vec<RowMajorMatrix<F>>) -> bool>;
 
 /// A native WHIR leaf splits each opened value into `count` hinted words
 /// bound by `value = sum_j word_j * x_(16j)`, where `x_c` has the single raw
@@ -895,7 +895,7 @@ fn tower_words(b: &mut CircuitBuilder<F>, value: ExprId, count: usize) -> Vec<Ex
 }
 
 /// Proves Tower128 traces under a native binary PCS authority for `prepared`.
-fn tower_accepts(prepared: &NativeBusCircuit<F>, public: Vec<Vec<F>>) -> Accepts<F> {
+pub(crate) fn tower_accepts(prepared: &NativeBusCircuit<F>, public: Vec<Vec<F>>) -> Accepts<F> {
     let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
         prepared.airs().to_vec(),
         prepared.log_heights().to_vec(),
@@ -914,7 +914,7 @@ fn tower_accepts(prepared: &NativeBusCircuit<F>, public: Vec<Vec<F>>) -> Accepts
 }
 
 /// Proves Poly64 traces under a native Poly64 WHIR authority for `prepared`.
-fn poly64_accepts(
+pub(crate) fn poly64_accepts(
     prepared: &NativeBusCircuit<p3_binary_field::Poly64>,
     public: Vec<Vec<p3_binary_field::Poly64>>,
 ) -> Accepts<p3_binary_field::Poly64> {
@@ -1024,6 +1024,178 @@ fn native_keccak_lanes_range_check_poly64_leaf_words_in_both_blocks() {
         |b, value, count| b.native_poly64_unchecked_words(value, count).unwrap(),
         poly64_accepts,
     );
+}
+
+/// Each WHIR site that grinds splits its witness into hinted words bound by
+/// `witness = sum_j word_j * x_(16j)` and observes them, so the refill of the
+/// draw after it absorbs each word as a Keccak lane; a site without grinding
+/// splits nothing. Returns each split witness's private input position and
+/// words, given the rows of every site's witness.
+fn grinding_words<'a, F: Field>(
+    circuit: &'a Circuit<F>,
+    witnesses: &[WitnessId],
+) -> Vec<(usize, &'a [WitnessId])> {
+    let sites: Vec<_> = witnesses
+        .iter()
+        .filter_map(|&row| {
+            let split = circuit.ops.iter().find_map(|op| match op {
+                Op::Hint {
+                    inputs, outputs, ..
+                } if inputs[..] == [row] => Some(&outputs[..]),
+                _ => None,
+            })?;
+            let position = circuit
+                .private_input_rows
+                .iter()
+                .position(|&private_row| private_row == row)
+                .unwrap();
+            Some((position, split))
+        })
+        .collect();
+    assert!(!sites.is_empty(), "a site grinds");
+    sites
+}
+
+/// Whether the runner completes `circuit` from `statement` and `private`.
+fn circuit_runs<F: Field>(circuit: &Circuit<F>, statement: &[F], private: &[F]) -> bool {
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(statement)
+        .and_then(|()| runner.set_private_inputs(private))
+        .and_then(|()| runner.run())
+        .is_ok()
+}
+
+/// Every grinding witness (see [`grinding_words`]) of `circuit` splits into
+/// `base_bits / 16` words. Flipping the top coordinate of any word changes the
+/// absorbed lanes, which the draws after it bind, and flipping the first
+/// coordinate above `base_bits` leaves no split; the runner refuses both.
+pub(crate) fn reject_flipped_grinding_bits<F: BinaryCoordinateField>(
+    circuit: &Circuit<F>,
+    statement: &[F],
+    private: &[F],
+    witnesses: &[WitnessId],
+    base_bits: usize,
+) {
+    assert!(
+        circuit_runs(circuit, statement, private),
+        "the honest witnesses run"
+    );
+    let above = (base_bits < F::COORDINATE_BITS).then_some(base_bits);
+    for (position, split) in grinding_words(circuit, witnesses) {
+        assert_eq!(split.len(), base_bits / 16);
+        for coordinate in (0..split.len()).map(|j| 16 * j + 15).chain(above) {
+            let mut wrong = private.to_vec();
+            wrong[position] += F::from_raw_coordinates(1 << coordinate).unwrap();
+            assert!(
+                !circuit_runs(circuit, statement, &wrong),
+                "flipped witness coordinate {coordinate}"
+            );
+        }
+    }
+}
+
+/// The forgery `(word, moved)` flips coordinate `moved` of the first grinding
+/// witness (see [`grinding_words`]) and adds `x_moved / x_(16 * word)` to that
+/// word, which keeps the words' sum. The quotient has no coordinate below
+/// sixteen, so every absorbed byte stays honest and only the lane range check
+/// separates the forged witness from the honest one: one lane turns wide, the
+/// fanout, gate and bridge rows accept it, the hash bus does not, and lifting
+/// the Keccak lane instead leaves a state cell outside {0, 1}.
+pub(crate) fn reject_wide_grinding_word<F: BinaryCoordinateField>(
+    circuit: &Circuit<F>,
+    statement: &[F],
+    private: &[F],
+    witnesses: &[WitnessId],
+    (word, moved): (usize, usize),
+    setup: impl FnOnce(&NativeBusCircuit<F>, Vec<Vec<F>>) -> Accepts<F>,
+) {
+    let monomial = |coordinate: usize| F::from_raw_coordinates(1 << coordinate).unwrap();
+    let wide = monomial(moved) * monomial(16 * word).inverse();
+    assert_eq!(
+        wide.to_raw_coordinates() & 0xffff,
+        0,
+        "lane bytes unchanged"
+    );
+    let (value, split) = grinding_words(circuit, witnesses)[0];
+    let prepared = NativeBusCircuit::new(circuit, "grinding").unwrap();
+    let public = prepared.public_values(statement).unwrap();
+    let accepts = setup(&prepared, public.clone());
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(statement).unwrap();
+    runner.set_private_inputs(private).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest: Vec<F> = witness
+        .index
+        .iter()
+        .map(|&id| *witness.get_value(id).unwrap())
+        .collect();
+    let honest_traces = prepared.traces(&witness).unwrap();
+    assert!(accepts(honest_traces.clone()), "the honest traces prove");
+
+    let calls: Vec<_> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor {
+                executor, inputs, ..
+            } if executor.op_type() == &NpoTypeId::native_keccak_f1600() => Some(&inputs[0]),
+            _ => None,
+        })
+        .collect();
+    let keccak = prepared
+        .airs()
+        .iter()
+        .position(|air| air.width() == NUM_KECCAK_BINARY_COLS)
+        .unwrap();
+    let mut hinted = honest.clone();
+    hinted[split[word].0 as usize] += wide;
+    let mut forged_private = private.to_vec();
+    forged_private[value] += monomial(moved);
+    assert!(
+        !circuit_runs(circuit, statement, &forged_private),
+        "the runner refuses the forged witness"
+    );
+
+    let forged = replay(circuit, &hinted, statement, &forged_private);
+    let lanes: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .flat_map(|(c, ids)| {
+            ids.iter()
+                .enumerate()
+                .filter(|&(_, id)| forged[id.0 as usize] != honest[id.0 as usize])
+                .map(move |(l, _)| (c, l))
+        })
+        .collect();
+    let [(call, lane)] = lanes[..] else {
+        panic!("one lane changes, not {lanes:?}");
+    };
+    assert_ne!(
+        forged[calls[call][lane].0 as usize].to_raw_coordinates() >> 16,
+        0,
+        "lane {lane} of Keccak call {call} is wide"
+    );
+    let mut traces = honest_traces;
+    let [fanout, gates, bridge] =
+        patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
+    assert!(fanout > 0 && gates > 0 && bridge == 1);
+    for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
+        check_constraints(air, trace, public);
+    }
+    assert!(!accepts(traces.clone()));
+
+    let cell = keccak_input_cell(
+        &traces[keccak],
+        call,
+        lane,
+        honest[calls[call][lane].0 as usize],
+    );
+    traces[keccak].values[cell] += wide;
+    let local = catch_unwind(AssertUnwindSafe(|| {
+        check_constraints(&prepared.airs()[keccak], &traces[keccak], &[]);
+    }));
+    assert!(local.is_err(), "the lifted lane leaves a non-Boolean cell");
 }
 
 /// A proof-supplied Merkle sibling reaches the hash only through a level's

@@ -17,6 +17,10 @@ use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape,
 use p3_test_utils::binary_field_params::keccak;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
 
+use crate::native_bus_circuit::{
+    poly64_accepts, reject_flipped_grinding_bits, reject_wide_grinding_word,
+};
+
 type F = Poly64;
 type E = Poly192;
 type H = NativeBinaryEncoding;
@@ -212,6 +216,17 @@ macro_rules! check {
             .unwrap();
         bind(&mut b, &actual);
         let circuit = b.build().unwrap();
+        let sumchecks = std::iter::once(&proof.initial_sumcheck)
+            .chain(proof.rounds.iter().map(|round| &round.sumcheck))
+            .chain([&proof.final_sumcheck]);
+        let pow_rows: Vec<_> = proof
+            .rounds
+            .iter()
+            .map(|round| &round.pow_witness)
+            .chain([&proof.final_pow_witness])
+            .chain(sumchecks.flat_map(|sumcheck| &sumcheck.pow_witnesses))
+            .map(|witness| circuit.expr_to_widx[witness])
+            .collect();
         let private = imported.private_native_values(&shape).unwrap();
         let mut public: Vec<_> = commitment
             .roots()
@@ -269,6 +284,7 @@ macro_rules! check {
                 .private_native_values(&other.input_shape())
                 .is_err()
         );
+        (circuit, (public, private, pow_rows))
     }};
 }
 
@@ -297,4 +313,22 @@ fn native_poly_whir_caps_and_mixed_widths_bind_every_opening() {
         TableSpec::new(TableShape::new(3, 1), vec![]),
     ]);
     check!(PrefixProver, protocol, 1, 0);
+}
+
+/// A Poly64 base grinding witness is observed as the four unchecked words of
+/// its cell. The runner refuses a flipped witness bit; moving coefficient 16
+/// into the first word keeps the absorbed bytes, and only the lane range check
+/// refuses it.
+#[test]
+fn native_poly_whir_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word() {
+    let (circuit, (public, private, pow_rows)) = check!(PrefixProver, protocol(3, 1, false), 0, 2);
+    reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 64);
+    reject_wide_grinding_word(
+        &circuit,
+        &public,
+        &private,
+        &pow_rows,
+        (0, 16),
+        poly64_accepts,
+    );
 }
