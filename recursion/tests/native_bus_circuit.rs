@@ -1028,8 +1028,8 @@ fn native_keccak_lanes_range_check_poly64_leaf_words_in_both_blocks() {
 
 /// Each WHIR site that grinds splits its witness into `base_bits / 16` hinted
 /// words bound by `witness = sum_j word_j * x_(16j)` and observes them, so the
-/// refill of the draw after it absorbs each word as a Keccak lane; a site
-/// without grinding splits nothing. Returns each split witness's private input
+/// refill of the draw after it absorbs each word as a Keccak lane or a BLAKE3
+/// block word; a site without grinding splits nothing. Returns each split witness's private input
 /// position and words, given the rows of every site's witness, and asserts
 /// that the first hint on each witness row is that word split.
 fn grinding_words<'a, F: Field>(
@@ -1106,10 +1106,13 @@ pub(crate) fn reject_flipped_grinding_bits<F: BinaryCoordinateField>(
 /// The forgery `(word, moved)` flips coordinate `moved` of the first grinding
 /// witness (see [`grinding_words`]) and adds `x_moved / x_(16 * word)` to that
 /// word, which keeps the words' sum. The quotient has no coordinate below
-/// sixteen, so every absorbed byte stays honest and only the lane range check
-/// separates the forged witness from the honest one: one lane turns wide, the
-/// fanout, gate and bridge rows accept it, the hash bus does not, and lifting
-/// the Keccak lane instead leaves a state cell outside {0, 1}.
+/// sixteen, so every absorbed byte stays honest and only the hash input's range
+/// check separates the forged witness from the honest one. Under Keccak one
+/// lane turns wide, the fanout, gate and bridge rows accept it, the hash bus
+/// does not, and lifting the Keccak lane instead leaves a state cell outside
+/// {0, 1}. Under BLAKE3 one block word of a compression turns wide, the fanout
+/// and gate rows accept it, the witness bus does not, and lifting the
+/// compression's bit instead leaves a cell outside {0, 1}.
 pub(crate) fn reject_wide_grinding_word<F: BinaryCoordinateField>(
     circuit: &Circuit<F>,
     statement: &[F],
@@ -1130,6 +1133,15 @@ pub(crate) fn reject_wide_grinding_word<F: BinaryCoordinateField>(
     let prepared = NativeBusCircuit::new(circuit, "grinding").unwrap();
     let public = prepared.public_values(statement).unwrap();
     let accepts = setup(&prepared, public.clone());
+    let mut forged_private = private.to_vec();
+    forged_private[value] += monomial(moved);
+    if !blake3_calls(circuit).is_empty() {
+        let forgery = Blake3Forgery::new(circuit, &prepared, statement, private, accepts);
+        let mut hinted = forgery.honest.clone();
+        hinted[split[word].0 as usize] += wide;
+        forgery.reject_wide_limb(&hinted, &forged_private, true);
+        return;
+    }
     let mut runner = circuit.runner();
     runner.set_public_inputs(statement).unwrap();
     runner.set_private_inputs(private).unwrap();
@@ -1159,8 +1171,6 @@ pub(crate) fn reject_wide_grinding_word<F: BinaryCoordinateField>(
         .unwrap();
     let mut hinted = honest.clone();
     hinted[split[word].0 as usize] += wide;
-    let mut forged_private = private.to_vec();
-    forged_private[value] += monomial(moved);
     assert!(
         !circuit_runs(circuit, statement, &forged_private),
         "the runner refuses the forged witness"

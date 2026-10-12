@@ -14,7 +14,7 @@ use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::pcs::binary::BinaryPolyWhirVerifier;
 use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
-use p3_test_utils::binary_field_params::keccak;
+use p3_test_utils::binary_field_params::{blake3, keccak};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
 
 use crate::native_bus_circuit::{
@@ -54,8 +54,18 @@ fn protocol(rows: usize, width: usize, next: bool) -> OpeningProtocol {
 }
 
 macro_rules! check {
-    ($layout:ident, $protocol:expr, $cap_height:expr, $pow:expr) => {{
-        type Ch = keccak::LevelChallenger<F>;
+    ($layout:ident, $protocol:expr, $cap_height:expr, $pow:expr) => {
+        check!($layout, $protocol, $cap_height, $pow, keccak, Keccak256)
+    };
+    (
+        $layout:ident,
+        $protocol:expr,
+        $cap_height:expr,
+        $pow:expr,
+        $hash:ident,
+        $byte_hash:ident
+    ) => {{
+        type Ch = $hash::LevelChallenger<F>;
         type L = $layout<F, E>;
         let protocol = $protocol;
         let n = p3_sumcheck::layout::plan_stacked_layout(&protocol.table_shapes()).0;
@@ -73,9 +83,9 @@ macro_rules! check {
             &domain,
         )
         .unwrap();
-        let mmcs = keccak::LevelMmcs::<F>::new(
-            keccak::FieldHash::new(keccak::byte_hash()),
-            keccak::Compress::new(keccak::byte_hash()),
+        let mmcs = $hash::LevelMmcs::<F>::new(
+            $hash::FieldHash::new($hash::byte_hash()),
+            $hash::Compress::new($hash::byte_hash()),
             $cap_height,
         );
         let pcs = WhirProver::<E, F, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
@@ -83,12 +93,12 @@ macro_rules! check {
             &config,
             protocol.clone(),
             L::variable_order(),
-            ByteHash::Keccak256,
+            ByteHash::$byte_hash,
             $cap_height,
         )
         .unwrap();
         let shape = recursive.input_shape();
-        let make = || Ch::from_hasher(vec![129, 9, 251], keccak::byte_hash());
+        let make = || Ch::from_hasher(vec![129, 9, 251], $hash::byte_hash());
         let dense = |i: usize| {
             E::new(core::array::from_fn(|k| {
                 F::new(0x492f307c9bfa3e51u64.wrapping_mul(i as u64 + 13 + 71 * k as u64))
@@ -178,7 +188,10 @@ macro_rules! check {
             );
         }
         let mut b = CircuitBuilder::<F>::new();
-        b.enable_native_keccak_f1600().unwrap();
+        match ByteHash::$byte_hash {
+            ByteHash::Keccak256 => b.enable_native_keccak_f1600().unwrap(),
+            ByteHash::Blake3 => b.enable_native_blake3_compress().unwrap(),
+        }
         let cap: Vec<_> = (0..1usize << $cap_height)
             .map(|_| {
                 b.alloc_public_input_array::<16>("expected WHIR commitment")
@@ -193,7 +206,7 @@ macro_rules! check {
         let initial = [129, 9, 251].map(|byte| b.define_const(H::encode_u16(byte).unwrap()));
         let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
             &mut b,
-            ByteHash::Keccak256,
+            ByteHash::$byte_hash,
             &initial,
         )
         .unwrap();
@@ -275,7 +288,7 @@ macro_rules! check {
             } else {
                 p3_sumcheck::strategy::VariableOrder::Prefix
             },
-            ByteHash::Keccak256,
+            ByteHash::$byte_hash,
             $cap_height,
         )
         .unwrap();
@@ -322,6 +335,27 @@ fn native_poly_whir_caps_and_mixed_widths_bind_every_opening() {
 #[test]
 fn native_poly_whir_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word() {
     let (circuit, (public, private, pow_rows)) = check!(PrefixProver, protocol(3, 1, false), 0, 2);
+    reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 64);
+    reject_wide_grinding_word(
+        &circuit,
+        &public,
+        &private,
+        &pow_rows,
+        64,
+        (0, 16),
+        poly64_accepts,
+    );
+}
+
+/// Under BLAKE3 the refill absorbs each word of a Poly64 grinding witness as a
+/// block word of a native compression. The runner refuses a flipped witness
+/// bit, and moving coefficient 16 into the first word, which keeps the
+/// absorbed bytes, is refused only by the compression's range check of that
+/// block word.
+#[test]
+fn native_poly_whir_blake3_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word() {
+    let (circuit, (public, private, pow_rows)) =
+        check!(PrefixProver, protocol(3, 1, false), 0, 2, blake3, Blake3);
     reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 64);
     reject_wide_grinding_word(
         &circuit,

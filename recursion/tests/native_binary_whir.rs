@@ -20,7 +20,7 @@ use p3_recursion::verifier::VerifierLimits;
 use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table};
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
 use p3_symmetric::CompressionFunctionFromHasher;
-use p3_test_utils::binary_field_params::keccak;
+use p3_test_utils::binary_field_params::{blake3, keccak};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver};
 
 use crate::native_bus_circuit::{
@@ -84,8 +84,26 @@ macro_rules! check {
         $security:expr,
         $arity:ident,
         $digests:literal
+    ) => {
+        check!(
+            $base, $layout, $protocol, $cap_height, $pow, $folding, $security, $arity, $digests,
+            keccak, Keccak256
+        )
+    };
+    (
+        $base:ty,
+        $layout:ident,
+        $protocol:expr,
+        $cap_height:expr,
+        $pow:expr,
+        $folding:expr,
+        $security:expr,
+        $arity:ident,
+        $digests:literal,
+        $hash:ident,
+        $byte_hash:ident
     ) => {{
-        type Ch = keccak::LevelChallenger<$base>;
+        type Ch = $hash::LevelChallenger<$base>;
         type L = $layout<$base, F>;
         let protocol = $protocol;
         let n = p3_sumcheck::layout::plan_stacked_layout(&protocol.table_shapes()).0;
@@ -107,13 +125,13 @@ macro_rules! check {
         let mmcs = MerkleTreeMmcs::<
             $base,
             u8,
-            keccak::FieldHash,
-            CompressionFunctionFromHasher<keccak::ByteHash, $digests, 32>,
+            $hash::FieldHash,
+            CompressionFunctionFromHasher<$hash::ByteHash, $digests, 32>,
             $digests,
             32,
         >::new(
-            keccak::FieldHash::new(keccak::byte_hash()),
-            CompressionFunctionFromHasher::new(keccak::byte_hash()),
+            $hash::FieldHash::new($hash::byte_hash()),
+            CompressionFunctionFromHasher::new($hash::byte_hash()),
             $cap_height,
         );
         let pcs = WhirProver::<F, $base, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
@@ -121,14 +139,14 @@ macro_rules! check {
             &config,
             protocol.clone(),
             L::variable_order(),
-            ByteHash::Keccak256,
+            ByteHash::$byte_hash,
             arity,
             $cap_height,
             &VerifierLimits::default(),
         )
         .unwrap();
         let shape = recursive.input_shape();
-        let make = || Ch::from_hasher(vec![129, 9, 251], keccak::byte_hash());
+        let make = || Ch::from_hasher(vec![129, 9, 251], $hash::byte_hash());
         let dense = |i: usize| {
             F::from_repr(0x492f307c9bfa3e514379dc5a1b279591u128.wrapping_mul(i as u128 + 13))
         };
@@ -184,7 +202,7 @@ macro_rules! check {
             &config,
             protocol.clone(),
             L::variable_order(),
-            ByteHash::Keccak256,
+            ByteHash::$byte_hash,
             other_arity,
             $cap_height,
             &VerifierLimits::default(),
@@ -212,7 +230,10 @@ macro_rules! check {
             assert_eq!(unchanged.sample_algebra_element::<F>(), before.sample_algebra_element::<F>());
         }
         let mut b = CircuitBuilder::<F>::new();
-        b.enable_native_keccak_f1600().unwrap();
+        match ByteHash::$byte_hash {
+            ByteHash::Keccak256 => b.enable_native_keccak_f1600().unwrap(),
+            ByteHash::Blake3 => b.enable_native_blake3_compress().unwrap(),
+        }
         let cap: Vec<_> = (0..arity.cap_roots($cap_height).unwrap())
             .map(|_| {
                 b.alloc_public_input_array::<16>("expected WHIR commitment")
@@ -227,7 +248,7 @@ macro_rules! check {
         let initial = [129, 9, 251].map(|byte| b.define_const(H::encode_u16(byte).unwrap()));
         let mut ch = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
             &mut b,
-            ByteHash::Keccak256,
+            ByteHash::$byte_hash,
             &initial,
         )
         .unwrap();
@@ -349,7 +370,7 @@ macro_rules! check {
             } else {
                 p3_sumcheck::strategy::VariableOrder::Prefix
             },
-            ByteHash::Keccak256,
+            ByteHash::$byte_hash,
             arity,
             $cap_height,
             &VerifierLimits::default(),
@@ -468,6 +489,38 @@ fn native_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word() {
     );
     let (circuit, _, _, (public, private, pow_rows)) =
         check!(BinaryField32, PrefixProver, protocol(3, 1, false), 0, 2);
+    reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 32);
+    reject_wide_grinding_word(
+        &circuit,
+        &public,
+        &private,
+        &pow_rows,
+        32,
+        (1, 32),
+        tower_accepts,
+    );
+}
+
+/// Under BLAKE3 the refill absorbs each word of a Tower32 grinding witness as
+/// a block word of a native compression. The runner refuses a flipped witness
+/// bit, and moving coordinate 32 of the witness into its second word, which
+/// keeps the absorbed bytes and leaves the base field, is refused only by the
+/// compression's range check of that block word.
+#[test]
+fn native_blake3_grinding_witness_words_refuse_a_flipped_bit_and_a_wide_word() {
+    let (circuit, _, _, (public, private, pow_rows)) = check!(
+        BinaryField32,
+        PrefixProver,
+        protocol(3, 1, false),
+        0,
+        2,
+        2,
+        8,
+        Two,
+        2,
+        blake3,
+        Blake3
+    );
     reject_flipped_grinding_bits(&circuit, &public, &private, &pow_rows, 32);
     reject_wide_grinding_word(
         &circuit,
