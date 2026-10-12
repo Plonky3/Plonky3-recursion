@@ -1,6 +1,7 @@
 //! Fanout adjacency, sentinel values and native hash schedules are local AIR relations.
 
 use p3_air::{BaseAir, check_constraints};
+use p3_blake3::Blake3;
 use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{ByteHash, DIGEST_LIMBS, bytes_to_limbs, keccak_state_to_limbs};
@@ -15,7 +16,9 @@ use p3_field::PrimeCharacteristicRing;
 use p3_keccak::{Keccak256Hash, KeccakF};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_symmetric::{CompressionFunctionFromHasher, Permutation, SerializingHasher};
+use p3_symmetric::{
+    CompressionFunctionFromHasher, CryptographicHasher, Permutation, SerializingHasher,
+};
 use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128, TowerLevel};
 
 type F = BinaryField128;
@@ -532,31 +535,44 @@ fn a_squared_difference_keeps_its_addition() {
 /// and the siblings in increasing position in the other slots: six selects per word, one gate
 /// each, and every position closes in the native tables. A group of four equal digests fills
 /// the slots alike under any flags, so a non-Boolean index bit leaves the root intact and only
-/// that bit's Boolean check refuses it.
+/// that bit's Boolean check refuses it. The slots are the same under Keccak-256 and BLAKE3.
 #[test]
 fn four_digest_level_slots_are_one_select_gate_each() {
-    type Mmcs = MerkleTreeMmcs<
+    four_digest_level_slots(ByteHash::Keccak256, Keccak256Hash);
+    four_digest_level_slots(ByteHash::Blake3, Blake3);
+}
+
+/// [`four_digest_level_slots_are_one_select_gate_each`] under `hash`, whose byte hasher is
+/// `hasher`.
+fn four_digest_level_slots<H>(hash: ByteHash, hasher: H)
+where
+    H: CryptographicHasher<u8, [u8; 32]> + Clone + Sync,
+{
+    type Mmcs<H> = MerkleTreeMmcs<
         BinaryField8,
         u8,
-        SerializingHasher<Keccak256Hash>,
-        CompressionFunctionFromHasher<Keccak256Hash, 4, 32>,
+        SerializingHasher<H>,
+        CompressionFunctionFromHasher<H, 4, 32>,
         4,
         32,
     >;
-    let mmcs = Mmcs::new(
-        SerializingHasher::new(Keccak256Hash),
-        CompressionFunctionFromHasher::new(Keccak256Hash),
+    let mmcs = Mmcs::<H>::new(
+        SerializingHasher::new(hasher.clone()),
+        CompressionFunctionFromHasher::new(hasher),
         0,
     );
     let mut b = CircuitBuilder::<F>::new();
-    b.enable_native_keccak_f1600().unwrap();
+    match hash {
+        ByteHash::Keccak256 => b.enable_native_keccak_f1600().unwrap(),
+        ByteHash::Blake3 => b.enable_native_blake3_compress().unwrap(),
+    }
     let row = vec![b.public_input()];
     let bits = [b.public_input(), b.public_input()];
     let digests: Vec<Vec<ExprId>> = (0..4)
         .map(|_| (0..DIGEST_LIMBS).map(|_| b.public_input()).collect())
         .collect();
     b.verify_byte_hash_mmcs_opening_words_with_host_arity::<NativeBinaryEncoding, 4>(
-        ByteHash::Keccak256,
+        hash,
         &[row],
         &[4],
         &bits,
