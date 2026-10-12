@@ -141,10 +141,12 @@ fn native_preparation_checks_host_graph_and_codeword_limits() {
     );
 }
 
-/// A BLAKE3 layer's hash table AIR has more metadata entries than the default verifier limits
-/// allow, while a Keccak layer's fits them. The layer keeps the caller's limits rather than
-/// raising them: a BLAKE3 layer is refused under the defaults and prepared once the caller
-/// raises the metadata entries. Each layer's output transcript uses its child's hash.
+/// Both layers here need `max_rounds` raised above the default verifier limits. A Keccak layer's
+/// metadata entries fit the default, so it prepares once only `max_rounds` is raised. A BLAKE3
+/// layer's hash table AIR has more metadata entries than the default allows, so it also needs
+/// `max_metadata_entries` raised. The layer keeps the caller's limits rather than raising them:
+/// a BLAKE3 layer is refused under the defaults. Each layer's output transcript uses its
+/// child's hash.
 #[test]
 fn blake3_layer_needs_more_than_the_default_metadata_entries() {
     let limits = DirectCircuitLimits {
