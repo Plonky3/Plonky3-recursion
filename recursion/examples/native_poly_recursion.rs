@@ -1,21 +1,21 @@
-//! Native Poly64 proving and recursion with Poly192 challenges. `--keccak-commitment
-//! packed|dense` selects how every layer commits its Keccak table: as packed bits, 64 per field
-//! element, beside a dense commitment of every other table, or as field elements like every
-//! other table. `--merkle-arity 4|2` selects four-digest or pairwise Merkle trees for every
-//! layer's commitments. `--hash keccak|blake3` selects the hash of every commitment and
-//! transcript; the default Merkle arity is 4 under Keccak and 2 under Blake3.
+//! Native Poly64 proving and recursion with Poly192 challenges. `--hash keccak|blake3` selects
+//! the hash of every commitment and transcript, `--hash-commitment packed|dense` (alias
+//! `--keccak-commitment`) selects how every layer commits its hash table: as packed bits, 64 per
+//! field element, beside a dense commitment of every other table, or as field elements like
+//! every other table, and `--merkle-arity 4|2` selects four-digest or pairwise Merkle trees for
+//! every layer's commitments (default 4 under Keccak and 2 under Blake3).
 //!
 //! cargo run -p p3-recursion --profile optimized --features parallel \
 //!     --example native_poly_recursion -- --layers 3
 //!
-//! The defaults (packed Keccak tables, WHIR security level 32 with 24 grinding bits,
+//! The defaults (Keccak with packed hash tables, WHIR security level 32 with 24 grinding bits,
 //! four-digest Merkle trees under a cap of 2 levels) keep every layer within the default
 //! limits. When a layer exceeds one anyway, the error names the flag that raises it and a value
 //! to start from.
 //!
 //! Measured without any limit flag on a 14-core Apple M-series machine with 48 GB (time of the
 //! last layer; wall time, maximum resident set and peak memory footprint of the whole run;
-//! arity is `--merkle-arity`, Keccak is `--keccak-commitment`, with packed log inverse rate 3):
+//! arity is `--merkle-arity`, Keccak is `--hash-commitment`, with packed log inverse rate 3):
 //!
 //! | arity | Keccak | --layers | witnesses | codeword cells | last layer | wall   | resident | footprint |
 //! |-------|--------|----------|-----------|----------------|------------|--------|----------|-----------|
@@ -39,7 +39,7 @@
 //! 3 need the default limit of 2^30 codeword cells, 8 GiB of Poly64 cells; at arity 4, layers 1
 //! to 3 stay within 2^29.
 //!
-//! `--hash blake3` measured against `--hash keccak` at `--layers 3` with `--keccak-commitment
+//! `--hash blake3` measured against `--hash keccak` at `--layers 3` with `--hash-commitment
 //! dense` on the same machine. Each run also takes the row's `--hash` and `--merkle-arity`. A
 //! hash call is one Keccak-f or one Blake3 compression. Of the last layer's gate rows, AIR check
 //! counts those that check the hash table's constraints and column batch those that observe and
@@ -104,8 +104,8 @@ const DEFAULT_CAP_HEIGHT: usize = 4;
 /// Default cap height of four-digest trees, in levels: 16 roots.
 const DEFAULT_FOUR_DIGEST_CAP_HEIGHT: usize = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-enum KeccakCommitment {
-    /// The Keccak table as packed bits, beside a dense commitment of every other table.
+enum HashCommitment {
+    /// The hash table as packed bits, beside a dense commitment of every other table.
     Packed,
     /// Every table as field elements.
     Dense,
@@ -149,7 +149,7 @@ struct Args {
     #[arg(long, default_value_t = 1 << 29)]
     max_trace_cells: usize,
     /// Maximum combined initial main and preprocessing codeword cells.
-    /// With a packed Keccak commitment the packed codeword counts too.
+    /// With a packed hash-table commitment the packed codeword counts too.
     #[arg(long, default_value_t = 1 << 30)]
     max_pcs_codeword_cells: usize,
     /// Maximum aggregate verifier rounds in each recursive output authority. It bounds the
@@ -159,11 +159,11 @@ struct Args {
     /// WHIR security level per opening; composed security still requires four bits.
     #[arg(long, default_value_t = 32)]
     pcs_security_level: usize,
-    /// Commitment of every recursion layer's Keccak table.
-    #[arg(long, value_enum, default_value_t = KeccakCommitment::Packed)]
-    keccak_commitment: KeccakCommitment,
-    /// Log inverse rate of the packed Keccak commitment; ignored unless the Keccak commitment
-    /// is packed.
+    /// Commitment of every recursion layer's hash table.
+    #[arg(long, value_enum, default_value_t = HashCommitment::Packed, alias = "keccak-commitment")]
+    hash_commitment: HashCommitment,
+    /// Log inverse rate of the packed hash-table commitment; ignored unless the hash table is
+    /// committed as packed bits.
     #[arg(long, default_value_t = 3)]
     packed_log_inv_rate: usize,
     /// Hash of the source proof's commitments and transcript; every layer inherits it.
@@ -332,8 +332,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         max_non_primitive_slots: args.max_non_primitive_slots,
     };
     drop(prover);
-    match args.keccak_commitment {
-        KeccakCommitment::Dense => run_dense(
+    match args.hash_commitment {
+        HashCommitment::Dense => run_dense(
             &args,
             &authority,
             checked,
@@ -341,7 +341,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &limits,
             &construction_limits,
         ),
-        KeccakCommitment::Packed => run_mixed(
+        HashCommitment::Packed => run_mixed(
             &args,
             &authority,
             &checked,
@@ -405,7 +405,7 @@ fn run_dense(
     Ok(())
 }
 
-/// The next expected statement and the checked output of one packed-Keccak layer.
+/// The next expected statement and the checked output of one packed-hash-table layer.
 type MixedOutput = (Vec<Vec<F>>, VerifiedBinaryNativePolyMixedWhirProof);
 /// Proves layer `depth` from `prove`, verifies it against the expected child statement, and
 /// returns the next expected statement with the checked output.
@@ -437,8 +437,8 @@ fn prove_mixed<S>(
     Ok((next_expected, checked))
 }
 
-/// Every layer commits its Keccak table as packed bits. The first layer verifies the dense
-/// source; every later layer verifies a packed-Keccak child.
+/// Every layer commits its hash table as packed bits. The first layer verifies the dense
+/// source; every later layer verifies a child whose hash table is packed.
 fn run_mixed(
     args: &Args,
     source: &BinaryNativePolyWhirAuthority<SquaringAir>,

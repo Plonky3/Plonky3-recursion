@@ -150,7 +150,7 @@ enum Pcs {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum HashCommitment {
-    /// The Keccak table as packed bits, beside a dense commitment of every other table.
+    /// The hash table as packed bits, beside a dense commitment of every other table.
     Packed,
     /// Every table as field elements.
     Dense,
@@ -201,8 +201,8 @@ struct Args {
     /// only `2`.
     #[arg(long, value_enum)]
     merkle_arity: Option<Arity>,
-    /// Log inverse rate of the packed Keccak commitment; ignored unless the Keccak commitment
-    /// is packed.
+    /// Log inverse rate of the packed hash-table commitment; ignored unless the hash table is
+    /// committed as packed bits.
     #[arg(long, default_value_t = 3)]
     packed_log_inv_rate: usize,
     /// Log folding factor of the recursive output PCS (both WHIR and folding).
