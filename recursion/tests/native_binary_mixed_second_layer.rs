@@ -45,25 +45,25 @@ const CAP_HEIGHT: usize = 1;
 /// Initial fold of every recursive commitment, and so the bus tables' minimum log height.
 const FOLD: usize = 4;
 
-/// About 12% above the measured second-layer construction: 433,841 expression nodes, 31,925
-/// pending connections, 7,079 non-primitive calls and 613,918 slots.
+/// About 12% above the measured second-layer construction: 428,892 expression nodes, 31,860
+/// pending connections, 7,027 non-primitive calls and 606,456 slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
-    max_expression_nodes: 486_000,
-    max_pending_connects: 35_800,
-    max_non_primitive_calls: 7_930,
-    max_non_primitive_slots: 688_000,
+    max_expression_nodes: 480_000,
+    max_pending_connects: 35_700,
+    max_non_primitive_calls: 7_870,
+    max_non_primitive_slots: 679_000,
 };
-/// About 12% above the measured 400,361 witnesses and 230,324 operations. The trace cells
+/// About 12% above the measured 395,499 witnesses and 228,093 operations. The trace cells
 /// follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 449_000,
-    max_operations: 258_000,
+    max_witnesses: 443_000,
+    max_operations: 255_000,
     max_trace_cells: 1 << 27,
 };
-/// About 12% above the measured 416,243 expression nodes of the child's mixed verifier.
-const MAX_VERIFIER_NODES: usize = 467_000;
-/// About 12% above the measured 1,176 native Keccak-f calls.
-const MAX_KECCAK_CALLS: usize = 1_320;
+/// About 12% above the measured 411,905 expression nodes of the child's mixed verifier.
+const MAX_VERIFIER_NODES: usize = 461_000;
+/// About 12% above the measured 1,159 native Keccak-f calls.
+const MAX_KECCAK_CALLS: usize = 1_300;
 /// Measured padded witness, gate, public, Keccak and bridge table heights. One more row of
 /// growth at a power-of-two boundary doubles that table.
 const MAX_LOG_HEIGHTS: [usize; 5] = [20, 18, 4, 15, 12];
@@ -106,7 +106,7 @@ const fn protocol() -> ProtocolParameters {
 
 /// A low WHIR security level that still meets the four-bit composed target, with four of its
 /// bits ground, for the dense and the packed commitment alike. The codeword budget covers the
-/// second layer's measured 42,991,616 initial cells.
+/// second layer's measured 26,214,400 initial cells.
 fn options(depth: usize) -> NativeBinaryMixedRecursionOptions {
     let recursive = ProtocolParameters {
         pow_bits: 4,

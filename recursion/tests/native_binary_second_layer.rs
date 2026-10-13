@@ -41,46 +41,46 @@ struct Case {
 }
 
 /// Pairwise output trees under a cap of two levels: 4 roots. The second layer
-/// measures 350,842 expression nodes, 10,642 pending connections, 6,263
-/// non-primitive calls, 701,736 slots, 337,369 witnesses, 143,046 operations
-/// and 1,523 native Keccak-f calls.
+/// measures 346,535 expression nodes, 10,577 pending connections, 6,208
+/// non-primitive calls, 693,074 slots, 333,152 witnesses, 141,421 operations
+/// and 1,503 native Keccak-f calls.
 const PAIRWISE: Case = Case {
     arity: MerkleArity::Two,
     cap_height: 2,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 393_000,
-        max_pending_connects: 12_000,
-        max_non_primitive_calls: 7_020,
-        max_non_primitive_slots: 786_000,
+        max_expression_nodes: 388_000,
+        max_pending_connects: 11_800,
+        max_non_primitive_calls: 6_950,
+        max_non_primitive_slots: 776_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 378_000,
-        max_operations: 161_000,
+        max_witnesses: 373_000,
+        max_operations: 158_000,
         max_trace_cells: 1 << 27,
     },
-    max_keccak_calls: 1_690,
+    max_keccak_calls: 1_680,
 };
 /// Four-digest output trees under a cap of one level: the same 4 roots. The
-/// second layer measures 354,708 expression nodes, 10,642 pending
-/// connections, 6,054 non-primitive calls, 618,136 slots, 341,444 witnesses,
-/// 163,956 operations and 1,314 native Keccak-f calls. Its Keccak-f bound lies
+/// second layer measures 349,654 expression nodes, 10,577 pending
+/// connections, 6,002 non-primitive calls, 610,674 slots, 336,477 witnesses,
+/// 161,620 operations and 1,297 native Keccak-f calls. Its Keccak-f bound lies
 /// below the pairwise layer's count, so a layer whose trees fell back to
 /// pairwise nodes fails it.
 const FOUR_DIGEST: Case = Case {
     arity: MerkleArity::Four,
     cap_height: 1,
     construction: CircuitConstructionLimits {
-        max_expression_nodes: 398_000,
-        max_pending_connects: 12_000,
-        max_non_primitive_calls: 6_790,
-        max_non_primitive_slots: 693_000,
+        max_expression_nodes: 392_000,
+        max_pending_connects: 11_800,
+        max_non_primitive_calls: 6_720,
+        max_non_primitive_slots: 684_000,
     },
     circuit: DirectCircuitLimits {
-        max_witnesses: 383_000,
-        max_operations: 184_000,
+        max_witnesses: 377_000,
+        max_operations: 181_000,
         max_trace_cells: 1 << 27,
     },
-    max_keccak_calls: 1_460,
+    max_keccak_calls: 1_450,
 };
 /// About 12% above the measured 60 calls of the first transcript refill,
 /// whose 148 constant leading blocks take none.

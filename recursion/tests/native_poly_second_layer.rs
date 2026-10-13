@@ -33,8 +33,8 @@ type F = Poly64;
 const ARITY: MerkleArity = MerkleArity::Four;
 const CAP_HEIGHT: usize = 1;
 
-/// About 12% above the measured second-layer verifier: 599,031 expression
-/// nodes, 18,920 pending connections, 14,963 non-primitive calls and 778,400
+/// About 12% above the measured second-layer verifier: 598,936 expression
+/// nodes, 18,917 pending connections, 14,960 non-primitive calls and 778,370
 /// slots.
 const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
     max_expression_nodes: 671_000,
@@ -42,10 +42,10 @@ const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
     max_non_primitive_calls: 16_800,
     max_non_primitive_slots: 872_000,
 };
-/// About 12% above the measured 568,324 witnesses and 352,407 operations.
+/// About 12% above the measured 568,235 witnesses and 352,327 operations.
 /// The trace cells follow from the table heights below.
 const CIRCUIT: DirectCircuitLimits = DirectCircuitLimits {
-    max_witnesses: 637_000,
+    max_witnesses: 636_000,
     max_operations: 395_000,
     max_trace_cells: 1 << 28,
 };
