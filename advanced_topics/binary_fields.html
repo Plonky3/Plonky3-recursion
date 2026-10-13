@@ -190,7 +190,8 @@ multilinear commitments and a SuperSpartan-style prover over those fields.</li>
 </ul>
 <h2 id="what-this-repository-supports-today"><a class="header" href="#what-this-repository-supports-today">What this repository supports today</a></h2>
 <p>The repository supports complete native binary recursion for Tower128, and for
-Poly64 with Poly192 challenges, using additive WHIR, product buses and native Keccak.
+Poly64 with Poly192 challenges, using additive WHIR, product buses and native
+Keccak or Blake3 hash tables.
 The Tower128 owner also accepts Tower32 children. It separately verifies binary
 PCS and additive-WHIR proofs inside prime-field circuits, including indexed
 lookup variants. <code>recursion/examples/native_binary_recursion.rs</code> and
@@ -301,10 +302,11 @@ from constrained bits, avoiding the indexed backend's 100 extra limb columns.</p
 <li>
 <p><strong>Full native Tower128 recursion.</strong>
 <code>prepared::PreparedNativeBinaryWhirLayer</code> builds a complete native scalar
-verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark authority, including product
-GKR, generic sumcheck, AIR evaluation and both main/preprocessing openings.
-It proves that verifier over Tower128 using native Keccak and product buses,
-and verifies against independently supplied child public values. Checked
+verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark
+authority, including product GKR, generic sumcheck, AIR evaluation and both
+main/preprocessing openings. It proves that verifier over Tower128 using
+native hash tables (Keccak or Blake3) and product buses, and verifies
+against independently supplied child public values. Checked
 child tokens must match the retained authority identity before packing or
 witness execution. The output authority can be used as the next layer's
 trusted child. <code>recursion/examples/native_binary_recursion.rs</code> demonstrates
@@ -313,6 +315,16 @@ statements and foreign-authority rejection. Graph, trace and initial
 codeword limits are explicit; codeword counts exclude Merkle trees and
 proving workspaces. Dense Keccak openings currently cause substantial growth
 in later layers. These proofs are non-hiding.</p>
+</li>
+<li>
+<p><strong>Full native folding recursion.</strong>
+<code>prepared::PreparedNativeBinaryLayer</code> verifies a trusted tower MultiStark
+authority committed with the BaseFold folding PCS (<code>BinaryNativeAuthority</code>)
+in a Tower128 circuit and proves it with the same folding PCS, product buses
+and native Keccak. Each output PCS draws its derived query count plus
+<code>query_draw_slack</code> candidates in circuit. The output authority is the next
+layer's trusted child; grouped, indexed and BLAKE3-hashed children are
+rejected before graph construction. These proofs are non-hiding.</p>
 </li>
 <li>
 <p><strong>Full native polynomial recursion.</strong>
@@ -393,7 +405,15 @@ not by themselves implement a complete binary-host proof verifier.</p>
 with the chosen host, sharing the prime API's mixed-height injection, index
 bounds and cap selection. Native tests cover odd-width rows, non-power-of-two
 heights, tower/polynomial carriers and a cap at the leaf layer. The caller
-still supplies trusted row widths, heights and serialization rules.</p>
+still supplies trusted row widths, heights and serialization rules.
+<code>verify_byte_hash_mmcs_opening_bytes_with_host_arity::&lt;_, 4&gt;</code> opens trees
+whose nodes compress four digests, in the level order of p3's
+<code>MerkleTreeMmcs</code>. Under Keccak a four-digest node hashes 128 bytes, one
+Keccak-f block like a pairwise node, so a path takes about half the Keccak-f
+calls. A native WHIR recursion layer chooses its output trees' arity in
+<code>NativeBinaryRecursionOptions::arity</code>; both native recursion examples use
+pairwise trees by default and four-digest trees under <code>--hash keccak</code>, and
+<code>--merkle-arity</code> overrides the arity.</p>
 </li>
 <li>
 <p><strong>Binary hash configurations.</strong> <code>p3_test_utils::binary_field_params</code> provides the
@@ -486,7 +506,7 @@ Keccak and additive WHIR; those other input adapters still use prime hosts.</li>
 <li>Efficient bounded-size composition across many native layers. Output
 authorities can prepare subsequent layers, but dense Keccak oracle openings
 currently make those verifier circuits grow substantially.</li>
-<li>MMCS trees of arity above two.</li>
+<li>Folding-PCS MMCS trees of arity above two.</li>
 </ul>
 
                     </main>
