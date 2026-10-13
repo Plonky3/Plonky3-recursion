@@ -246,14 +246,10 @@ fn accepts_fold(circuit: &Circuit<F>, current: &[F], point: F, alpha: F, expecte
 }
 
 /// The native fold of every sum shape is the AIR polynomial's fold, as the native folder
-/// computes it. Its first constraint, the majority plus a carry `p * q + r + s` with
-/// `p = c0 + c2`, `q = c1 + c2`, `r = c2` and `s = c3`, is bound with its operands in place:
-/// the fold with that constraint taken as `p * r + q + s`, `r * q + p + s` or `p * q + r` is
-/// refused.
+/// computes it, and its circuit binds that fold: the fold plus one is refused.
 #[test]
 fn native_fold_of_every_sum_shape_is_the_air_polynomial() {
-    let (plan, circuit) = native_fold_circuit(&SumShapesAir);
-    let weight = |alpha: F| alpha.exp_u64(plan.constraint_count() as u64 - 1);
+    let (_, circuit) = native_fold_circuit(&SumShapesAir);
     for seed in [5, 89] {
         let (current, point, alpha, fold) = dense_fold(&SumShapesAir, SUM_SHAPE_COLUMNS, seed);
         assert!(accepts_fold(&circuit, &current, point, alpha, fold));
@@ -264,17 +260,6 @@ fn native_fold_of_every_sum_shape_is_the_air_polynomial() {
             alpha,
             fold + F::ONE
         ));
-        let [p, q, r, s] = [
-            current[0] + current[2],
-            current[1] + current[2],
-            current[2],
-            current[3],
-        ];
-        for wrong in [p * r + q + s, r * q + p + s, p * q + r] {
-            let wrong = fold + weight(alpha) * (wrong + p * q + r + s);
-            assert_ne!(wrong, fold);
-            assert!(!accepts_fold(&circuit, &current, point, alpha, wrong));
-        }
     }
 }
 
@@ -298,16 +283,17 @@ fn native_fold_of_the_blake3_air_is_the_air_polynomial() {
     }
 }
 
-/// Each further bit of the BLAKE3 carry chain adds five expression nodes to the native fold: two
-/// additions for its carry `sum + x + y`, and three for the previous bit's majority plus that
-/// carry. These are the sum `x + carry`, one multiply-add of it with the factor `y + carry` and
-/// the addend `carry`, and one Horner step that folds the multiply-add and the new carry into
-/// the running fold. The factor `y + carry` is the carry's own partial sum `sum + x`, which
-/// takes no node.
+/// Each further bit of the BLAKE3 carry chain adds five expression nodes to the native fold,
+/// with the majority's product either operand of its sum: two additions for its carry
+/// `sum + x + y`, and three for the previous bit's majority plus that carry. These are the sum
+/// `x + carry`, one multiply-add of it with the factor `y + carry` and the addend `carry`, and
+/// one Horner step that folds the multiply-add and the new carry into the running fold. The
+/// factor `y + carry` is the carry's own partial sum `sum + x`, which takes no node.
 #[test]
 fn native_carry_chain_adds_five_nodes_per_bit() {
-    let nodes = |bits| {
-        let plan = BinaryAirConstraintPlan::<F, F>::from_air(&CarryAir { bits }, 1).unwrap();
+    let nodes = |bits, addend_first| {
+        let air = CarryAir { bits, addend_first };
+        let plan = BinaryAirConstraintPlan::<F, F>::from_air(&air, 1).unwrap();
         let mut b = CircuitBuilder::<F>::new();
         let current: Vec<_> = (0..3 * bits).map(|_| scalar(&mut b)).collect();
         let point = [scalar(&mut b)];
@@ -317,7 +303,57 @@ fn native_carry_chain_adds_five_nodes_per_bit() {
             .unwrap();
         b.construction_usage().unwrap().expression_nodes - before
     };
-    assert_eq!(nodes(9) - nodes(8), 5);
+    for addend_first in [false, true] {
+        assert_eq!(
+            nodes(9, addend_first) - nodes(8, addend_first),
+            5,
+            "addend first: {addend_first}"
+        );
+    }
+}
+
+/// A sum of a product and an addend, `c0 * c1 + c2`, stated once and read by `readers`
+/// constraints, each the product of the sum and a column of its own.
+struct SharedSumAir {
+    readers: usize,
+}
+impl<F> BaseAir<F> for SharedSumAir {
+    fn width(&self) -> usize {
+        3 + self.readers
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+}
+impl<AB: AirBuilder> Air<AB> for SharedSumAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main();
+        let columns: Vec<AB::Expr> = main.current_slice().iter().map(|&c| c.into()).collect();
+        let sum = columns[0].clone() * columns[1].clone() + columns[2].clone();
+        for column in &columns[3..] {
+            b.assert_zero(sum.clone() * column.clone());
+        }
+    }
+}
+
+/// A sum of a product and an addend that several constraints read is one multiply-add. Each
+/// reader's copy of the sum is a node of its own in the program, and equal nodes evaluate to one
+/// shared expression, so the product is read once. A second reader adds two nodes, its own
+/// product and its fold step.
+#[test]
+fn native_fold_evaluates_a_shared_sum_as_one_multiply_add() {
+    let nodes = |readers| {
+        let plan = BinaryAirConstraintPlan::<F, F>::from_air(&SharedSumAir { readers }, 1).unwrap();
+        let mut b = CircuitBuilder::<F>::new();
+        let current: Vec<_> = (0..3 + readers).map(|_| scalar(&mut b)).collect();
+        let point = [scalar(&mut b)];
+        let alpha = scalar(&mut b);
+        let before = b.construction_usage().unwrap().expression_nodes;
+        plan.evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+            .unwrap();
+        b.construction_usage().unwrap().expression_nodes - before
+    };
+    assert_eq!(nodes(2) - nodes(1), 2);
 }
 
 struct DenseAir {

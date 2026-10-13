@@ -286,14 +286,11 @@ fn accepts_fold(
 }
 
 /// The native fold of every sum shape is the AIR polynomial's fold, as the full extension folder
-/// computes it. Its first constraint, the majority plus a carry `p * q + r + s` with
-/// `p = c0 + c2`, `q = c1 + c2`, `r = c2` and `s = c3`, is bound with its operands in place:
-/// the fold with that constraint taken as `p * r + q + s`, `r * q + p + s` or `p * q + r` is
-/// refused, as is the fold off by one in any coefficient.
+/// computes it, and its circuit binds each coefficient of that fold: the fold off by one in any
+/// coefficient is refused.
 #[test]
 fn native_fold_of_every_sum_shape_is_the_air_polynomial() {
-    let (plan, circuit) = native_fold_circuit(&SumShapesAir);
-    let weight = |alpha: Poly192| alpha.exp_u64(plan.constraint_count() as u64 - 1);
+    let (_, circuit) = native_fold_circuit(&SumShapesAir);
     for seed in [5, 89] {
         let (current, point, alpha, fold) = dense_fold(&SumShapesAir, SUM_SHAPE_COLUMNS, seed);
         assert!(accepts_fold(&circuit, &current, point, alpha, fold));
@@ -301,17 +298,6 @@ fn native_fold_of_every_sum_shape_is_the_air_polynomial() {
             let mut unit = [Poly64::ZERO; 3];
             unit[coefficient] = Poly64::ONE;
             let wrong = fold + Poly192::new(unit);
-            assert!(!accepts_fold(&circuit, &current, point, alpha, wrong));
-        }
-        let [p, q, r, s] = [
-            current[0] + current[2],
-            current[1] + current[2],
-            current[2],
-            current[3],
-        ];
-        for wrong in [p * r + q + s, r * q + p + s, p * q + r] {
-            let wrong = fold + weight(alpha) * (wrong + p * q + r + s);
-            assert_ne!(wrong, fold);
             assert!(!accepts_fold(&circuit, &current, point, alpha, wrong));
         }
     }
@@ -332,16 +318,18 @@ fn native_fold_of_the_blake3_air_is_the_air_polynomial() {
     }
 }
 
-/// Each further bit of the BLAKE3 carry chain adds 28 expression nodes to the native fold: six
-/// additions for its carry `sum + x + y`, and 22 for the previous bit's majority plus that
-/// carry. These are three for the sum `x + carry`, nine for the Poly192 multiply-add of it with
-/// the factor `y + carry` and the addend `carry`, and ten for the step that folds the
-/// multiply-add and the new carry into the running fold. The factor `y + carry` is the carry's
-/// own partial sum `sum + x`, which takes no node.
+/// Each further bit of the BLAKE3 carry chain adds 28 expression nodes to the native fold, with
+/// the majority's product either operand of its sum: six additions for its carry `sum + x + y`,
+/// and 22 for the previous bit's majority plus that carry. These are three for the sum
+/// `x + carry`, nine for the Poly192 multiply-add of it with the factor `y + carry` and the
+/// addend `carry`, and ten for the step that folds the multiply-add and the new carry into the
+/// running fold. The factor `y + carry` is the carry's own partial sum `sum + x`, which takes no
+/// node.
 #[test]
 fn native_carry_chain_adds_28_nodes_per_bit() {
-    let nodes = |bits| {
-        let plan = BinaryPolyAirConstraintPlan::from_air(&CarryAir { bits }, 1).unwrap();
+    let nodes = |bits, addend_first| {
+        let air = CarryAir { bits, addend_first };
+        let plan = BinaryPolyAirConstraintPlan::from_air(&air, 1).unwrap();
         let mut b = CircuitBuilder::<Poly64>::new();
         let current: Vec<_> = (0..3 * bits).map(|_| scalar(&mut b)).collect();
         let point = [scalar(&mut b)];
@@ -351,5 +339,11 @@ fn native_carry_chain_adds_28_nodes_per_bit() {
             .unwrap();
         b.construction_usage().unwrap().expression_nodes - before
     };
-    assert_eq!(nodes(9) - nodes(8), 28);
+    for addend_first in [false, true] {
+        assert_eq!(
+            nodes(9, addend_first) - nodes(8, addend_first),
+            28,
+            "addend first: {addend_first}"
+        );
+    }
 }

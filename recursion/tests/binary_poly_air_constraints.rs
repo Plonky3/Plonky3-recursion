@@ -195,12 +195,12 @@ fn ordinary_boolean_assertions_remain_polynomial_constraints() {
     assert_eq!(plan.constraint_count(), 1);
 }
 
-/// The bit-emulated relation in a prime circuit field evaluates every node of a program as it
-/// stands, including the sums of products that the native characteristic-two relations fuse.
-/// The fold of every sum shape and of the BLAKE3 carry chain is the AIR polynomial's fold, and
-/// each circuit keeps its measured operation and witness counts.
+/// In a prime circuit field, the bit-emulated relation's fold of every sum shape and of the
+/// BLAKE3 carry chain is the AIR polynomial's fold, and each circuit keeps its measured operation
+/// and witness counts. They may be restated when the circuit compiler's lowering changes, which
+/// moves them together with the Tower128 pin in `binary_air_constraints.rs`.
 #[test]
-fn prime_fold_of_sum_shapes_keeps_every_node() {
+fn prime_fold_of_sum_shapes_keeps_its_measured_counts() {
     const MEASURED: [(usize, u32); 2] = [(1_235_451, 1_235_031), (235_369, 235_033)];
     let columns = |count: u64| (0..count).map(dense).collect::<Vec<_>>();
     let (_, shapes, _) = compare(
@@ -213,7 +213,10 @@ fn prime_fold_of_sum_shapes_keeps_every_node() {
         dense(103),
     );
     let (_, carries, _) = compare(
-        &CarryAir { bits: 3 },
+        &CarryAir {
+            bits: 3,
+            addend_first: false,
+        },
         1,
         &columns(9),
         &[Poly192::ZERO; 9],

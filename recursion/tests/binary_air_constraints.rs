@@ -132,12 +132,12 @@ fn recurrence_constraints_match_native_at_dense_tower_points() {
     assert!(!run(&circuit, &wrong));
 }
 
-/// The bit-emulated relation in a prime circuit field evaluates every node of a program as it
-/// stands, including the sums of products that the native characteristic-two relations fuse.
-/// The fold of every sum shape and of the BLAKE3 carry chain is the AIR polynomial's fold, and
-/// each circuit keeps its measured operation and witness counts.
+/// In a prime circuit field, the bit-emulated relation's fold of every sum shape and of the
+/// BLAKE3 carry chain is the AIR polynomial's fold, and each circuit keeps its measured operation
+/// and witness counts. They may be restated when the circuit compiler's lowering changes, which
+/// moves them together with the Poly64 pin in `binary_poly_air_constraints.rs`.
 #[test]
-fn prime_fold_of_sum_shapes_keeps_every_node() {
+fn prime_fold_of_sum_shapes_keeps_its_measured_counts() {
     const MEASURED: [(usize, u32); 2] = [(528_444, 527_860), (111_731, 111_315)];
     type E = BinaryField128;
     let dense = |i: u128| E::from_repr(0x1917_a591_b613_85e7_4371_49af_310d_ace3 ^ (i << 64 | i));
@@ -153,7 +153,10 @@ fn prime_fold_of_sum_shapes_keeps_every_node() {
         dense(103)
     );
     let (_, carries, _) = compare!(
-        CarryAir { bits: 3 },
+        CarryAir {
+            bits: 3,
+            addend_first: false,
+        },
         E,
         E,
         1,

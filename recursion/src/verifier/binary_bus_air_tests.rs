@@ -132,6 +132,97 @@ fn bus_payloads_share_the_air_program_without_repeating_boolean_constraints() {
     }
 }
 
+/// A bus whose payload is a product that a constraint's sum also reads, `x * y` beside the
+/// constraint `x * y + z`, and a sum that is also a constraint, `y + z`.
+#[derive(Clone, Copy)]
+struct SharedPayloadAir;
+impl<F> BaseAir<F> for SharedPayloadAir {
+    fn width(&self) -> usize {
+        3
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        Vec::new()
+    }
+}
+impl<AB: AirBuilder + BusInteractionBuilder> Air<AB> for SharedPayloadAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main();
+        let [x, y, z] = [0, 1, 2].map(|i| main.current_slice()[i]);
+        let product = x * y;
+        let sum = y + z;
+        b.assert_zero(product.clone() + z);
+        b.assert_zero(sum.clone());
+        b.push_bus_interaction(
+            BusName::new("events"),
+            BusDirection::Push,
+            [product, sum],
+            BusActivation::Always,
+        );
+    }
+}
+
+/// The native Tower128 evaluation keeps every node a bus payload reads. A payload that is a
+/// product a constraint's sum also reads, and one that is a sum stated as a constraint, are the
+/// AIR's values beside the fold `(x * y + z) * alpha + y + z`, and the circuit binds each of the
+/// three.
+#[test]
+fn native_evaluation_keeps_the_nodes_bus_payloads_read() {
+    type F = BinaryField128;
+    fn input(b: &mut CircuitBuilder<F>) -> NativeTower128Target {
+        let value = b.public_input();
+        b.native_tower128_from_expr(value)
+    }
+    let (plan, _) = BinaryAirConstraintPlan::<F>::with_bus_limits(
+        &SharedPayloadAir,
+        2,
+        &VerifierLimits::default(),
+    )
+    .unwrap();
+    let mut b = CircuitBuilder::<F>::new();
+    let point = [input(&mut b), input(&mut b)];
+    let current = [input(&mut b), input(&mut b), input(&mut b)];
+    let alpha = input(&mut b);
+    let result = plan
+        .evaluate_using::<NativeTower128Relation<F>, F>(
+            &mut b,
+            &point,
+            &current,
+            &[],
+            &[],
+            &[],
+            &[],
+            &alpha,
+        )
+        .unwrap();
+    assert!(matches!(result.bus_activations[..], [None]));
+    for value in core::iter::once(&result.folded).chain(result.bus_fields.iter().flatten()) {
+        let expected = input(&mut b);
+        let difference = b.sub(value.as_expr(), expected.as_expr());
+        b.assert_zero(difference);
+    }
+    let circuit = b.build().unwrap();
+    let dense = |n| F::from_repr(0x783920571fd326a958c94327af63de81u128.wrapping_mul(n));
+    let accepts = |values: &[F]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(values)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    for seed in [3u128, 29] {
+        let statement: [F; 6] = core::array::from_fn(|i| dense(seed + i as u128));
+        let [_, _, x, y, z, alpha] = statement;
+        let mut values = statement.to_vec();
+        values.extend([(x * y + z) * alpha + y + z, x * y, y + z]);
+        assert!(accepts(&values));
+        for i in 6..9 {
+            let mut wrong = values.clone();
+            wrong[i] += F::ONE;
+            assert!(!accepts(&wrong));
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PeriodicBusAir;
 impl<F: PrimeCharacteristicRing> BaseAir<F> for PeriodicBusAir {

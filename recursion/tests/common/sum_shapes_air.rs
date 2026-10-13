@@ -62,9 +62,11 @@ impl<AB: AirBuilder> Air<AB> for SumShapesAir {
 
 /// The BLAKE3 AIR's check of `sum = x + y` on `bits`-bit words, over columns `x`, `y` and `sum`.
 /// The carry into bit `i + 1` is `sum_i + x_i + y_i`: the first is zero and each next one is the
-/// majority of the previous bit's operands and carry.
+/// majority of the previous bit's operands and carry. With `addend_first`, each majority is
+/// stated as `z + (x + z) * (y + z)`, its product the second operand of its sum.
 pub(crate) struct CarryAir {
     pub(crate) bits: usize,
+    pub(crate) addend_first: bool,
 }
 impl<F> BaseAir<F> for CarryAir {
     fn width(&self) -> usize {
@@ -86,7 +88,13 @@ impl<AB: AirBuilder> Air<AB> for CarryAir {
         b.assert_zero(carries[0].clone());
         for i in 0..self.bits - 1 {
             let carry = carries[i].clone();
-            b.assert_zero(maj(x[i].into(), y[i].into(), carry) + carries[i + 1].clone());
+            let (x, y): (AB::Expr, AB::Expr) = (x[i].into(), y[i].into());
+            let majority = if self.addend_first {
+                carry.clone() + (x + carry.clone()) * (y + carry)
+            } else {
+                maj(x, y, carry)
+            };
+            b.assert_zero(majority + carries[i + 1].clone());
         }
     }
 }
