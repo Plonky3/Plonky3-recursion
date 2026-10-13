@@ -134,7 +134,7 @@ fn keccak_chain_satisfies_the_native_circuit() {
 
 /// Expression nodes of the native verifier of the chain with its Keccak table bit-committed,
 /// as measured. The bound is 1.2 times this count, updatable when the native transcript, the
-/// WHIR kernel or the Keccak AIR change.
+/// WHIR kernel, the native evaluation of a binary AIR program or the Keccak AIR change.
 const MEASURED_MIXED_NODES: usize = 535_107;
 
 /// Prints the native verifier's expression nodes for the chain with its Keccak table

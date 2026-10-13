@@ -22,11 +22,11 @@
 //! | hash   | arity | witnesses | codeword cells | last layer | wall   | resident | footprint |
 //! |--------|-------|-----------|----------------|------------|--------|----------|-----------|
 //! | blake3 | 2     | 1,364,308 | 117,440,512    | 2.4 s      | 7.4 s  | 5.5 GB   | 5.0 GB    |
-//! | keccak | 4     | 941,657   | 117,440,512    | 4.2 s      | 9.1 s  | 6.6 GB   | 5.9 GB    |
+//! | keccak | 4     | 941,657   | 100,663,296    | 4.2 s      | 9.1 s  | 6.6 GB   | 5.9 GB    |
 //! | blake3 | 4     | 1,437,012 | 117,440,512    | 2.3 s      | 7.5 s  | 6.1 GB   | 5.0 GB    |
 //!
-//! Blake3 proves the last layer in less time than Keccak with as many codeword cells and less
-//! resident memory, although it needs about 45% more witnesses. A four-digest node costs two
+//! Blake3 proves the last layer in less time than Keccak with less resident memory, although it
+//! needs about 45% more witnesses and 17% more codeword cells. A four-digest node costs two
 //! Blake3 compressions, so under Blake3 a four-digest tree saves no compressions over half the
 //! levels while it opens three siblings per level: it takes about as long as arity 2, with 5%
 //! more witnesses and more resident memory. Layer 1 has 4,778 witnesses and 524,288 codeword

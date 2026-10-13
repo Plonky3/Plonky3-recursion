@@ -526,7 +526,8 @@ type WitnessTamper<'a> = (&'static str, &'a dyn Fn(&mut Vec<F>));
 
 /// Expression nodes of the native verifier of the chain with its Keccak table bit-committed,
 /// on trees of arity two, as measured. Either arity's bound is 1.2 times this count, updatable
-/// when the native transcript, the WHIR kernel or the Keccak AIR change.
+/// when the native transcript, the WHIR kernel, the native evaluation of a binary AIR program or
+/// the Keccak AIR change.
 const MEASURED_POLY_MIXED_NODES: usize = 752_890;
 
 /// At either tree arity, the native import of the honest chain ends where the multi-stark
