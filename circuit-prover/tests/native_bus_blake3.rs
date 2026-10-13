@@ -1,16 +1,20 @@
 //! The native BLAKE3 table proves one compression per row, pushes every call's limbs onto the
-//! witness bus, or one element in place of a slot of limbs that only its split reads, and is
+//! witness bus, or one element in place of a slot of limbs that only its split reads, takes
+//! constant tail and chaining-value words from preprocessing in place of their limbs, and is
 //! committed densely or as packed bits of its own width.
 
 use core::borrow::Borrow;
 
 use p3_air::{AirLayout, BaseAir, check_constraints};
-use p3_blake3_air::{Blake3BinaryCols, NUM_BLAKE3_BINARY_COLS};
+use p3_blake3_air::{
+    Blake3BinaryAir, Blake3BinaryCols, Blake3CompressionInput, NUM_BLAKE3_BINARY_COLS,
+    generate_binary_trace_rows,
+};
 use p3_bus::{BusDebugInstance, BusDebugReport, BusSymbolicBuilder};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
 use p3_circuit::ops::{
-    BLAKE3_INPUT_WORDS, ExecutionContext, NonPrimitiveExecutor, NpoTypeId, blake3_compress,
-    limbs_to_words, words_to_limbs,
+    BLAKE3_INPUT_WORDS, BLAKE3_IV, ExecutionContext, NonPrimitiveExecutor, NpoTypeId,
+    blake3_compress, blake3_flags, limbs_to_words, words_to_limbs,
 };
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::{Circuit, CircuitBuilder, CircuitError, ExprId, NonPrimitiveOpId, Op, WitnessId};
@@ -21,15 +25,24 @@ use p3_circuit_prover::native_bus::{
 };
 use p3_field::PrimeCharacteristicRing;
 use p3_matrix::Matrix;
+use p3_matrix::dense::RowMajorMatrix;
 use p3_sumcheck::layout::Table;
 use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128, Poly64};
 
 type F = BinaryField128;
 
 const WIDTH: usize = NUM_BLAKE3_BINARY_COLS;
-/// Preprocessed columns: the call activation, the labels of 56 input, 16 output and 16 swapped
-/// output limbs, and the swapped-digest activation.
-const PP_WIDTH: usize = 90;
+/// Preprocessed columns of a table whose rows take their tails from preprocessing: the call
+/// activation, the labels of 48 block and chaining-value limbs, 16 output and 16 swapped output
+/// limbs, the swapped-digest activation and the four tail words.
+const PP_WIDTH: usize = 86;
+/// The swapped-digest activation's column, the first tail word's following.
+const SWAPPED_ACTIVE: usize = 81;
+/// Preprocessed columns of a table whose rows push their tails: a label per tail limb in place
+/// of the tail words.
+const PUSHED_TAIL_PP_WIDTH: usize = 90;
+/// The flag and eight words of rows that take their chaining values from preprocessing.
+const CHAINING_VALUE_COLUMNS: usize = 9;
 /// Coordinates indexing the 11536 columns once packed: `2^14` is the next power of two.
 const COLUMN_VARIABLES: usize = 14;
 
@@ -47,10 +60,27 @@ const fn tail(call: usize) -> [u32; 4] {
 /// chaining value, followed by its byte-swapped limbs when `swapped`, is bound to public values.
 /// Returns the circuit and its public values.
 fn chain<F: BinaryCoordinateField>(calls: usize, swapped: bool) -> (Circuit<F>, Vec<F>) {
+    keyed_chain(calls, swapped, None)
+}
+
+/// [`chain`] from the constant chaining value `key`, when given, rather than a public one.
+fn keyed_chain<F: BinaryCoordinateField>(
+    calls: usize,
+    swapped: bool,
+    key: Option<[u32; 8]>,
+) -> (Circuit<F>, Vec<F>) {
     let mut b = CircuitBuilder::<F>::new();
     b.enable_native_blake3_compress().unwrap();
     let block = b.alloc_public_input_array::<32>("block");
-    let mut cv = b.alloc_public_input_array::<16>("chaining value");
+    let mut cv = match key {
+        Some(key) => words_to_limbs(&key)
+            .into_iter()
+            .map(|limb| b.define_const(raw(limb)))
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap(),
+        None => b.alloc_public_input_array::<16>("chaining value"),
+    };
     let mut swapped_limbs = None;
     for call in 0..calls {
         let mut input: Vec<ExprId> = block.iter().chain(&cv).copied().collect();
@@ -73,10 +103,13 @@ fn chain<F: BinaryCoordinateField>(calls: usize, swapped: bool) -> (Circuit<F>, 
     }
 
     let block: [u32; 16] = core::array::from_fn(|j| (j as u32 + 1).wrapping_mul(0x9E37_79B1));
-    let mut cv: [u32; 8] =
-        core::array::from_fn(|j| 0x6A09_E667_u32.rotate_left(5 * j as u32) ^ j as u32);
+    let mut cv: [u32; 8] = key.unwrap_or_else(|| {
+        core::array::from_fn(|j| 0x6A09_E667_u32.rotate_left(5 * j as u32) ^ j as u32)
+    });
     let mut public = words_to_limbs(&block);
-    public.extend(words_to_limbs(&cv));
+    if key.is_none() {
+        public.extend(words_to_limbs(&cv));
+    }
     for call in 0..calls {
         let mut input = [0; BLAKE3_INPUT_WORDS];
         input[..16].copy_from_slice(&block);
@@ -209,6 +242,115 @@ fn check_local<F: BinaryCoordinateField>(
     for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
         check_constraints(air, trace, public);
     }
+}
+
+/// The compression inputs of the native BLAKE3 calls of `circuit` under `witness`, as words.
+fn call_words<F: BinaryCoordinateField>(
+    circuit: &Circuit<F>,
+    witness: &WitnessTrace<F>,
+) -> Vec<[u32; BLAKE3_INPUT_WORDS]> {
+    calls(circuit)
+        .iter()
+        .map(|(inputs, _)| {
+            let limbs: Vec<u16> = inputs
+                .iter()
+                .map(|&id| {
+                    u16::try_from(witness.get_value(id).unwrap().to_raw_coordinates()).unwrap()
+                })
+                .collect();
+            limbs_to_words(&limbs).try_into().unwrap()
+        })
+        .collect()
+}
+
+/// The dense BLAKE3 table of the compressions of `inputs`, padded to `height` rows of zero
+/// inputs.
+fn compressions<F: BinaryCoordinateField>(
+    inputs: &[[u32; BLAKE3_INPUT_WORDS]],
+    height: usize,
+) -> RowMajorMatrix<F> {
+    let mut rows: Vec<_> = inputs
+        .iter()
+        .map(|words| Blake3CompressionInput {
+            block: core::array::from_fn(|j| words[j]),
+            chaining_value: core::array::from_fn(|j| words[16 + j]),
+            counter: u64::from(words[24]) | u64::from(words[25]) << 32,
+            block_len: words[26],
+            flags: words[27],
+        })
+        .collect();
+    rows.resize(height, Blake3CompressionInput::default());
+    generate_binary_trace_rows(rows, 0)
+}
+
+/// Whether every row of `table` is a compression: the plain BLAKE3 AIR accepts it.
+fn compresses<F: BinaryCoordinateField>(table: &RowMajorMatrix<F>) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        check_constraints(&Blake3BinaryAir::default(), table, &[]);
+    }))
+    .is_ok()
+}
+
+/// The digest limbs of the compression of `input`.
+fn digest(input: &[u32; BLAKE3_INPUT_WORDS]) -> Vec<u16> {
+    words_to_limbs(&blake3_compress(input)[..8])
+}
+
+/// `witness` with the output limbs of call `call` of `circuit` replaced by `digest`.
+fn with_outputs<F: BinaryCoordinateField>(
+    circuit: &Circuit<F>,
+    witness: &WitnessTrace<F>,
+    call: usize,
+    digest: &[u16],
+) -> WitnessTrace<F> {
+    let mut values: Vec<F> = (0..witness.num_rows())
+        .map(|i| *witness.get_value(WitnessId(i as u32)).unwrap())
+        .collect();
+    for (id, &limb) in calls(circuit)[call].1.iter().zip(digest) {
+        values[id.0 as usize] = raw(limb);
+    }
+    WitnessTrace::new(values)
+}
+
+/// `public` with its last values, the digest the circuit binds, replaced by `digest`.
+fn claiming<F: BinaryCoordinateField>(public: &[F], digest: &[u16]) -> Vec<F> {
+    let mut statement = public.to_vec();
+    let start = statement.len() - digest.len();
+    for (value, &limb) in statement[start..].iter_mut().zip(digest) {
+        *value = raw(limb);
+    }
+    statement
+}
+
+/// The dense traces of `witness`, but for the BLAKE3 table's, which is `table`.
+fn traces_with<F: BinaryCoordinateField>(
+    prepared: &NativeBusCircuit<F>,
+    witness: &WitnessTrace<F>,
+    table: RowMajorMatrix<F>,
+) -> Vec<RowMajorMatrix<F>> {
+    let mut traces = prepared.traces(witness).unwrap();
+    *traces.last_mut().unwrap() = table;
+    traces
+}
+
+/// The tables whose local constraints refuse the dense traces of `witness`, but for the BLAKE3
+/// table's, which is `table`.
+fn refusing_with<F: BinaryCoordinateField>(
+    prepared: &NativeBusCircuit<F>,
+    witness: &WitnessTrace<F>,
+    table: RowMajorMatrix<F>,
+    public: &[F],
+) -> Vec<usize> {
+    let traces = traces_with(prepared, witness, table);
+    let public = prepared.public_values(public).unwrap();
+    (0..traces.len())
+        .filter(|&i| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check_constraints(&prepared.airs()[i], &traces[i], &public[i]);
+            }))
+            .is_err()
+        })
+        .collect()
 }
 
 /// The honest chain balances every bus, its last output limbs and swapped limbs included; a
@@ -358,11 +500,16 @@ fn refused(
 
 /// A changed internal bit fails the compression constraints on a call row and on a padding row
 /// in both modes; a non-bit input cell is refused in dense mode. That the dense table checks
-/// the booleanity of the input words itself is pinned by `packed_words_match_dense_bits`.
+/// the booleanity of the input words itself is pinned by `packed_words_match_dense_bits`. A row
+/// compressing its own block and chaining value under another counter or other flags satisfies
+/// the compression constraints, and the tail words the table takes from preprocessing refuse
+/// it, on a padding row too.
 #[test]
 fn compression_cells_are_constrained_on_every_row() {
     let (circuit, public) = chain::<F>(3, false);
     let witness = witness(&circuit, &public);
+    let mut inputs = call_words(&circuit, &witness);
+    inputs.resize(8, [0; BLAKE3_INPUT_WORDS]);
     for mode in [KeccakCommitment::Dense, KeccakCommitment::Bits] {
         let prepared = build(&circuit, 3, mode);
         let table = prepared.airs().len() - 1;
@@ -384,6 +531,238 @@ fn compression_cells_are_constrained_on_every_row() {
         if mode == KeccakCommitment::Dense {
             assert!(refused(&prepared, table, &wide));
         }
+        assert_eq!(&compressions::<F>(&inputs, 8), trace);
+        for row in [1, 6] {
+            for (word, flip) in [(24, 1), (27, blake3_flags::CHUNK_START)] {
+                let mut forged = inputs.clone();
+                forged[row][word] ^= flip;
+                let forged = compressions(&forged, 8);
+                assert!(compresses(&forged));
+                assert!(
+                    refused(&prepared, table, &forged),
+                    "{mode:?}, row {row}, word {word}"
+                );
+            }
+        }
+    }
+}
+
+/// The counter, block length and flags words of a row bind its compression alone: no row pushes
+/// a tail limb. A prover who compresses the true block and chaining value under another tail
+/// word, and claims that digest, satisfies the compression constraints and balances every bus,
+/// and the table refuses the row by the tail words it takes from preprocessing.
+fn forged_tails_are_refused<F: BinaryCoordinateField>() {
+    let (circuit, public) = chain::<F>(1, false);
+    let witness = witness(&circuit, &public);
+    let inputs = call_words(&circuit, &witness);
+    for mode in [KeccakCommitment::Dense, KeccakCommitment::Bits] {
+        let prepared = build(&circuit, 1, mode);
+        let table = prepared.airs().len() - 1;
+        let height = 1 << prepared.log_heights()[table];
+        let air = &prepared.airs()[table];
+        assert_eq!(BaseAir::<F>::preprocessed_width(air), PP_WIDTH);
+        let honest = compressions(&inputs, height);
+        assert!(refusing_with(&prepared, &witness, honest.clone(), &public).is_empty());
+        assert!(balanced_with(&prepared, &witness, honest, &public));
+        for (word, flip) in [
+            (24, 1),
+            (25, 1 << 31),
+            (26, 1 << 6),
+            (27, blake3_flags::ROOT),
+        ] {
+            let mut forged = inputs.clone();
+            forged[0][word] ^= flip;
+            let claimed = digest(&forged[0]);
+            let forged_witness = with_outputs(&circuit, &witness, 0, &claimed);
+            let statement = claiming(&public, &claimed);
+            let trace = compressions(&forged, height);
+            assert!(compresses(&trace));
+            let case = format!("{mode:?}, word {word}");
+            assert!(
+                balanced_with(&prepared, &forged_witness, trace.clone(), &statement),
+                "{case}"
+            );
+            assert_eq!(
+                refusing_with(&prepared, &forged_witness, trace, &statement),
+                [table],
+                "{case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn forged_tails_are_refused_in_both_bases() {
+    forged_tails_are_refused::<F>();
+    forged_tails_are_refused::<Poly64>();
+}
+
+/// A row whose chaining-value limbs are all constants takes its chaining value from
+/// preprocessing under its flag and pushes none of those limbs, while the next row, whose
+/// chaining value is the first's output, leaves the flag zero and pushes it. A prover who
+/// compresses the first block from another chaining value and chains that digest on satisfies
+/// the compression constraints and balances every bus, and the table refuses the flagged row by
+/// its words. One who compresses the second block from another chaining value satisfies every
+/// local constraint, and the witness bus refuses it.
+fn constant_chaining_values_bind_their_rows<F: BinaryCoordinateField>() {
+    const KEYED_PP_WIDTH: usize = PP_WIDTH + CHAINING_VALUE_COLUMNS;
+    let (circuit, public) = keyed_chain::<F>(2, false, Some(BLAKE3_IV));
+    let witness = witness(&circuit, &public);
+    let inputs = call_words(&circuit, &witness);
+    let calls = calls(&circuit);
+    let label = |id: &WitnessId| F::from_raw_coordinates(u128::from(id.0) + 1).unwrap();
+    let key = BLAKE3_IV.map(|word| F::from_raw_coordinates(word.into()).unwrap());
+    for mode in [KeccakCommitment::Dense, KeccakCommitment::Bits] {
+        let prepared = build(&circuit, 1, mode);
+        let table = prepared.airs().len() - 1;
+        let height = 1 << prepared.log_heights()[table];
+        let air = &prepared.airs()[table];
+        assert_eq!(BaseAir::<F>::preprocessed_width(air), KEYED_PP_WIDTH);
+        let pp = air.preprocessed_trace().unwrap();
+        let rows = pp.values.as_chunks::<KEYED_PP_WIDTH>().0;
+        for (row, (flagged, (inputs, _))) in rows.iter().zip([true, false].into_iter().zip(&calls))
+        {
+            let labels: Vec<F> = inputs[32..48]
+                .iter()
+                .map(|id| if flagged { F::ZERO } else { label(id) })
+                .collect();
+            assert_eq!(&row[33..49], labels.as_slice());
+            assert_eq!(row[PP_WIDTH], F::from_bool(flagged));
+            let words = if flagged { key } else { [F::ZERO; 8] };
+            assert_eq!(&row[PP_WIDTH + 1..], words);
+        }
+        // The key's limbs are read by their constant rows alone, and the first output by its
+        // push and the second row's.
+        for id in &calls[0].0[32..48] {
+            assert_eq!(fanout_reads(&prepared, id.0 as usize), 1);
+        }
+        for id in &calls[0].1 {
+            assert_eq!(fanout_reads(&prepared, id.0 as usize), 2);
+        }
+        let honest = compressions(&inputs, height);
+        assert!(refusing_with(&prepared, &witness, honest.clone(), &public).is_empty());
+        assert!(balanced_with(&prepared, &witness, honest, &public));
+
+        let mut forged = inputs.clone();
+        forged[0][16 + 3] ^= 1 << 7;
+        let first = digest(&forged[0]);
+        forged[1][16..24].copy_from_slice(&limbs_to_words(&first));
+        let claimed = digest(&forged[1]);
+        let forged_witness = with_outputs(
+            &circuit,
+            &with_outputs(&circuit, &witness, 0, &first),
+            1,
+            &claimed,
+        );
+        let statement = claiming(&public, &claimed);
+        let trace = compressions(&forged, height);
+        assert!(compresses(&trace));
+        assert!(
+            balanced_with(&prepared, &forged_witness, trace.clone(), &statement),
+            "{mode:?}"
+        );
+        assert_eq!(
+            refusing_with(&prepared, &forged_witness, trace, &statement),
+            [table],
+            "{mode:?}"
+        );
+
+        let mut forged = inputs.clone();
+        forged[1][16 + 3] ^= 1 << 7;
+        let claimed = digest(&forged[1]);
+        let forged_witness = with_outputs(&circuit, &witness, 1, &claimed);
+        let statement = claiming(&public, &claimed);
+        let trace = compressions(&forged, height);
+        assert!(refusing_with(&prepared, &forged_witness, trace.clone(), &statement).is_empty());
+        assert!(
+            !balanced_with(&prepared, &forged_witness, trace, &statement),
+            "{mode:?}"
+        );
+    }
+}
+
+#[test]
+fn constant_chaining_values_bind_their_rows_in_both_bases() {
+    constant_chaining_values_bind_their_rows::<F>();
+    constant_chaining_values_bind_their_rows::<Poly64>();
+}
+
+/// A call whose tail limbs are not all constants, here a public counter beside a constant block
+/// length and flags, keeps its tail pushes, and so does every other row: the table takes no tail
+/// words and labels every tail limb. A prover who compresses that call under another counter
+/// than the witness's, and claims that digest, satisfies every local constraint, and the witness
+/// bus refuses it.
+#[test]
+fn witness_tails_keep_their_pushes() {
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_blake3_compress().unwrap();
+    let block_and_key = b.alloc_public_input_array::<48>("block and chaining value");
+    let counter = b.alloc_public_input_array::<4>("counter");
+    let [constant_tail, rest] = [tail(0).as_slice(), &[64, 0]].map(|words| {
+        words_to_limbs(words)
+            .into_iter()
+            .map(|limb| b.define_const(raw(limb)))
+            .collect::<Vec<_>>()
+    });
+    for tail in [constant_tail, counter.iter().copied().chain(rest).collect()] {
+        let input: Vec<ExprId> = block_and_key.iter().copied().chain(tail).collect();
+        for limb in b.add_native_blake3_compress(&input).unwrap() {
+            let expected = b.public_input();
+            b.connect(limb, expected);
+        }
+    }
+    let circuit = b.build().unwrap();
+
+    let block_and_key = words(48, 23);
+    let input = |tail: [u32; 4]| -> [u32; BLAKE3_INPUT_WORDS] {
+        let limbs: Vec<u16> = block_and_key
+            .iter()
+            .copied()
+            .chain(words_to_limbs(&tail))
+            .collect();
+        limbs_to_words(&limbs).try_into().unwrap()
+    };
+    let inputs = vec![input(tail(0)), input([5, 0, 64, 0])];
+    let mut limbs = block_and_key.clone();
+    limbs.extend(words_to_limbs(&[5, 0]));
+    limbs.extend(digest(&inputs[0]));
+    limbs.extend(digest(&inputs[1]));
+    let public: Vec<F> = limbs.into_iter().map(raw).collect();
+    let witness = witness(&circuit, &public);
+    assert_eq!(call_words(&circuit, &witness), inputs);
+    let calls = calls(&circuit);
+    let label = |id: &WitnessId| F::from_raw_coordinates(u128::from(id.0) + 1).unwrap();
+    for mode in [KeccakCommitment::Dense, KeccakCommitment::Bits] {
+        let prepared = build(&circuit, 1, mode);
+        let table = prepared.airs().len() - 1;
+        let height = 1 << prepared.log_heights()[table];
+        let air = &prepared.airs()[table];
+        assert_eq!(BaseAir::<F>::preprocessed_width(air), PUSHED_TAIL_PP_WIDTH);
+        let pp = air.preprocessed_trace().unwrap();
+        let rows = pp.values.as_chunks::<PUSHED_TAIL_PP_WIDTH>().0;
+        for (row, (inputs, _)) in rows.iter().zip(&calls) {
+            let labels: Vec<F> = inputs[48..].iter().map(label).collect();
+            assert_eq!(&row[49..57], labels.as_slice());
+        }
+        // The public table's read and the second row's push.
+        for id in &calls[1].0[48..52] {
+            assert_eq!(fanout_reads(&prepared, id.0 as usize), 2);
+        }
+        let honest = compressions(&inputs, height);
+        assert!(refusing_with(&prepared, &witness, honest.clone(), &public).is_empty());
+        assert!(balanced_with(&prepared, &witness, honest, &public));
+
+        let mut forged = inputs.clone();
+        forged[1][24] ^= 1;
+        let claimed = digest(&forged[1]);
+        let forged_witness = with_outputs(&circuit, &witness, 1, &claimed);
+        let statement = claiming(&public, &claimed);
+        let trace = compressions(&forged, height);
+        assert!(refusing_with(&prepared, &forged_witness, trace.clone(), &statement).is_empty());
+        assert!(
+            !balanced_with(&prepared, &forged_witness, trace, &statement),
+            "{mode:?}"
+        );
     }
 }
 
@@ -467,8 +846,9 @@ fn malformed_calls_and_narrow_carriers_are_refused() {
 }
 
 /// The BLAKE3 table is the last AIR. It reads no next row, assumes a Boolean trace only when bit
-/// committed, and labels each call's limbs in its preprocessed row: the swapped output limbs
-/// only on the call that outputs them. The fanout table reads every labelled limb once.
+/// committed, and labels each call's limbs in its preprocessed row but its constant tail's,
+/// whose words it holds instead: the swapped output limbs only on the call that outputs them.
+/// The fanout table reads every labelled limb once.
 #[test]
 fn blake3_table_shape_and_preprocessing() {
     let (circuit, public) = chain::<F>(3, true);
@@ -492,22 +872,24 @@ fn blake3_table_shape_and_preprocessing() {
         let pp = air.preprocessed_trace().unwrap();
         let rows = pp.values.as_chunks::<PP_WIDTH>().0;
         let label = |id: &WitnessId| F::from_raw_coordinates(u128::from(id.0) + 1).unwrap();
-        for (row, (inputs, outputs)) in rows.iter().zip(&calls) {
+        for (call, (row, (inputs, outputs))) in rows.iter().zip(&calls).enumerate() {
             let swapped = outputs.len() == 32;
             assert_eq!(row[0], F::ONE);
-            assert_eq!(row[PP_WIDTH - 1], F::from_bool(swapped));
-            let labels: Vec<F> = inputs.iter().chain(outputs).map(label).collect();
+            assert_eq!(row[SWAPPED_ACTIVE], F::from_bool(swapped));
+            let labels: Vec<F> = inputs[..48].iter().chain(outputs).map(label).collect();
             assert_eq!(&row[1..1 + labels.len()], labels.as_slice());
             assert!(
-                row[1 + labels.len()..PP_WIDTH - 1]
+                row[1 + labels.len()..SWAPPED_ACTIVE]
                     .iter()
                     .all(|&cell| cell == F::ZERO)
             );
+            let tail = tail(call).map(|word| F::from_raw_coordinates(word.into()).unwrap());
+            assert_eq!(&row[SWAPPED_ACTIVE + 1..], tail);
         }
         assert!(rows[3].iter().all(|&cell| cell == F::ZERO));
 
-        // Fanout reads: the public values, the gates' used slots by selector, and the 72 limbs
-        // of each call with the 16 swapped limbs of the last.
+        // Fanout reads: the public values, the gates' used slots by selector, and the 64 limbs
+        // of each call outside its tail with the 16 swapped limbs of the last.
         let gate_reads: usize = prepared.airs()[1]
             .preprocessed_trace()
             .unwrap()
@@ -531,7 +913,7 @@ fn blake3_table_shape_and_preprocessing() {
             .iter()
             .filter(|row| row[1] == F::ONE)
             .count();
-        assert_eq!(reads, public + gate_reads + 3 * 72 + 16);
+        assert_eq!(reads, public + gate_reads + 3 * 64 + 16);
     }
 }
 
@@ -968,9 +1350,19 @@ fn balanced_beside<F: BinaryCoordinateField>(
     hashed: &WitnessTrace<F>,
     public: &[F],
 ) -> bool {
-    let mut traces = prepared.traces(witness).unwrap();
-    let table = traces.len() - 1;
-    traces[table] = prepared.traces(hashed).unwrap().swap_remove(table);
+    let table = prepared.traces(hashed).unwrap().pop().unwrap();
+    balanced_with(prepared, witness, table, public)
+}
+
+/// Whether every bus balances over the dense traces of `witness`, but for the BLAKE3 table's,
+/// which is `table`.
+fn balanced_with<F: BinaryCoordinateField>(
+    prepared: &NativeBusCircuit<F>,
+    witness: &WitnessTrace<F>,
+    table: RowMajorMatrix<F>,
+    public: &[F],
+) -> bool {
+    let traces = traces_with(prepared, witness, table);
     let preprocessed: Vec<_> = prepared
         .airs()
         .iter()

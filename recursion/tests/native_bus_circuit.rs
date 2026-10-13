@@ -2979,12 +2979,12 @@ fn native_blake3_chain_refuses_a_wrong_output_limb() {
 
 /// A prover who regenerates the last call's row from another counter or flags word than its
 /// constant inputs hold, and claims the digest that row computes, keeps every constant gate and
-/// satisfies every table's local constraints: the row is a true compression, and the witness
-/// differs from the honest one only at the claimed outputs. The row pushes its counter and
-/// flags limbs under the labels of those constant inputs, which no reader of the constants
-/// matches, so the proof is refused.
+/// satisfies the local constraints of every table but the BLAKE3 table: the row is a true
+/// compression, and the witness differs from the honest one only at the claimed outputs. Every
+/// row takes its counter and flags words from preprocessing, which holds the constant inputs,
+/// so the BLAKE3 table refuses the row and the proof is refused.
 #[test]
-fn native_blake3_rows_bind_their_counter_and_flags_to_the_witness() {
+fn native_blake3_rows_bind_their_counter_and_flags_to_preprocessing() {
     let (circuit, statement) = blake3_chain::<F>(3);
     let prepared = NativeBusCircuit::new(&circuit, "blake3").unwrap();
     let table = blake3_table(&prepared);
@@ -3038,8 +3038,15 @@ fn native_blake3_rows_bind_their_counter_and_flags_to_the_witness() {
         let mut traces = prepared.traces(&WitnessTrace::new(values)).unwrap();
         traces[table].values[call * NUM_BLAKE3_BINARY_COLS..][..NUM_BLAKE3_BINARY_COLS]
             .copy_from_slice(&row.values);
-        for ((air, trace), public) in prepared.airs().iter().zip(&traces).zip(&public) {
-            check_constraints(air, trace, public);
+        for (index, ((air, trace), public)) in
+            prepared.airs().iter().zip(&traces).zip(&public).enumerate()
+        {
+            let local = catch_unwind(AssertUnwindSafe(|| check_constraints(air, trace, public)));
+            assert_eq!(
+                local.is_err(),
+                index == table,
+                "input word {word}, table {index}"
+            );
         }
         assert!(
             !tower_accepts(&prepared, public)(traces),
@@ -3048,13 +3055,15 @@ fn native_blake3_rows_bind_their_counter_and_flags_to_the_witness() {
     }
 }
 
-/// The constant inputs of a call are fixed by constant gates. `hash` returns the BLAKE3 digest
-/// units of a message of `bits`-wide units, here `prefix_bytes` constant bytes and three public
-/// units, and the circuit binds them to public inputs. The message starts its last blocks from
-/// precomputed chaining values and fixed counter, length and flags limbs. A prover who runs the
-/// circuit with one other constant and claims the digest that follows satisfies every table but
-/// that constant's gate, so the proof is refused. Each target is an input limb of a call, here
-/// the first nonzero one of `candidates`, read by no other operation.
+/// The constant inputs of a call are fixed by constant gates, and those of its chaining value
+/// and tail also by the words its row takes from preprocessing. `hash` returns the BLAKE3
+/// digest units of a message of `bits`-wide units, here `prefix_bytes` constant bytes and three
+/// public units, and the circuit binds them to public inputs. The message starts its last blocks
+/// from precomputed chaining values and fixed counter, length and flags limbs. A prover who runs
+/// the circuit with one other constant and claims the digest that follows satisfies every table
+/// but that constant's gate and, for a chaining-value or tail limb, the BLAKE3 table, so the
+/// proof is refused. Each target is an input limb of a call, here the first nonzero one of
+/// `candidates`, read by no other operation.
 fn reject_forged_blake3_constants(
     bits: usize,
     hash: impl Fn(&mut CircuitBuilder<F>, &[ExprId]) -> Vec<ExprId>,
@@ -3146,6 +3155,7 @@ fn reject_forged_blake3_constants(
         .iter()
         .position(|air| air.width() == 5)
         .unwrap();
+    let blake3 = blake3_table(&prepared);
 
     for &(call, candidates) in targets {
         let index = *candidates
@@ -3207,7 +3217,14 @@ fn reject_forged_blake3_constants(
             prepared.airs().iter().zip(&traces).zip(&public).enumerate()
         {
             let local = catch_unwind(AssertUnwindSafe(|| check_constraints(air, trace, public)));
-            assert_eq!(local.is_err(), table == gates, "table {table}");
+            // Input limbs 32..56 are the chaining value and the tail, which every call here takes
+            // from preprocessing.
+            let preprocessed = (32..56).contains(&index) && table == blake3;
+            assert_eq!(
+                local.is_err(),
+                table == gates || preprocessed,
+                "table {table}"
+            );
         }
         assert!(
             !tower_accepts(&prepared, public)(traces),

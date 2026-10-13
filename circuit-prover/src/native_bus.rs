@@ -37,8 +37,8 @@ use crate::native_binary::{
     keccak_limb_expression, keccak_packed_words,
 };
 use crate::native_blake3::{
-    Blake3Call, ElementSlots, blake3_calls, blake3_packed_words, blake3_preprocessed,
-    blake3_preprocessed_width, blake3_trace, eval_blake3,
+    Blake3Call, Blake3Layout, ElementSlots, blake3_calls, blake3_layout, blake3_packed_words,
+    blake3_preprocessed, blake3_trace, eval_blake3,
 };
 use crate::primitive_plan::{PrimitiveConstraint, PrimitivePlan};
 
@@ -157,8 +157,7 @@ enum Table<F> {
         pp: Arc<RowMajorMatrix<F>>,
         weights: [F; 16],
         bits: bool,
-        /// The slots its rows bind elements to, when they bind any.
-        elements: Option<ElementSlots>,
+        layout: Blake3Layout,
     },
 }
 
@@ -277,26 +276,27 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     .map(|&w| w + 1),
             );
         }
+        let constants = constant_values(&plan.constraints);
+        let mut layout = blake3_layout(&mut blake3_calls, |w| constants.get(&w).copied().flatten());
         let blake3_reads = external.len();
         for call in &blake3_calls {
-            external.extend(call.labels(None).into_iter().flatten().map(|w| w + 1));
+            external.extend(call.labels(layout).into_iter().flatten().map(|w| w + 1));
         }
         let mut gate_rows = fuse_selects(
-            gate_rows(&plan.constraints, plan.width),
+            gate_rows(&plan.constraints, &constants, plan.width),
             &external,
             plan.width,
         );
-        let mut elements = None;
         if let Some(slots) = ElementSlots::of::<F>()
             && !blake3_calls.is_empty()
         {
             gate_rows =
                 bind_blake3_elements(gate_rows, &external, &mut blake3_calls, slots, plan.width);
             if blake3_calls.iter().any(|call| !call.bound.is_empty()) {
-                elements = Some(slots);
+                layout.elements = Some(slots);
                 external.truncate(blake3_reads);
                 for call in &blake3_calls {
-                    external.extend(call.labels(elements).into_iter().flatten().map(|w| w + 1));
+                    external.extend(call.labels(layout).into_iter().flatten().map(|w| w + 1));
                 }
             }
         }
@@ -343,7 +343,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let (hash_width, hash_pp) = if blake3_calls.is_empty() {
             (HASH_WIDTH, 3)
         } else {
-            (NUM_BLAKE3_BINARY_COLS, blake3_preprocessed_width(elements))
+            (NUM_BLAKE3_BINARY_COLS, layout.width())
         };
         let hash_cells = cells(hash_height, hash_width)?;
         let main_cells = add(
@@ -481,13 +481,13 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             airs.push(air(Table::Blake3 {
                 pp: Arc::new(blake3_preprocessed(
                     &blake3_calls,
-                    elements,
+                    layout,
                     hash_height,
                     label::<F>,
                 )?),
                 weights,
                 bits,
-                elements,
+                layout,
             }));
             log_heights.push(hash_height.ilog2() as usize);
         }
@@ -769,27 +769,40 @@ fn label<F: BinaryCoordinateField>(label: usize) -> Result<F, NativeBusCircuitEr
     })
 }
 
+/// The value each witness that a constant constraint fixes is fixed to: `None` for one fixed
+/// to two different values, which keeps its reads.
+fn constant_values<F: Field>(constraints: &[PrimitiveConstraint<F>]) -> HashMap<usize, Option<F>> {
+    let mut constants = HashMap::<usize, Option<F>>::new();
+    for constraint in constraints {
+        if let PrimitiveConstraint::Constant { out, value } = *constraint {
+            let fixed = constants.entry(out).or_insert(Some(value));
+            if *fixed != Some(value) {
+                *fixed = None;
+            }
+        }
+    }
+    constants
+}
+
 /// One row per primitive constraint in the frozen codec, except that a multiply-add with a
 /// constant operand becomes a [`MUL_ADD_CONSTANT`] row reading the constant from
 /// preprocessing, and an addition `a + b` one with constant one and addend `b`. A Boolean
 /// check moves into the first multiply-add or product with a constant whose other operand it
 /// checks, which becomes a [`BOOLEAN_MUL_ADD_CONSTANT`] row. The fanout table equates every
-/// occurrence of a witness ID, so one check covers all of them.
-fn gate_rows<F: Field>(constraints: &[PrimitiveConstraint<F>], width: usize) -> Vec<GateRow<F>> {
-    // A witness fixed to two different values keeps its reads.
-    let mut constants = HashMap::<usize, Option<F>>::new();
+/// occurrence of a witness ID, so one check covers all of them. `constants` holds the
+/// [`constant_values`] of `constraints`.
+fn gate_rows<F: Field>(
+    constraints: &[PrimitiveConstraint<F>],
+    constants: &HashMap<usize, Option<F>>,
+    width: usize,
+) -> Vec<GateRow<F>> {
     let mut checked = vec![false; width];
     for constraint in constraints {
-        match *constraint {
-            PrimitiveConstraint::Constant { out, value } => {
-                let fixed = constants.entry(out).or_insert(Some(value));
-                if *fixed != Some(value) {
-                    *fixed = None;
-                }
-            }
-            // Only a check whose output is its input leaves no other witness to constrain.
-            PrimitiveConstraint::Boolean { value, out } if value == out => checked[value] = true,
-            _ => {}
+        // Only a check whose output is its input leaves no other witness to constrain.
+        if let PrimitiveConstraint::Boolean { value, out } = *constraint
+            && value == out
+        {
+            checked[value] = true;
         }
     }
     // The multiplicand, constant multiplier, addend and output of a product with a constant.
@@ -948,9 +961,9 @@ fn fuse_selects<F: BinaryCoordinateField>(
 /// `s_(n-1)` as `sum_j shift_j * w_j` over its limbs' bits, the chain's own relation, so the
 /// chain rows are dropped and nothing reads the words or partial sums any more. Only the full run
 /// of an aligned slot binds, so a shorter split keeps the rows that also bound its value's high
-/// coordinates. `external` holds the reads outside the gate table, every call's limbs among
-/// them, as for [`fuse_selects`], so the counts cover every fanout occurrence. A call that binds
-/// a slot records its elements.
+/// coordinates. `external` holds the reads outside the gate table, every call's pushed limbs
+/// among them, as for [`fuse_selects`], so the counts cover every fanout occurrence. A call that
+/// binds a slot records its elements.
 fn bind_blake3_elements<F: BinaryCoordinateField>(
     rows: Vec<GateRow<F>>,
     external: &[usize],
@@ -1069,7 +1082,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Public(_) => 0,
             Table::Keccak { .. } => 3,
             Table::Bridge(_) => BRIDGE_PP,
-            Table::Blake3 { elements, .. } => blake3_preprocessed_width(elements),
+            Table::Blake3 { layout, .. } => layout.width(),
         }
     }
     fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
@@ -1209,14 +1222,14 @@ where
             Table::Blake3 {
                 weights,
                 bits,
-                elements,
+                layout,
                 ..
             } => eval_blake3(
                 b,
                 row,
                 pp,
                 weights,
-                *elements,
+                *layout,
                 *bits,
                 BusName::new(self.witness_bus.as_ref()),
             ),

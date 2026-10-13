@@ -6,11 +6,13 @@
 //! under its preprocessed witness label. Output bits are sums of the last round's cells, so every
 //! pushed limb has degree one. The bits are Boolean by the AIR, or by a commitment that stores
 //! bits, so every pushed limb spans sixteen coordinates. A row may push a slot of limbs as one
-//! carrier element instead, see [`ElementSlots`].
+//! carrier element instead, see [`ElementSlots`], and may take constant tail and chaining-value
+//! words from preprocessing instead of pushing their limbs, see [`Blake3Layout`].
 
 use alloc::vec::Vec;
 use core::array;
 use core::borrow::Borrow;
+use core::ops::Range;
 
 use p3_air::{Air, AirBuilder};
 use p3_blake3_air::{
@@ -37,13 +39,82 @@ const PUSHED_LIMBS: usize = BLAKE3_INPUT_LIMBS + 2 * NATIVE_BLAKE3_OUTPUT_LIMBS;
 const CALL_LIMBS: usize = BLAKE3_INPUT_LIMBS + NATIVE_BLAKE3_OUTPUT_LIMBS;
 /// Input limbs of a call's block: its first sixteen input words.
 const BLOCK_LIMBS: usize = 32;
-/// Preprocessed columns: the call activation, a witness label per pushed limb, and the
-/// swapped-digest activation. A table that binds elements adds an activation per slot.
-const BLAKE3_PP: usize = PUSHED_LIMBS + 2;
+/// Input limbs of a call's chaining value: its next eight input words.
+const CHAINING_VALUE: Range<usize> = BLOCK_LIMBS..BLOCK_LIMBS + 16;
+/// Input limbs of a call's tail: the counter's low and high words, the block length and the
+/// flags.
+const TAIL: Range<usize> = CHAINING_VALUE.end..BLAKE3_INPUT_LIMBS;
+const CHAINING_VALUE_WORDS: usize = 8;
+const TAIL_WORDS: usize = 4;
 const ACTIVE: usize = 0;
 const LABELS: usize = 1;
-const SWAPPED_ACTIVE: usize = LABELS + PUSHED_LIMBS;
-const BOUND: usize = BLAKE3_PP;
+
+/// The preprocessed columns of a BLAKE3 table, in order: the call activation, a witness label
+/// per pushed limb that a row can push, the swapped-digest activation, the four tail words when
+/// every row takes its tail from preprocessing, a chaining-value flag and eight words when some
+/// row takes its chaining value from preprocessing, and an activation per element slot when the
+/// rows bind elements.
+///
+/// A row that takes its tail pushes no tail limb, and the table has no tail label columns: it
+/// constrains each tail word `sum_b bit_b * x_b`, over its 32 bits with `x_b` the element of
+/// raw coordinate `b`, to equal the preprocessed word, which is zero on a padding row whose
+/// inputs are zero. A flagged row takes its chaining value the same way under the flag, and
+/// pushes its chaining-value limbs under the call activation minus the flag. The bits are
+/// Boolean and the `x_b` independent, so the preprocessed words fix the bits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Blake3Layout {
+    /// Whether every row takes its tail words from preprocessing.
+    pub(crate) constant_tails: bool,
+    /// Whether flagged rows take their chaining values from preprocessing.
+    pub(crate) constant_chaining_values: bool,
+    /// The slots its rows bind elements to, when they bind any.
+    pub(crate) elements: Option<ElementSlots>,
+}
+
+impl Blake3Layout {
+    /// The label column of pushed limb `limb`, unless no row pushes it.
+    fn label(self, limb: usize) -> Option<usize> {
+        if !self.constant_tails || limb < TAIL.start {
+            Some(LABELS + limb)
+        } else if TAIL.contains(&limb) {
+            None
+        } else {
+            Some(LABELS + limb - TAIL.len())
+        }
+    }
+
+    fn swapped_active(self) -> usize {
+        LABELS + PUSHED_LIMBS - if self.constant_tails { TAIL.len() } else { 0 }
+    }
+
+    /// The first of the four tail-word columns, when every row takes its tail from them.
+    fn tail(self) -> Option<usize> {
+        self.constant_tails.then(|| self.swapped_active() + 1)
+    }
+
+    /// The chaining-value flag column, its eight words following, when rows take constant
+    /// chaining values.
+    fn chaining_value(self) -> Option<usize> {
+        let tail_words = if self.constant_tails { TAIL_WORDS } else { 0 };
+        self.constant_chaining_values
+            .then(|| self.swapped_active() + 1 + tail_words)
+    }
+
+    /// The activation column of element slot 0, the other slots' following.
+    fn bound(self) -> usize {
+        let tail_words = if self.constant_tails { TAIL_WORDS } else { 0 };
+        let chaining_value = if self.constant_chaining_values {
+            1 + CHAINING_VALUE_WORDS
+        } else {
+            0
+        };
+        self.swapped_active() + 1 + tail_words + chaining_value
+    }
+
+    pub(crate) fn width(self) -> usize {
+        self.bound() + self.elements.map_or(0, ElementSlots::count)
+    }
+}
 
 /// Runs of pushed limbs that a row can push as one carrier element of `words` sixteen-bit
 /// words: the block's aligned runs of `words` limbs, then the swapped output limbs `words` at a
@@ -91,11 +162,6 @@ impl ElementSlots {
     }
 }
 
-/// Preprocessed columns of a table that binds elements to `slots`, when it binds any.
-pub(crate) fn blake3_preprocessed_width(slots: Option<ElementSlots>) -> usize {
-    BLAKE3_PP + slots.map_or(0, ElementSlots::count)
-}
-
 /// The `a`, `b`, `c`, `d` word indices of each G step of a round: four column steps, then four
 /// diagonal steps.
 const G_SCHEDULE: [[usize; 4]; 8] = [
@@ -118,6 +184,10 @@ pub(crate) struct Blake3Call {
     /// The element each slot of the table's [`ElementSlots`] pushes, by slot; empty when the
     /// row binds none.
     pub(crate) bound: Vec<Option<usize>>,
+    /// The tail words the row takes from preprocessing, when it takes them.
+    pub(crate) tail: Option<[u32; TAIL_WORDS]>,
+    /// The chaining-value words the row takes from preprocessing, when it takes them.
+    pub(crate) chaining_value: Option<[u32; CHAINING_VALUE_WORDS]>,
 }
 
 impl Blake3Call {
@@ -132,18 +202,68 @@ impl Blake3Call {
     }
 
     /// The witness ID each label column of the call's row labels, by pushed limb: the limb's own,
-    /// except that a slot bound under `slots` labels its word 0's column with its element and
-    /// leaves its other columns unlabelled. The row pushes exactly the labelled columns.
-    pub(crate) fn labels(&self, slots: Option<ElementSlots>) -> [Option<usize>; PUSHED_LIMBS] {
+    /// except that the limbs of a tail or chaining value the row takes from preprocessing are
+    /// unlabelled, and a slot bound under `layout` labels its word 0's column with its element
+    /// and leaves its other columns unlabelled. The row pushes exactly the labelled limbs.
+    pub(crate) fn labels(&self, layout: Blake3Layout) -> [Option<usize>; PUSHED_LIMBS] {
         let mut labels = array::from_fn(|limb| self.limb(limb));
+        if self.tail.is_some() {
+            labels[TAIL].fill(None);
+        }
+        if self.chaining_value.is_some() {
+            labels[CHAINING_VALUE].fill(None);
+        }
         for (slot, &element) in self.bound.iter().enumerate() {
-            if let (Some(element), Some(slots)) = (element, slots) {
+            if let (Some(element), Some(slots)) = (element, layout.elements) {
                 for (j, limb) in slots.limbs(slot).enumerate() {
                     labels[limb] = (j == 0).then_some(element);
                 }
             }
         }
         labels
+    }
+
+    /// The words of input limbs `limbs` when each is a constant sixteen-bit limb under
+    /// `constant`, which gives the value a witness is fixed to.
+    fn constant_words<F: BinaryCoordinateField, const WORDS: usize>(
+        &self,
+        limbs: Range<usize>,
+        constant: &impl Fn(usize) -> Option<F>,
+    ) -> Option<[u32; WORDS]> {
+        let raw = self.input[limbs]
+            .iter()
+            .map(|&w| constant(w).and_then(|value| u16::try_from(value.to_raw_coordinates()).ok()))
+            .collect::<Option<Vec<u16>>>()?;
+        limbs_to_words(&raw).try_into().ok()
+    }
+}
+
+/// Lays out a table of `calls` that binds no element. When the carrier spans a 32-bit word,
+/// every row takes its tail from preprocessing if every call's tail limbs are constant
+/// sixteen-bit limbs under `constant`, which gives the value a witness is fixed to, and a row
+/// takes its chaining value from preprocessing if its chaining-value limbs are. Every other
+/// row and limb keeps its pushes. Records what each call's row takes.
+pub(crate) fn blake3_layout<F: BinaryCoordinateField>(
+    calls: &mut [Blake3Call],
+    constant: impl Fn(usize) -> Option<F>,
+) -> Blake3Layout {
+    if F::COORDINATE_BITS < 32 {
+        return Blake3Layout::default();
+    }
+    for call in calls.iter_mut() {
+        call.tail = call.constant_words(TAIL, &constant);
+        call.chaining_value = call.constant_words(CHAINING_VALUE, &constant);
+    }
+    let constant_tails = !calls.is_empty() && calls.iter().all(|call| call.tail.is_some());
+    if !constant_tails {
+        for call in calls.iter_mut() {
+            call.tail = None;
+        }
+    }
+    Blake3Layout {
+        constant_tails,
+        constant_chaining_values: calls.iter().any(|call| call.chaining_value.is_some()),
+        elements: None,
     }
 }
 
@@ -176,33 +296,50 @@ pub(crate) fn blake3_calls<F: Field>(
                 swapped: (outputs[0].len() > NATIVE_BLAKE3_OUTPUT_LIMBS)
                     .then(|| array::from_fn(|m| id(NATIVE_BLAKE3_OUTPUT_LIMBS + m))),
                 bound: Vec::new(),
+                tail: None,
+                chaining_value: None,
             });
         }
     }
     Ok(calls)
 }
 
-/// The preprocessed rows of a table of `height` rows that binds elements to `slots`, when it
-/// binds any: a call's row is active and labels its columns (see [`Blake3Call::labels`]) by
-/// witness ID plus one, activates its swapped output limbs when the call outputs them, and
-/// activates each bound slot. Every other cell is zero. `label` encodes a label.
-pub(crate) fn blake3_preprocessed<F: Field>(
+/// The preprocessed rows of a table of `height` rows laid out as `layout`: a call's row is
+/// active and labels its columns (see [`Blake3Call::labels`]) by witness ID plus one,
+/// activates its swapped output limbs when the call outputs them, holds the tail words and the
+/// flagged chaining-value words it takes, and activates each bound slot. Every other cell is
+/// zero. `label` encodes a label.
+pub(crate) fn blake3_preprocessed<F: BinaryCoordinateField>(
     calls: &[Blake3Call],
-    slots: Option<ElementSlots>,
+    layout: Blake3Layout,
     height: usize,
     label: impl Fn(usize) -> Result<F, NativeBusCircuitError>,
 ) -> Result<RowMajorMatrix<F>, NativeBusCircuitError> {
-    let width = blake3_preprocessed_width(slots);
+    let width = layout.width();
+    let raw_word = |word: &u32| {
+        F::from_raw_coordinates(u128::from(*word)).expect("a table taking words spans a word")
+    };
     let mut pp = F::zero_vec(cells(height, width)?);
     for (row, call) in pp.chunks_exact_mut(width).zip(calls) {
         row[ACTIVE] = F::ONE;
-        for (cell, id) in row[LABELS..].iter_mut().zip(call.labels(slots)) {
-            if let Some(id) = id {
-                *cell = label(id + 1)?;
+        for (limb, id) in call.labels(layout).into_iter().enumerate() {
+            if let (Some(column), Some(id)) = (layout.label(limb), id) {
+                row[column] = label(id + 1)?;
             }
         }
-        row[SWAPPED_ACTIVE] = F::from_bool(call.swapped.is_some());
-        for (cell, element) in row[BOUND..].iter_mut().zip(&call.bound) {
+        row[layout.swapped_active()] = F::from_bool(call.swapped.is_some());
+        if let (Some(column), Some(tail)) = (layout.tail(), call.tail) {
+            for (cell, word) in row[column..].iter_mut().zip(&tail) {
+                *cell = raw_word(word);
+            }
+        }
+        if let (Some(flag), Some(chaining_value)) = (layout.chaining_value(), call.chaining_value) {
+            row[flag] = F::ONE;
+            for (cell, word) in row[flag + 1..].iter_mut().zip(&chaining_value) {
+                *cell = raw_word(word);
+            }
+        }
+        for (cell, element) in row[layout.bound()..].iter_mut().zip(&call.bound) {
             *cell = F::from_bool(element.is_some());
         }
     }
@@ -272,15 +409,16 @@ pub(crate) fn blake3_packed_words<F: BinaryCoordinateField>(
 }
 
 /// Constrains the current row to one compression, with the booleanity of its input cells unless
-/// `assume_boolean`, and pushes its limbs onto `witness_bus`, the element of each slot of `slots`
-/// that the row binds in place of the slot's limbs. `row` and `pp` are the row's main and
-/// preprocessed cells. `assume_boolean` is sound only when the table is committed as bits.
+/// `assume_boolean`, and to the tail and chaining-value words it takes from preprocessing under
+/// `layout`, and pushes its other limbs onto `witness_bus`, the element of each slot that the
+/// row binds in place of the slot's limbs. `row` and `pp` are the row's main and preprocessed
+/// cells. `assume_boolean` is sound only when the table is committed as bits.
 pub(crate) fn eval_blake3<AB>(
     builder: &mut AB,
     row: &[AB::Var],
     pp: &[AB::Var],
     weights: &[AB::F; 16],
-    slots: Option<ElementSlots>,
+    layout: Blake3Layout,
     assume_boolean: bool,
     witness_bus: BusName<'_>,
 ) where
@@ -294,9 +432,32 @@ pub(crate) fn eval_blake3<AB>(
     };
     air.eval(builder);
     let cols: &Blake3BinaryCols<AB::Var> = row.borrow();
+    let word = |bits: [AB::Var; 32]| -> AB::Expr {
+        bits.into_iter()
+            .enumerate()
+            .map(|(b, bit)| {
+                bit * AB::F::from_raw_coordinates(1 << b)
+                    .expect("a table taking words spans a word")
+            })
+            .sum()
+    };
+    if let Some(tail) = layout.tail() {
+        for k in 0..TAIL_WORDS {
+            builder.assert_eq(word(input_word(cols, TAIL.start / 2 + k)), pp[tail + k]);
+        }
+    }
+    let chaining_value = layout.chaining_value();
+    if let Some(flag) = chaining_value {
+        for k in 0..CHAINING_VALUE_WORDS {
+            builder.when(pp[flag]).assert_eq(
+                word(input_word(cols, CHAINING_VALUE.start / 2 + k)),
+                pp[flag + 1 + k],
+            );
+        }
+    }
     let limbs = pushed_limbs::<AB::Var, AB::Expr, AB::F>(cols, weights);
     let mut slot_of = [None; PUSHED_LIMBS];
-    if let Some(slots) = slots {
+    if let Some(slots) = layout.elements {
         for slot in 0..slots.count() {
             for limb in slots.limbs(slot) {
                 slot_of[limb] = Some(slot);
@@ -304,26 +465,34 @@ pub(crate) fn eval_blake3<AB>(
         }
     }
     for (i, limb) in limbs.iter().enumerate() {
-        let active: AB::Expr = if i < CALL_LIMBS {
+        let Some(label) = layout.label(i) else {
+            continue;
+        };
+        let mut active: AB::Expr = if i < CALL_LIMBS {
             pp[ACTIVE]
         } else {
-            pp[SWAPPED_ACTIVE]
+            pp[layout.swapped_active()]
         }
         .into();
-        // A slot is bound only on an active row and, for a swapped slot, only when the call
-        // outputs swapped limbs, so the difference is Boolean: zero exactly on a bound slot.
-        let active = match slot_of[i] {
-            Some(slot) => active - pp[BOUND + slot],
-            None => active,
-        };
+        // A slot is bound and a chaining value flagged only on an active row and, for a swapped
+        // slot, only when the call outputs swapped limbs, so the difference is Boolean: zero
+        // exactly on a bound slot or a flagged chaining value.
+        if let Some(slot) = slot_of[i] {
+            active -= pp[layout.bound() + slot].into();
+        }
+        if let Some(flag) = chaining_value
+            && CHAINING_VALUE.contains(&i)
+        {
+            active -= pp[flag].into();
+        }
         builder.push_bus_interaction(
             witness_bus,
             BusDirection::Push,
-            [pp[LABELS + i].into(), limb.clone()],
+            [pp[label].into(), limb.clone()],
             BusActivation::Boolean(active),
         );
     }
-    let Some(slots) = slots else {
+    let Some(slots) = layout.elements else {
         return;
     };
     let shifts = slots.shifts::<AB::F>();
@@ -334,11 +503,14 @@ pub(crate) fn eval_blake3<AB>(
             .map(|(limb, &shift)| limbs[limb].clone() * shift)
             .sum();
         let first = slots.limbs(slot).next().expect("a slot has words");
+        let label = layout
+            .label(first)
+            .expect("block and swapped output limbs have labels");
         builder.push_bus_interaction(
             witness_bus,
             BusDirection::Push,
-            [pp[LABELS + first].into(), element],
-            BusActivation::Boolean(pp[BOUND + slot].into()),
+            [pp[label].into(), element],
+            BusActivation::Boolean(pp[layout.bound() + slot].into()),
         );
     }
 }
@@ -413,7 +585,7 @@ mod tests {
     use p3_blake3_air::NUM_BLAKE3_BINARY_COLS;
     use p3_circuit::ops::{blake3_compress, words_to_limbs};
     use p3_field::PrimeCharacteristicRing;
-    use p3_test_utils::binary_field_params::BinaryField128;
+    use p3_test_utils::binary_field_params::{BinaryField16, BinaryField128};
 
     use super::*;
 
@@ -467,25 +639,32 @@ mod tests {
         }
     }
 
-    #[test]
-    fn preprocessing_labels_the_pushed_limbs_in_order() {
-        let call = Blake3Call {
+    fn call(swapped: bool) -> Blake3Call {
+        Blake3Call {
             input: array::from_fn(|i| 100 + i),
             output: array::from_fn(|i| 200 + i),
-            swapped: Some(array::from_fn(|i| 300 + i)),
+            swapped: swapped.then(|| array::from_fn(|i| 300 + i)),
             bound: Vec::new(),
-        };
-        let plain = Blake3Call {
-            swapped: None,
-            ..call.clone()
-        };
-        let label = |id: usize| Ok(F::from_raw_coordinates(id as u128).unwrap());
-        let pp = blake3_preprocessed::<F>(&[call, plain], None, 4, label).unwrap();
-        let rows = pp.values.as_chunks::<BLAKE3_PP>().0;
+            tail: None,
+            chaining_value: None,
+        }
+    }
+
+    fn label(id: usize) -> Result<F, NativeBusCircuitError> {
+        Ok(F::from_raw_coordinates(id as u128).unwrap())
+    }
+
+    #[test]
+    fn preprocessing_labels_the_pushed_limbs_in_order() {
+        const WIDTH: usize = 90;
+        let layout = Blake3Layout::default();
+        assert_eq!(layout.width(), WIDTH);
+        let pp = blake3_preprocessed::<F>(&[call(true), call(false)], layout, 4, label).unwrap();
+        let rows = pp.values.as_chunks::<WIDTH>().0;
         let ids: Vec<usize> = (100..156).chain(200..216).chain(300..316).collect();
         for (row, swapped) in rows.iter().zip([true, false]) {
             assert_eq!(row[ACTIVE], F::ONE);
-            assert_eq!(row[SWAPPED_ACTIVE], F::from_bool(swapped));
+            assert_eq!(row[WIDTH - 1], F::from_bool(swapped));
             for (i, &id) in ids.iter().enumerate() {
                 let expected = if i < CALL_LIMBS || swapped { id + 1 } else { 0 };
                 assert_eq!(
@@ -495,5 +674,97 @@ mod tests {
             }
         }
         assert!(rows[2..].iter().flatten().all(|&cell| cell == F::ZERO));
+    }
+
+    /// Rows that take their tails from preprocessing have no tail label columns: the output
+    /// labels follow the chaining value's, and the tail words follow the swapped-digest
+    /// activation, then the chaining-value flag and words. A flagged row leaves its
+    /// chaining-value labels empty and holds its words; another row leaves the flag and the
+    /// words zero and labels its chaining value.
+    #[test]
+    fn preprocessing_holds_constant_words_in_place_of_their_labels() {
+        const WIDTH: usize = 1 + 80 + 1 + 4 + 9;
+        let tail = [7, 0, 64, 11];
+        let chaining_value = array::from_fn(|k| 0x1357_9bdf ^ (k as u32) << 28);
+        let flagged = Blake3Call {
+            tail: Some(tail),
+            chaining_value: Some(chaining_value),
+            ..call(true)
+        };
+        let chained = Blake3Call {
+            tail: Some(tail),
+            ..call(true)
+        };
+        let layout = Blake3Layout {
+            constant_tails: true,
+            constant_chaining_values: true,
+            elements: None,
+        };
+        assert_eq!(layout.width(), WIDTH);
+        let pp = blake3_preprocessed::<F>(&[flagged, chained], layout, 4, label).unwrap();
+        let rows = pp.values.as_chunks::<WIDTH>().0;
+        let raw = |value: u32| F::from_raw_coordinates(value.into()).unwrap();
+        let ids: Vec<usize> = (100..148).chain(200..216).chain(300..316).collect();
+        for (row, flagged) in rows.iter().zip([true, false]) {
+            assert_eq!(row[ACTIVE], F::ONE);
+            for (i, &id) in ids.iter().enumerate() {
+                let empty = flagged && CHAINING_VALUE.contains(&i);
+                let expected = if empty { 0 } else { id as u32 + 1 };
+                assert_eq!(row[LABELS + i], raw(expected), "label {i}");
+            }
+            assert_eq!(row[81], F::ONE);
+            assert_eq!(&row[82..86], tail.map(raw));
+            assert_eq!(row[86], F::from_bool(flagged));
+            let words = if flagged { chaining_value } else { [0; 8] };
+            assert_eq!(&row[87..WIDTH], words.map(raw));
+        }
+        assert!(rows[2..].iter().flatten().all(|&cell| cell == F::ZERO));
+    }
+
+    /// A row takes a tail or chaining value only when every limb of it is a constant below
+    /// `2^16`, and the table takes tails only when every row does; a carrier narrower than a
+    /// word takes neither.
+    #[test]
+    fn rows_take_only_wholly_constant_words() {
+        let value = |w: usize| (w % 7) as u128 * 0x1111;
+        let constant = |w: usize| (w != 999).then(|| F::from_raw_coordinates(value(w)).unwrap());
+        let words = |limbs: Range<usize>| -> Vec<u32> {
+            let raw: Vec<u16> = limbs.map(|i| value(100 + i) as u16).collect();
+            limbs_to_words(&raw)
+        };
+
+        let mut calls = [call(false), call(true)];
+        let layout = blake3_layout(&mut calls, constant);
+        assert!(layout.constant_tails && layout.constant_chaining_values);
+        for call in &calls {
+            assert_eq!(call.tail.unwrap().to_vec(), words(TAIL));
+            assert_eq!(call.chaining_value.unwrap().to_vec(), words(CHAINING_VALUE));
+        }
+
+        let mut witness_tail = call(false);
+        witness_tail.input[TAIL.start + 2] = 999;
+        let mut calls = [call(false), witness_tail];
+        let layout = blake3_layout(&mut calls, constant);
+        assert!(!layout.constant_tails && layout.constant_chaining_values);
+        assert!(calls.iter().all(|call| call.tail.is_none()));
+        assert!(calls.iter().all(|call| call.chaining_value.is_some()));
+
+        let wide = |w: usize| {
+            let value = if w == 100 + CHAINING_VALUE.start + 8 {
+                0x1_0000
+            } else {
+                value(w)
+            };
+            Some(F::from_raw_coordinates(value).unwrap())
+        };
+        let mut calls = [call(false)];
+        let layout = blake3_layout(&mut calls, wide);
+        assert!(layout.constant_tails && !layout.constant_chaining_values);
+        assert_eq!(calls[0].chaining_value, None);
+
+        let mut calls = [call(false)];
+        let layout = blake3_layout(&mut calls, |_| Some(BinaryField16::ONE));
+        assert_eq!(layout, Blake3Layout::default());
+        assert_eq!((calls[0].tail, calls[0].chaining_value), (None, None));
     }
 }
