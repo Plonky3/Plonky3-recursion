@@ -12,6 +12,11 @@ ROOT = Path(__file__).resolve().parents[2]
 RECURSION = ROOT / "recursion"
 TESTS = RECURSION / "tests"
 MODULE = re.compile(r'#\[path = "([^"]+)"\]\s+mod (\w+);')
+SHARED = {
+    "common": "mod.rs",
+    "test_config": "test_config.rs",
+    "sum_shapes_air": "sum_shapes_air.rs",
+}
 
 
 class RecursionTestTargetsTests(unittest.TestCase):
@@ -37,9 +42,8 @@ class RecursionTestTargetsTests(unittest.TestCase):
             for relative, module in MODULE.findall(entry.read_text()):
                 source = (entry.parent / relative).resolve()
                 self.assertTrue(source.is_file(), source)
-                if module in {"common", "test_config"}:
-                    filename = "mod.rs" if module == "common" else "test_config.rs"
-                    self.assertEqual(source, TESTS / "common" / filename)
+                if module in SHARED:
+                    self.assertEqual(source, TESTS / "common" / SHARED[module])
                     continue
                 self.assertEqual(module, source.stem)
                 registered.append(source)
