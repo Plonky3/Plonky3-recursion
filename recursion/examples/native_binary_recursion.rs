@@ -21,30 +21,29 @@
 //! Measured at `--layers 3` without any limit flag on a 14-core Apple M-series machine with
 //! 48 GB (time of the last layer; wall time, maximum resident set and peak memory footprint of
 //! the whole run; arity is `--merkle-arity`). The first row is the default configuration, the
-//! second ran under `--hash keccak` and the third under `--merkle-arity 4`. The first two are
-//! the median of two runs:
+//! second ran under `--hash keccak` and the third under `--merkle-arity 4`, each once on an
+//! otherwise idle machine:
 //!
 //! | Command                       | arity | witnesses | codeword cells | proof bytes |
 //! |-------------------------------|-------|-----------|----------------|-------------|
-//! | `--layers 3`                  | 2     | 611,601   | 33,554,432     | 262,427     |
-//! | `--hash keccak --layers 3`    | 4     | 576,927   | 50,331,648     | 155,435     |
-//! | `--merkle-arity 4 --layers 3` | 4     | 674,939   | 58,720,256     | 284,607     |
+//! | `--layers 3`                  | 2     | 558,865   | 33,554,432     | 262,491     |
+//! | `--hash keccak --layers 3`    | 4     | 566,758   | 50,331,648     | 155,691     |
+//! | `--merkle-arity 4 --layers 3` | 4     | 622,197   | 33,554,432     | 279,739     |
 //!
 //! | Command                       | arity | last layer | wall   | resident | footprint |
 //! |-------------------------------|-------|------------|--------|----------|-----------|
-//! | `--layers 3`                  | 2     | 4.4 s      | 11.7 s | 3.9 GB   | 3.3 GB    |
-//! | `--hash keccak --layers 3`    | 4     | 9.7 s      | 21.1 s | 3.9 GB   | 3.7 GB    |
-//! | `--merkle-arity 4 --layers 3` | 4     | 4.9 s      | 10.3 s | 3.6 GB   | 3.2 GB    |
+//! | `--layers 3`                  | 2     | 3.1 s      | 8.6 s  | 2.5 GB   | 2.3 GB    |
+//! | `--hash keccak --layers 3`    | 4     | 9.1 s      | 16.0 s | 3.9 GB   | 3.7 GB    |
+//! | `--merkle-arity 4 --layers 3` | 4     | 3.0 s      | 7.4 s  | 2.5 GB   | 2.3 GB    |
 //!
-//! Blake3 proves the last layer in under half the time of Keccak with less memory, and its
+//! Blake3 proves the last layer in a third of the time of Keccak with less memory, and its
 //! proofs are 69% larger. A four-digest node costs two Blake3 compressions, so under Blake3 a
 //! four-digest tree saves no compressions over half the levels while it opens three siblings
-//! per level, and arity 2 proves the last layer faster with smaller proofs.
+//! per level: it proves the last layer in about the same time as arity 2, with larger proofs.
 //!
-//! Other jobs shared the machine, so wall times are noisy. The user CPU time of a whole run
-//! varied far less: 101 s in both runs of the default against 194 to 203 s for `--hash keccak
-//! --layers 3`. Layer 1 has 4,518 witnesses and takes 0.7 to 1.4 s under the default, and
-//! 7,817 witnesses and 0.5 s under `--hash keccak`. The default codeword-cell limit is 2^29 at
+//! The user CPU time of a whole run was 68 s under the default against 155 s under `--hash
+//! keccak --layers 3`. Layer 1 has 4,501 witnesses and takes 0.4 s under the default, and
+//! 7,800 witnesses and 0.8 s under `--hash keccak`. The default codeword-cell limit is 2^29 at
 //! `--log-inv-rate 1`, doubled for each further rate bit and for `--pcs folding`, which
 //! multiplies every dense codeword.
 //!

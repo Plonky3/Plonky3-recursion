@@ -17,26 +17,24 @@
 //! 48 GB (time of the last layer; wall time, maximum resident set and peak memory footprint of
 //! the whole run; arity is `--merkle-arity`, packed hash tables at log inverse rate 3). The
 //! first row is the default configuration, the second ran under `--hash keccak` and the third
-//! under `--merkle-arity 4`. The first two are the median of two runs:
+//! under `--merkle-arity 4`, each once on an otherwise idle machine:
 //!
 //! | hash   | arity | witnesses | codeword cells | last layer | wall   | resident | footprint |
 //! |--------|-------|-----------|----------------|------------|--------|----------|-----------|
-//! | blake3 | 2     | 1,364,308 | 117,440,512    | 2.4 s      | 7.4 s  | 5.5 GB   | 5.0 GB    |
-//! | keccak | 4     | 941,657   | 100,663,296    | 4.2 s      | 9.1 s  | 6.6 GB   | 5.9 GB    |
-//! | blake3 | 4     | 1,437,012 | 117,440,512    | 2.3 s      | 7.5 s  | 6.1 GB   | 5.0 GB    |
+//! | blake3 | 2     | 1,185,216 | 117,440,512    | 1.7 s      | 6.3 s  | 5.2 GB   | 4.8 GB    |
+//! | keccak | 4     | 902,901   | 100,663,296    | 3.5 s      | 8.9 s  | 5.8 GB   | 5.2 GB    |
+//! | blake3 | 4     | 1,257,918 | 117,440,512    | 1.7 s      | 6.0 s  | 4.9 GB   | 4.7 GB    |
 //!
-//! Blake3 proves the last layer in less time than Keccak with less resident memory, although it
-//! needs about 45% more witnesses and 17% more codeword cells. A four-digest node costs two
+//! Blake3 proves the last layer in half the time of Keccak with less resident memory, although
+//! it needs about 31% more witnesses and 17% more codeword cells. A four-digest node costs two
 //! Blake3 compressions, so under Blake3 a four-digest tree saves no compressions over half the
-//! levels while it opens three siblings per level: it takes about as long as arity 2, with 5%
-//! more witnesses and more resident memory. Layer 1 has 4,778 witnesses and 524,288 codeword
-//! cells and takes 0.4 s under the default, and 8,264 witnesses and 1,048,576 cells under
-//! `--hash keccak`.
+//! levels while it opens three siblings per level: it takes about as long as arity 2, with 6%
+//! more witnesses. Layer 1 has 4,718 witnesses and 524,288 codeword cells and takes 0.2 s under
+//! the default, and 8,204 witnesses and 1,048,576 cells under `--hash keccak`.
 //!
-//! Other jobs shared the machine, so wall times are noisy. The user CPU time of a whole run
-//! was 60 s for the default against 75 to 79 s for `--hash keccak`. Under Keccak, a four-digest
-//! node absorbs one Keccak-f block, as a pairwise node does, and an opening walks half as many
-//! levels.
+//! The user CPU time of a whole run was 38 s for the default against 78 s for `--hash keccak`.
+//! Under Keccak, a four-digest node absorbs one Keccak-f block, as a pairwise node does, and an
+//! opening walks half as many levels.
 //!
 //! Requests four bits of composed security and uses non-hiding proofs. Limits count field cells
 //! or graph entries, not bytes.
