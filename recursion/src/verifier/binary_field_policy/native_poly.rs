@@ -199,12 +199,12 @@ impl BinaryRelationPolicy<Poly64> for NativePoly64Relation {
         let cross = b.mul(a1, c2);
         let cross = b.mul_add(a2, c1, cross);
         let high = b.mul(a2, c2);
-        let out0 = mul_add_add(b, a0, c0, cross, d0);
-        let out1 = mul_add_add(b, a0, c1, cross, high);
-        let out1 = mul_add_add(b, a1, c0, out1, d1);
+        let out0 = char2_mul_add_add(b, a0, c0, cross, d0);
+        let out1 = char2_mul_add_add(b, a0, c1, cross, high);
+        let out1 = char2_mul_add_add(b, a1, c0, out1, d1);
         let out2 = b.mul_add(a0, c2, high);
         let out2 = b.mul_add(a1, c1, out2);
-        let out2 = mul_add_add(b, a2, c0, out2, d2);
+        let out2 = char2_mul_add_add(b, a2, c0, out2, d2);
         b.native_poly192_from_coefficients([out0, out1, out2])
     }
     /// [`Self::mul_add`] with the second addend `e` in one more operation, the
@@ -229,14 +229,14 @@ impl BinaryRelationPolicy<Poly64> for NativePoly64Relation {
         let [e0, e1, e2] = *e.coefficients();
         let cross = b.mul_add(a1, c2, e0);
         let cross = b.mul_add(a2, c1, cross);
-        let high = mul_add_add(b, a2, c2, e0, e1);
-        let out0 = mul_add_add(b, a0, c0, cross, d0);
-        let out1 = mul_add_add(b, a0, c1, cross, high);
-        let out1 = mul_add_add(b, a1, c0, out1, d1);
-        let out2 = mul_add_add(b, a0, c2, high, e0);
-        let out2 = mul_add_add(b, a1, c1, out2, e1);
+        let high = char2_mul_add_add(b, a2, c2, e0, e1);
+        let out0 = char2_mul_add_add(b, a0, c0, cross, d0);
+        let out1 = char2_mul_add_add(b, a0, c1, cross, high);
+        let out1 = char2_mul_add_add(b, a1, c0, out1, d1);
+        let out2 = char2_mul_add_add(b, a0, c2, high, e0);
+        let out2 = char2_mul_add_add(b, a1, c1, out2, e1);
         let tail = b.add(d2, e2);
-        let out2 = mul_add_add(b, a2, c0, out2, tail);
+        let out2 = char2_mul_add_add(b, a2, c0, out2, tail);
         b.native_poly192_from_coefficients([out0, out1, out2])
     }
 }

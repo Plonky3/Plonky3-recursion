@@ -387,17 +387,26 @@ where
         d: &NativeTower128Target,
         e: &NativeTower128Target,
     ) -> NativeTower128Target {
-        let value = mul_add_add(b, a.as_expr(), c.as_expr(), d.as_expr(), e.as_expr());
+        let value = char2_mul_add_add(b, a.as_expr(), c.as_expr(), d.as_expr(), e.as_expr());
         b.native_tower128_from_expr(value)
     }
 }
 
+/// A circuit field of characteristic two, in which the native Horner gate's
+/// subtracted operand is an addend.
+trait CharacteristicTwo: Field + Eq + Hash {}
+impl CharacteristicTwo for BinaryField128 {}
+impl CharacteristicTwo for Poly64 {}
+
 /// `x * y + p + q` in one gate, or in the single operation its zero terms
-/// leave. `F` has characteristic two.
-fn mul_add_add<F>(b: &mut CircuitBuilder<F>, x: ExprId, y: ExprId, p: ExprId, q: ExprId) -> ExprId
-where
-    F: Field + Eq + Hash,
-{
+/// leave.
+fn char2_mul_add_add<F: CharacteristicTwo>(
+    b: &mut CircuitBuilder<F>,
+    x: ExprId,
+    y: ExprId,
+    p: ExprId,
+    q: ExprId,
+) -> ExprId {
     if p == ExprId::ZERO {
         b.mul_add(x, y, q)
     } else if q == ExprId::ZERO {
