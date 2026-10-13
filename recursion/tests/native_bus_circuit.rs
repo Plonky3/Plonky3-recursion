@@ -2078,6 +2078,101 @@ fn fused_poly_constant_products_refuse_non_boolean_bits_and_other_constants() {
     check_fused_constant_product(poly64_accepts);
 }
 
+/// `bit * k` for a public Boolean `bit` has no addend, so its gate row reads the zero sentinel,
+/// ID 0, in the addend slot, and its one zero read sorts to the fanout's first row. A prover
+/// who sets that addend and that fanout row to one claims `bit * k + 1`: the gate row holds and
+/// every bus balances, so only the fanout's first-row check is unsatisfied, and the proof is
+/// refused.
+fn check_forged_zero_sentinel<F: BinaryCoordinateField>(
+    setup: impl Fn(&NativeBusCircuit<F>, Vec<Vec<F>>) -> Accepts<F>,
+) {
+    let constant = F::from_raw_coordinates(0x8912).unwrap();
+    let mut b = CircuitBuilder::<F>::new();
+    let [bit, expected] = b.alloc_public_input_array::<2>("bit, product");
+    b.assert_bool(bit);
+    let k = b.define_const(constant);
+    let out = b.mul(bit, k);
+    b.connect(out, expected);
+    let circuit = b.build().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "zero-sentinel").unwrap();
+    let [fanout, gate] = [1, 5].map(|width| {
+        prepared
+            .airs()
+            .iter()
+            .position(|air| air.width() == width)
+            .unwrap()
+    });
+    let fanout_pp = prepared.airs()[fanout].preprocessed_trace().unwrap();
+    // Active fanout rows under label 0 read the zero sentinel.
+    let fanout_rows = fanout_pp.values.as_chunks::<3>().0;
+    let zero_reads: Vec<_> = (0..fanout_rows.len())
+        .filter(|&row| fanout_rows[row][1] == F::ONE && fanout_rows[row][0] == F::ZERO)
+        .collect();
+    assert_eq!(zero_reads, [0]);
+    let gate_pp = prepared.airs()[gate].preprocessed_trace().unwrap();
+    // Selector 7 is the checked product with a constant; label 0 in slot 2 is an absent addend.
+    let gate_rows = gate_pp.values.as_chunks::<14>().0;
+    let absent: Vec<_> = (0..gate_rows.len())
+        .filter(|&row| gate_rows[row][6 + 7] == F::ONE && gate_rows[row][2] == F::ZERO)
+        .collect();
+    let [product_row] = absent[..] else {
+        panic!("one product without an addend")
+    };
+
+    let statement = [F::ONE, constant];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&statement).unwrap();
+    let witness = runner.run().unwrap().witness_trace;
+    let honest: Vec<_> = (0..circuit.witness_count)
+        .map(|i| *witness.get_value(WitnessId(i)).unwrap())
+        .collect();
+    let honest_traces = prepared.traces(&witness).unwrap();
+    assert!(setup(
+        &prepared,
+        prepared.public_values(&statement).unwrap()
+    )(honest_traces.clone()));
+
+    let claimed = [F::ONE, constant + F::ONE];
+    let mut forged = honest.clone();
+    forged[circuit.public_rows[1].0 as usize] = claimed[1];
+    let mut traces = honest_traces;
+    let [_, gate_cells, _] = patch_witness_cells(prepared.airs(), &mut traces, &honest, &forged);
+    assert_eq!(gate_cells, 1, "the product's output");
+    traces[gate].values[5 * product_row + 2] = F::ONE;
+    traces[fanout].values[0] = F::ONE;
+    let values = prepared.public_values(&claimed).unwrap();
+    for (trace, public) in traces.iter_mut().zip(&values) {
+        if !public.is_empty() {
+            for row in trace.values.chunks_mut(trace.width) {
+                row.copy_from_slice(public);
+            }
+        }
+    }
+    let failed: Vec<_> = prepared
+        .airs()
+        .iter()
+        .zip(&traces)
+        .zip(&values)
+        .filter_map(|((air, trace), public)| {
+            catch_unwind(AssertUnwindSafe(|| check_constraints(air, trace, public)))
+                .is_err()
+                .then_some(air.width())
+        })
+        .collect();
+    assert_eq!(failed, [1], "only the fanout's first row should reject");
+    assert!(!setup(&prepared, values)(traces));
+}
+
+#[test]
+fn tower_proofs_refuse_a_forged_zero_sentinel() {
+    check_forged_zero_sentinel(tower_accepts);
+}
+
+#[test]
+fn poly_proofs_refuse_a_forged_zero_sentinel() {
+    check_forged_zero_sentinel(poly64_accepts);
+}
+
 fn limb_value<F: BinaryCoordinateField>(limb: u16) -> F {
     F::from_raw_coordinates(limb.into()).unwrap()
 }
