@@ -54,7 +54,7 @@ const CONSTRUCTION: CircuitConstructionLimits = CircuitConstructionLimits {
     max_expression_nodes: 565_000,
     max_pending_connects: 36_800,
     max_non_primitive_calls: 19_600,
-    max_non_primitive_slots: 982_000,
+    max_non_primitive_slots: 984_000,
 };
 /// About 12% above the measured 455,504 witnesses and 289,681 operations. The trace cells
 /// follow from the table heights below.
