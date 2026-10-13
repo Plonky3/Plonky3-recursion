@@ -1478,24 +1478,38 @@ fn unaligned_and_short_splits_are_not_bound_in_both_bases() {
 }
 
 /// A chain over private words, `x^(bits * j)` multiplying word `j`, whose partial sum `s_1` a
-/// squaring also reads when `square_partial`.
+/// squaring also reads when `square_partial`. With `relink`, word 2's row adds a separate
+/// private witness holding the value of `s_1` instead of `s_1` itself, and one product of the
+/// two reads `s_1`, so `s_1` keeps exactly two readers.
 fn private_chain<F: BinaryCoordinateField>(
     hashed: &[u16],
     bits: usize,
     square_partial: bool,
+    relink: bool,
 ) -> HashedSplit<F> {
     let n = hashed.len();
     let shift = |j: usize| F::from_raw_coordinates(1 << (bits * j)).unwrap();
     let element = packed(hashed, shift);
-    let private = hashed.iter().map(|&word| raw::<F>(word)).collect();
+    let mut private: Vec<F> = hashed.iter().map(|&word| raw::<F>(word)).collect();
+    if relink {
+        private.push(raw::<F>(hashed[0]) + raw::<F>(hashed[1]) * shift(1));
+    }
     hashed_split(0, hashed, element, private, |b, value| {
         let words = b.alloc_private_inputs(n, "words");
+        let partial = relink.then(|| b.alloc_private_input("partial"));
         let mut sum = words[0];
         for (j, &word) in words.iter().enumerate().skip(1) {
             let k = b.define_const(shift(j));
-            sum = b.mul_add(word, k, sum);
+            let addend = match partial {
+                Some(partial) if j == 2 => partial,
+                _ => sum,
+            };
+            sum = b.mul_add(word, k, addend);
             if j == 1 && square_partial {
                 b.mul(sum, sum);
+            }
+            if let Some(partial) = partial.filter(|_| j == 1) {
+                b.mul(sum, partial);
             }
         }
         b.connect(sum, value);
@@ -1503,17 +1517,25 @@ fn private_chain<F: BinaryCoordinateField>(
     })
 }
 
-/// A chain over private words binds only when each multiplier is exactly its word's shift and
-/// no other gate reads a partial sum: with `x^(8 j)` in place of `x^(16 j)` the element is not
-/// the slot's, and a partial sum read elsewhere would be left free of the hashed bits.
+/// A chain over private words binds only when each multiplier is exactly its word's shift, no
+/// other gate reads a partial sum, and each row adds the previous row's sum: with `x^(8 j)` in
+/// place of `x^(16 j)` the element is not the slot's, a partial sum read elsewhere would be left
+/// free of the hashed bits, and a row adding another witness leaves the chain's relation to that
+/// witness rather than to the words.
 fn only_exact_private_chains_bind<F: BinaryCoordinateField>() {
     let n = element_words::<F>();
     let hashed = words(n, 13);
-    for (bits, square_partial, binds) in [(16, false, true), (8, false, false), (16, true, false)] {
-        let split = private_chain::<F>(&hashed, bits, square_partial);
+    for (bits, square_partial, relink, binds) in [
+        (16, false, false, true),
+        (8, false, false, false),
+        (16, true, false, false),
+        (16, false, true, false),
+    ] {
+        let split = private_chain::<F>(&hashed, bits, square_partial, relink);
         let witness = run(&split.circuit, &split.public, &split.private);
         let prepared = build(&split.circuit, 1, KeccakCommitment::Dense);
-        let case = format!("shift bits {bits}, partial sum squared {square_partial}");
+        let case =
+            format!("shift bits {bits}, partial sum squared {square_partial}, relinked {relink}");
         assert_eq!(
             bound_slots(&prepared),
             if binds { only::<F>(0) } else { None },
