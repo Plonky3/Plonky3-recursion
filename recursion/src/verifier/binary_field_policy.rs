@@ -44,6 +44,8 @@ pub(crate) trait BinaryRelationPolicy<EF: Field + Eq + Hash>: sealed::Relation {
     /// nothing else reads with [`Self::mul_add_add`]. Otherwise it evaluates every
     /// node as it stands.
     const FUSES_AIR_SUMS: bool = false;
+    /// Native scalar products make product-form interpolation economical.
+    const SCALAR_INTERPOLATION: bool = false;
     fn constant(
         b: &mut CircuitBuilder<EF>,
         raw: u128,
@@ -332,6 +334,7 @@ where
     type BaseTarget = NativeTower128Target;
     type ChallengeTarget = NativeTower128Target;
     const FUSES_AIR_SUMS: bool = true;
+    const SCALAR_INTERPOLATION: bool = true;
     fn constant(
         b: &mut CircuitBuilder<BinaryField128>,
         raw: u128,

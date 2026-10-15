@@ -142,6 +142,7 @@ impl BinaryRelationPolicy<Poly64> for NativePoly64Relation {
     type BaseTarget = ExprId;
     type ChallengeTarget = NativePoly192Target;
     const FUSES_AIR_SUMS: bool = true;
+    const SCALAR_INTERPOLATION: bool = true;
 
     fn constant(
         b: &mut CircuitBuilder<Poly64>,
