@@ -304,7 +304,7 @@ where
         let mut runner = self.circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;
-        let trace = runner.run()?.witness_trace;
+        let trace = runner.run_witness()?;
         let output_public = self.bus.public_values(&public)?;
         self.prover.prove(&output_public, self.bus.traces(&trace)?)
     }
