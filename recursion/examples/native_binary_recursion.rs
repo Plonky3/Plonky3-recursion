@@ -160,7 +160,7 @@ impl From<ProverBackend> for NativeBinaryProverBackend {
 #[derive(Parser)]
 struct Args {
     /// Zerocheck backend for recursive output proofs.
-    #[arg(long, value_enum, default_value_t = ProverBackend::Generic)]
+    #[arg(long, value_enum, default_value_t = ProverBackend::ReprLate)]
     prover_backend: ProverBackend,
     /// Polynomial commitment for the source proof and every recursion layer.
     #[arg(long, value_enum, default_value_t = Pcs::Whir)]
