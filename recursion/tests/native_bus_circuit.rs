@@ -545,7 +545,7 @@ fn patch_witness_cells<F: BinaryCoordinateField>(
         let table = match (air.width(), air.preprocessed_width()) {
             (1, 3) => 0,
             (5, 14) => 1,
-            (116, 119) => 2,
+            (116, 119 | 120) => 2,
             _ => continue,
         };
         let labels = air.preprocessed_trace().unwrap();
@@ -1519,7 +1519,10 @@ fn native_keccak_lanes_range_check_whir_merkle_siblings() {
         &prepared,
         &statement,
         &private,
-        &proof.final_paths[0],
+        proof
+            .final_paths
+            .last()
+            .expect("the singleton query stratum"),
         |traces| {
             let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
             matches!(attempt, Ok(Ok(proof)) if authority.verify_native(&proof, &public).is_ok())
@@ -1528,7 +1531,7 @@ fn native_keccak_lanes_range_check_whir_merkle_siblings() {
 }
 
 /// The forgeries of [`native_keccak_lanes_range_check_whir_merkle_siblings`]
-/// against the native WHIR verifier `circuit`: `path` is its first final-round
+/// against the native WHIR verifier `circuit`: `path` is its singleton-stratum
 /// query path, and `accepts` proves traces of `prepared` and reports whether
 /// the proof verifies.
 fn reject_wide_whir_siblings<F: BinaryCoordinateField>(
@@ -1567,11 +1570,11 @@ fn reject_wide_whir_siblings<F: BinaryCoordinateField>(
         .unwrap();
     assert_eq!(F::from_raw_coordinates(1), Some(F::ONE));
     let wide = F::from_raw_coordinates(1 << 16).unwrap();
-    // The first query's lowest index bit is sampled, so its first sibling
-    // reaches the hash through `select` gates. Its next bit is a constant
-    // stratum bit, which makes the second sibling itself a Keccak lane.
+    // The singleton stratum has sampled index bits throughout. Its siblings
+    // reach the hash through `select` gates and are not connected to the
+    // computed roots of a shared upper forest.
     assert!(path.len() >= 2, "a path through two compressions");
-    for (level, word, through_gates) in [(0, 3, true), (1, 5, false)] {
+    for (level, word, through_gates) in [(0, 3, true), (1, 5, true)] {
         let id = circuit.expr_to_widx[&path[level][word]];
         let input = circuit
             .private_input_rows
@@ -1807,7 +1810,10 @@ fn native_keccak_lanes_range_check_poly64_whir_merkle_siblings() {
         &prepared,
         &statement,
         &private,
-        &proof.final_paths[0],
+        proof
+            .final_paths
+            .last()
+            .expect("the singleton query stratum"),
         |traces| {
             let attempt = catch_unwind(AssertUnwindSafe(|| prover.prove(&public, traces)));
             matches!(attempt, Ok(Ok(proof)) if authority.verify_native(&proof, &public).is_ok())
@@ -2881,13 +2887,16 @@ fn native_blake3_words_range_check_whir_merkle_siblings() {
         &prepared,
         &statement,
         &private,
-        &proof.final_paths[0],
+        proof
+            .final_paths
+            .last()
+            .expect("the singleton query stratum"),
         tower_accepts(&prepared, public),
     );
 }
 
 /// The forgeries of [`native_blake3_words_range_check_whir_merkle_siblings`] against the native
-/// WHIR verifier `circuit`: `path` is its first final-round query path, and `accepts` proves
+/// WHIR verifier `circuit`: `path` is its singleton-stratum query path, and `accepts` proves
 /// traces of `prepared` and reports whether the proof verifies.
 fn reject_wide_blake3_whir_siblings<F: BinaryCoordinateField>(
     circuit: &Circuit<F>,
@@ -2899,11 +2908,10 @@ fn reject_wide_blake3_whir_siblings<F: BinaryCoordinateField>(
 ) {
     let forgery = Blake3Forgery::new(circuit, prepared, statement, private, accepts);
     let wide = F::from_raw_coordinates(1 << 16).unwrap();
-    // The first query's lowest index bit is sampled, so its first sibling reaches the hash
-    // through `select` gates. Its next bit is a constant stratum bit, which makes the second
-    // sibling itself a block input.
+    // The singleton stratum's sampled bits route both siblings through `select`
+    // gates, without connecting them to a shared upper forest's computed roots.
     assert!(path.len() >= 2, "a path through two compressions");
-    for (level, word, through_gates) in [(0, 3, true), (1, 5, false)] {
+    for (level, word, through_gates) in [(0, 3, true), (1, 5, true)] {
         let id = circuit.expr_to_widx[&path[level][word]];
         let input = circuit
             .private_input_rows
@@ -3041,7 +3049,10 @@ fn native_blake3_words_range_check_poly64_whir_merkle_siblings() {
         &prepared,
         &statement,
         &private,
-        &proof.final_paths[0],
+        proof
+            .final_paths
+            .last()
+            .expect("the singleton query stratum"),
         poly64_accepts(&prepared, public),
     );
 }

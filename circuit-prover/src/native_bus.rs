@@ -26,9 +26,11 @@ use p3_circuit::ops::{KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, NpoTypeId};
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::types::WitnessId;
 use p3_field::{Field, PrimeCharacteristicRing};
+use p3_keccak::KeccakF;
 use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_sumcheck::layout::Table as TraceTable;
+use p3_symmetric::Permutation;
 use thiserror::Error;
 
 use crate::direct::{DirectCircuitError, DirectCircuitLimits};
@@ -201,7 +203,7 @@ enum Table<F> {
         weights: [F; 16],
         bits: bool,
     },
-    Bridge(Arc<RowMajorMatrix<F>>),
+    Bridge(Arc<RowMajorMatrix<F>>, bool),
     Blake3 {
         pp: Arc<RowMajorMatrix<F>>,
         weights: [F; 16],
@@ -335,6 +337,10 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         if !calls.is_empty() && !blake3_calls.is_empty() {
             return Err(NativeBusCircuitError::MixedHashTables);
         }
+        let short_outputs = calls
+            .iter()
+            .any(|call| call.output.len() == KECCAK256_DIGEST_LIMBS);
+        let bridge_pp = BRIDGE_PP + usize::from(short_outputs);
         // The witness reads of the public, Keccak boundary and BLAKE3 rows.
         let mut external: Vec<usize> = plan.public.iter().map(|&w| w + 1).collect();
         for call in &calls {
@@ -435,7 +441,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             )?,
             add(
                 cells(hash_height, hash_pp)?,
-                cells(bridge_height, BRIDGE_PP)?,
+                cells(bridge_height, bridge_pp)?,
             )?,
         )?;
         // The bus uses the bit matrix, dense or packed, directly. Only an
@@ -527,13 +533,19 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 bits,
             }));
             log_heights.push(hash_height.ilog2() as usize);
-            let mut pp = vec![F::ZERO; cells(bridge_height, BRIDGE_PP)?];
+            let mut pp = vec![F::ZERO; cells(bridge_height, bridge_pp)?];
             for (c, call) in calls.iter().enumerate() {
-                for (boundary, ids) in [&call.input, &call.output].into_iter().enumerate() {
+                for (boundary, ids) in [call.input.as_slice(), call.output.as_slice()]
+                    .into_iter()
+                    .enumerate()
+                {
                     let row =
-                        &mut pp[(2 * c + boundary) * BRIDGE_PP..(2 * c + boundary + 1) * BRIDGE_PP];
-                    for i in 0..KECCAK_STATE_LIMBS {
-                        row[i] = label::<F>(ids[i] + 1)?;
+                        &mut pp[(2 * c + boundary) * bridge_pp..(2 * c + boundary + 1) * bridge_pp];
+                    for (i, &id) in ids.iter().enumerate() {
+                        row[i] = label::<F>(id + 1)?;
+                    }
+                    if short_outputs {
+                        row[BRIDGE_PP] = F::from_bool(ids.len() == KECCAK_STATE_LIMBS);
                     }
                     row[BRIDGE_TAG] = label::<F>(2 * c + boundary + 1)?;
                     row[BRIDGE_ACTIVE] = F::ONE;
@@ -545,9 +557,10 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     }
                 }
             }
-            airs.push(air(Table::Bridge(Arc::new(RowMajorMatrix::new(
-                pp, BRIDGE_PP,
-            )))));
+            airs.push(air(Table::Bridge(
+                Arc::new(RowMajorMatrix::new(pp, bridge_pp)),
+                short_outputs,
+            )));
             log_heights.push(bridge_height.ilog2() as usize);
         }
         if !blake3_calls.is_empty() {
@@ -792,17 +805,32 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                         width,
                     )
                 }
-                Table::Bridge(_) => {
+                Table::Bridge(..) => {
                     let mut values = vec![F::ZERO; cells(height, BRIDGE_WIDTH)?];
                     for row in 0..height {
                         if let Some(call) = self.calls.get(row / 2) {
                             let ids = if row % 2 == 0 {
-                                &call.input
+                                call.input.as_slice()
                             } else {
-                                &call.output
+                                call.output.as_slice()
                             };
-                            for i in 0..KECCAK_STATE_LIMBS {
-                                values[index(row, i, BRIDGE_WIDTH)] = read(ids[i] + 1);
+                            for (i, &id) in ids.iter().enumerate() {
+                                values[index(row, i, BRIDGE_WIDTH)] = read(id + 1);
+                            }
+                            if ids.len() < KECCAK_STATE_LIMBS {
+                                // The tail is not a circuit witness. The hash AIR still
+                                // binds the entire boundary through the same bus payload.
+                                let limbs = call
+                                    .input
+                                    .map(|id| read(id + 1).to_raw_coordinates() as u16);
+                                let mut state = p3_circuit::ops::keccak_limbs_to_state(&limbs);
+                                KeccakF.permute_mut(&mut state);
+                                let tail = p3_circuit::ops::keccak_state_to_limbs(&state);
+                                for (i, &limb) in tail.iter().enumerate().skip(ids.len()) {
+                                    values[index(row, i, BRIDGE_WIDTH)] =
+                                        F::from_raw_coordinates(limb as u128)
+                                            .expect("a sixteen-coordinate limb");
+                                }
                             }
                             // Generating the Keccak table, before this one, checked every
                             // boundary limb's width.
@@ -1213,7 +1241,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Gates(gates) => gates.schema.slots.len(),
             Table::Public(ids) => ids.len(),
             Table::Keccak { .. } => HASH_WIDTH,
-            Table::Bridge(_) => BRIDGE_WIDTH,
+            Table::Bridge(..) => BRIDGE_WIDTH,
             Table::Blake3 { .. } => NUM_BLAKE3_BINARY_COLS,
         }
     }
@@ -1235,7 +1263,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
             Table::Gates(gates) => gates.schema.pp_width(),
             Table::Public(_) => 0,
             Table::Keccak { .. } => 3,
-            Table::Bridge(_) => BRIDGE_PP,
+            Table::Bridge(pp, _) => pp.width,
             Table::Blake3 { layout, .. } => layout.width(),
         }
     }
@@ -1243,7 +1271,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
         match &self.table {
             Table::Witness(fanout) => Some(fanout.preprocessed()),
             Table::Gates(gates) => Some(gates.preprocessed()),
-            Table::Bridge(pp) | Table::Keccak { pp, .. } | Table::Blake3 { pp, .. } => {
+            Table::Bridge(pp, _) | Table::Keccak { pp, .. } | Table::Blake3 { pp, .. } => {
                 Some(pp.as_ref().clone())
             }
             Table::Public(_) => None,
@@ -1331,6 +1359,7 @@ where
                 } else {
                     AB::Expr::ZERO
                 };
+                let constant_product = a.clone() * constant.clone() + addend.clone();
                 for (&selector, &active) in schema.selectors.iter().zip(selectors) {
                     match selector {
                         0 => b.when(active).assert_eq(out.clone(), constant.clone()),
@@ -1354,10 +1383,8 @@ where
                             if selector == BOOLEAN_MUL_ADD_CONSTANT {
                                 b.when(active).assert_bool(a.clone());
                             }
-                            b.when(active).assert_eq(
-                                out.clone(),
-                                a.clone() * constant.clone() + addend.clone(),
-                            );
+                            b.when(active)
+                                .assert_eq(out.clone(), constant_product.clone());
                         }
                         _ => unreachable!("frozen gate selector"),
                     }
@@ -1383,10 +1410,16 @@ where
                     BusActivation::Boolean(pp[2].into()),
                 );
             }
-            Table::Bridge(_) => {
+            Table::Bridge(_, short_outputs) => {
                 for i in 0..BRIDGE_WIDTH {
-                    let active = if i < KECCAK_STATE_LIMBS {
+                    let active = if i < KECCAK256_DIGEST_LIMBS {
                         pp[BRIDGE_ACTIVE]
+                    } else if i < KECCAK_STATE_LIMBS {
+                        if *short_outputs {
+                            pp[BRIDGE_PP]
+                        } else {
+                            pp[BRIDGE_ACTIVE]
+                        }
                     } else {
                         pp[BRIDGE_SWAPPED_ACTIVE]
                     };

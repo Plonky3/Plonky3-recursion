@@ -75,7 +75,7 @@ pub struct NativeBinaryCircuitAir<F> {
 #[derive(Clone, Debug)]
 pub(crate) struct KeccakCall {
     pub(crate) input: [usize; KECCAK_STATE_LIMBS],
-    pub(crate) output: [usize; KECCAK_STATE_LIMBS],
+    pub(crate) output: Vec<usize>,
     /// Outputs holding the first digest limbs with their two bytes swapped.
     pub(crate) swapped: Option<[usize; KECCAK256_DIGEST_LIMBS]>,
 }
@@ -179,7 +179,10 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
                 row[HASH_POSITION] = position::<F>(real_hash_rows);
             }
             for (i, call) in calls.iter().enumerate() {
-                for (boundary, witnesses) in [&call.input, &call.output].into_iter().enumerate() {
+                for (boundary, witnesses) in [call.input.as_slice(), call.output.as_slice()]
+                    .into_iter()
+                    .enumerate()
+                {
                     let row = &mut positions
                         [(2 * i + boundary) * PAYLOAD..(2 * i + boundary + 1) * PAYLOAD];
                     for (slot, &w) in witnesses.iter().enumerate() {
@@ -261,9 +264,9 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
             output[..PAYLOAD].copy_from_slice(prep);
             if let Some(call) = self.calls.get(row / 2) {
                 let ids = if row % 2 == 0 {
-                    &call.input
+                    call.input.as_slice()
                 } else {
-                    &call.output
+                    call.output.as_slice()
                 };
                 for i in 0..KECCAK_STATE_LIMBS {
                     output[PAYLOAD + i] = read(ids[i]);
@@ -378,16 +381,22 @@ pub(crate) fn keccak_calls<F: Field>(
             if inputs.len() != 1
                 || outputs.len() != 1
                 || inputs[0].len() != KECCAK_STATE_LIMBS
-                || ![KECCAK_STATE_LIMBS, swapped_outputs].contains(&outputs[0].len())
+                || (!([KECCAK_STATE_LIMBS, swapped_outputs].contains(&outputs[0].len()))
+                    && !(swapped_digest && outputs[0].len() == 2 * KECCAK256_DIGEST_LIMBS))
             {
                 return Err(NativeBinaryCircuitError::KeccakLayout { operation });
             }
             let id = |i: usize| outputs[0][i].0 as usize;
+            let count = if outputs[0].len() == 2 * KECCAK256_DIGEST_LIMBS {
+                KECCAK256_DIGEST_LIMBS
+            } else {
+                KECCAK_STATE_LIMBS
+            };
             calls.push(KeccakCall {
                 input: core::array::from_fn(|i| inputs[0][i].0 as usize),
-                output: core::array::from_fn(id),
-                swapped: (outputs[0].len() > KECCAK_STATE_LIMBS)
-                    .then(|| core::array::from_fn(|m| id(KECCAK_STATE_LIMBS + m))),
+                output: (0..count).map(id).collect(),
+                swapped: (outputs[0].len() > count)
+                    .then(|| core::array::from_fn(|m| id(count + m))),
             });
         }
     }

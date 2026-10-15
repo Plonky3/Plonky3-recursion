@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::{ByteHash, KECCAK256_RATE_BYTES, NpoTypeId};
+use p3_circuit::ops::{ByteHash, KECCAK_STATE_LIMBS, KECCAK256_RATE_BYTES, NpoTypeId};
 use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, CircuitError, ExprId, Op, WitnessId};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_field::PrimeCharacteristicRing;
@@ -250,7 +250,11 @@ fn second_layer_is_bounded_and_refuses_forged_proof_fields(case: &Case) {
     assert!(start.iter().any(|id| constants[id] != F::ZERO));
     let refill = 1 + calls
         .windows(2)
-        .take_while(|pair| pair[1].0[capacity..] == pair[0].1[capacity..])
+        .take_while(|pair| {
+            pair[0].1.len() >= KECCAK_STATE_LIMBS
+                && pair[1].0[capacity..KECCAK_STATE_LIMBS]
+                    == pair[0].1[capacity..KECCAK_STATE_LIMBS]
+        })
         .count();
     assert!(refill <= MAX_FIRST_REFILL_CALLS);
     assert_eq!(bus.log_heights().len(), MAX_LOG_HEIGHTS.len());
@@ -312,8 +316,8 @@ fn second_layer_is_bounded_and_refuses_forged_proof_fields(case: &Case) {
     assert_eq!(circuit.private_input_rows.len(), private.len());
     let run = |private: &[F]| {
         let mut runner = circuit.runner();
-        runner.set_public_inputs(&public).unwrap();
-        runner.set_private_inputs(private).unwrap();
+        runner.set_public_inputs(&public)?;
+        runner.set_private_inputs(private)?;
         runner.run().map(|traces| traces.witness_trace)
     };
     let witness = run(&private).unwrap();
@@ -326,7 +330,8 @@ fn second_layer_is_bounded_and_refuses_forged_proof_fields(case: &Case) {
 
     // A sibling word with a seventeenth coordinate reaches a native Keccak
     // lane, in the initial commitment and in the last folded oracle alike. The
-    // runner refuses such a lane; in a proof, the Keccak AIR rejects it.
+    // runner refuses such a lane; in a proof, the Keccak AIR rejects it. A
+    // shared upper sibling instead conflicts with its computed root witness.
     let wide = F::from_raw_coordinates(1 << 16).unwrap();
     let initial = &targets.opening.rounds[0].paths[0];
     let last = targets.opening.final_paths[0]
@@ -334,11 +339,18 @@ fn second_layer_is_bounded_and_refuses_forged_proof_fields(case: &Case) {
         .expect("the final oracle has a Merkle path below its cap");
     for sibling in [initial[0][3], last[12]] {
         assert!(private[position(sibling)].to_raw_coordinates() < 1 << 16);
-        assert!(matches!(
-            forge(sibling, wide),
-            Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
-                if op == NpoTypeId::native_keccak_f1600()
-        ));
+        let refused = forge(sibling, wide);
+        match refused {
+            Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. }) => {
+                assert_eq!(op, NpoTypeId::native_keccak_f1600());
+            }
+            Err(CircuitError::WitnessConflict { witness_id, .. })
+                if case.arity == MerkleArity::Two =>
+            {
+                assert_eq!(witness_id, circuit.expr_to_widx[&sibling]);
+            }
+            _ => panic!("unexpected sibling forgery result: {refused:?}"),
+        }
     }
     // A cap limb reaches the transcript as a word, and a flipped limb changes
     // the draws. In a WHIR round cap it is a native Keccak lane of the next

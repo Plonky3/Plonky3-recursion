@@ -103,7 +103,7 @@ pub(super) fn patch_witness_cells(
         let table = match (air.width(), air.preprocessed_width()) {
             (1, 3) => 0,
             (5, 14) => 1,
-            (116, 119) => 2,
+            (116, 119 | 120) => 2,
             _ => continue,
         };
         let labels = air.preprocessed_trace().unwrap();

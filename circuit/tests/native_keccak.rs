@@ -327,8 +327,9 @@ fn swapped_digest_calls<F: BinaryCoordinateField>(circuit: &Circuit<F>) -> usize
         .ops
         .iter()
         .filter(|op| {
-            matches!(op, Op::NonPrimitiveOpWithExecutor { outputs, .. }
-                if outputs[0].len() == 116)
+            matches!(op, Op::NonPrimitiveOpWithExecutor { outputs, executor, .. }
+                if executor.op_type() == &p3_circuit::ops::NpoTypeId::native_keccak_f1600()
+                    && matches!(outputs[0].len(), 32 | 116))
         })
         .count()
 }

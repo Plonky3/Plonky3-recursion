@@ -16,8 +16,9 @@ fn random_transcript_circuits_prove_in_both_modes() {
         .ops
         .iter()
         .filter(|op| {
-            matches!(op, p3_circuit::Op::NonPrimitiveOpWithExecutor { outputs, .. }
-                if outputs[0].len() == 116)
+            matches!(op, p3_circuit::Op::NonPrimitiveOpWithExecutor { outputs, executor, .. }
+                if executor.op_type() == &p3_circuit::ops::NpoTypeId::native_keccak_f1600()
+                    && matches!(outputs[0].len(), 32 | 116))
         })
         .count();
     assert!(

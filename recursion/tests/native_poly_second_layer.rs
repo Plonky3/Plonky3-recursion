@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::Poly64;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::{ByteHash, KECCAK256_RATE_BYTES, NpoTypeId};
+use p3_circuit::ops::{ByteHash, KECCAK_STATE_LIMBS, KECCAK256_RATE_BYTES, NpoTypeId};
 use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, CircuitError, ExprId, Op, WitnessId};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_field::PrimeCharacteristicRing;
@@ -212,7 +212,11 @@ fn second_native_poly_layer_verifier_is_bounded_and_refuses_forged_proof_fields(
     assert!(start.iter().any(|id| constants[id] != F::ZERO));
     let refill = 1 + calls
         .windows(2)
-        .take_while(|pair| pair[1].0[capacity..] == pair[0].1[capacity..])
+        .take_while(|pair| {
+            pair[0].1.len() >= KECCAK_STATE_LIMBS
+                && pair[1].0[capacity..KECCAK_STATE_LIMBS]
+                    == pair[0].1[capacity..KECCAK_STATE_LIMBS]
+        })
         .count();
     assert!(refill <= MAX_FIRST_REFILL_CALLS);
     assert_eq!(bus.log_heights().len(), MAX_LOG_HEIGHTS.len());
@@ -271,8 +275,8 @@ fn second_native_poly_layer_verifier_is_bounded_and_refuses_forged_proof_fields(
     assert_eq!(circuit.private_input_rows.len(), private.len());
     let run = |private: &[F]| {
         let mut runner = circuit.runner();
-        runner.set_public_inputs(&public).unwrap();
-        runner.set_private_inputs(private).unwrap();
+        runner.set_public_inputs(&public)?;
+        runner.set_private_inputs(private)?;
         runner.run().map(|traces| traces.witness_trace)
     };
     let witness = run(&private).unwrap();

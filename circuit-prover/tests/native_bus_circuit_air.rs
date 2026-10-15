@@ -24,6 +24,49 @@ use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128, TowerLeve
 type F = BinaryField128;
 
 #[test]
+fn terminal_keccak_exposes_only_the_digest_and_swapped_digest() {
+    let mut b = CircuitBuilder::<F>::new();
+    b.enable_native_keccak_f1600().unwrap();
+    let input = b.alloc_public_input_array::<100>("state");
+    let (digest, swapped) = b
+        .add_native_keccak_f1600_digest_with_swapped(&input)
+        .unwrap();
+    for value in digest.into_iter().chain(swapped) {
+        let expected = b.public_input();
+        b.connect(value, expected);
+    }
+    let circuit = b.build().unwrap();
+    assert!(circuit.ops.iter().any(|op| matches!(op,
+        p3_circuit::ops::Op::NonPrimitiveOpWithExecutor { outputs, .. } if outputs[0].len() == 32
+    )));
+    let mut lanes =
+        core::array::from_fn::<_, 25, _>(|i| 0x8123456789abcdefu64.rotate_left(i as u32));
+    let mut public: Vec<_> = keccak_state_to_limbs(&lanes)
+        .map(|v| F::from_repr(v as u128))
+        .into();
+    KeccakF.permute_mut(&mut lanes);
+    let output = keccak_state_to_limbs(&lanes);
+    public.extend(output[..16].iter().map(|&v| F::from_repr(v as u128)));
+    public.extend(
+        output[..16]
+            .iter()
+            .map(|&v| F::from_repr(v.swap_bytes() as u128)),
+    );
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    let witness = runner.run_witness().unwrap();
+    let prepared = NativeBusCircuit::new(&circuit, "digest").unwrap();
+    for ((air, trace), public) in prepared
+        .airs()
+        .iter()
+        .zip(prepared.traces(&witness).unwrap())
+        .zip(prepared.public_values(&public).unwrap())
+    {
+        check_constraints(air, &trace, &public);
+    }
+}
+
+#[test]
 fn compact_gate_tables_drop_globally_unused_slots_and_selectors() {
     let mut b = CircuitBuilder::<F>::new();
     let [a, c, expected] = b.alloc_public_input_array::<3>("product");
