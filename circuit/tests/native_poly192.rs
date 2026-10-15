@@ -360,3 +360,28 @@ fn unchecked_poly64_words_pack_into_their_coefficients() {
     wide[2] += Poly64::ONE;
     assert!(runs(&wide), "an unchecked word may carry coefficient 16");
 }
+
+#[test]
+fn poly64_word_provenance_reuses_splits_without_relaxing_narrowing() {
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let input = b.public_input();
+    let words = b.native_poly64_unchecked_words(input, 4).unwrap();
+    assert_eq!(b.native_poly64_unchecked_words(input, 4).unwrap(), words);
+    for &word in &words {
+        b.binary_decompose_coordinates(word, 16).unwrap();
+    }
+    let packed = b
+        .native_poly64_from_unchecked_words(words.clone().try_into().unwrap())
+        .unwrap();
+    assert_eq!(b.native_poly64_unchecked_words(packed, 4).unwrap(), words);
+    assert_eq!(
+        b.native_poly64_unchecked_words(input, 1).unwrap(),
+        words[..1]
+    );
+    let circuit = b.build().unwrap();
+    for (value, accepted) in [(0xffff, true), (1 << 16, false)] {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[Poly64::new(value)]).unwrap();
+        assert_eq!(runner.run_witness().is_ok(), accepted);
+    }
+}

@@ -237,6 +237,9 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Fully Boolean, reconstructed native binary coordinates in this graph.
     native_coordinate_bits: HashMap<ExprId, Vec<ExprId>>,
+    /// Reconstructed sixteen-coordinate words. Their range is still the caller's
+    /// responsibility; these entries never imply checked Boolean coordinates.
+    native_word_splits: HashMap<ExprId, Vec<ExprId>>,
 
     /// Coefficient wires a constraint pins to a base-field element: the inputs of a
     /// `recompose/coeff` row, whose per-coefficient bus tuple is zero-padded, and `Const`s
@@ -355,6 +358,7 @@ where
             recompose_npo_enabled: false,
             ext_recompose_coeffs: HashMap::new(),
             native_coordinate_bits: HashMap::new(),
+            native_word_splits: HashMap::new(),
             base_bound_coeffs: HashSet::new(),
             coefficient_normalization_sources: HashMap::new(),
             ext_select_sources: HashMap::new(),
@@ -374,6 +378,20 @@ where
 
     pub(crate) fn native_coordinates(&self, value: ExprId) -> Option<&[ExprId]> {
         self.native_coordinate_bits.get(&value).map(Vec::as_slice)
+    }
+
+    pub(crate) fn native_words(&self, value: ExprId) -> Option<&[ExprId]> {
+        self.native_word_splits.get(&value).map(Vec::as_slice)
+    }
+
+    pub(crate) fn record_native_words(&mut self, value: ExprId, words: &[ExprId]) {
+        if self
+            .native_word_splits
+            .get(&value)
+            .is_none_or(|known| words.len() < known.len())
+        {
+            self.native_word_splits.insert(value, words.to_vec());
+        }
     }
 
     /// Record only after Booleanity and reconstruction have both been constrained.

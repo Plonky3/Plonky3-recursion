@@ -255,3 +255,55 @@ fn unchecked_words_pack_into_their_raw_coordinates() {
     wide[3] += F::ONE;
     assert!(runs(&wide), "an unchecked word may carry coordinate 16");
 }
+
+#[test]
+fn unchecked_word_splits_reuse_provenance_and_keep_narrowing_constraints() {
+    let mut b = CircuitBuilder::<F>::new();
+    let input = b.public_input();
+    let scalar = b.native_tower128_from_expr(input);
+    let words = b.native_tower128_unchecked_words(&scalar, 8).unwrap();
+    assert_eq!(
+        b.native_tower128_unchecked_words(&scalar, 8).unwrap(),
+        words
+    );
+    for &word in &words {
+        b.binary_decompose_coordinates(word, 16).unwrap();
+    }
+    let packed = b
+        .native_tower128_from_unchecked_words(words.clone().try_into().unwrap())
+        .unwrap();
+    assert_eq!(
+        b.native_tower128_unchecked_words(&packed, 8).unwrap(),
+        words
+    );
+    assert_eq!(
+        b.native_tower128_unchecked_words(&scalar, 1).unwrap(),
+        words[..1]
+    );
+    let circuit = b.build().unwrap();
+    for (value, accepted) in [(0xa5, true), (0x1a5, true), (1 << 16, false)] {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[F::from_repr(value)]).unwrap();
+        assert_eq!(runner.run_witness().is_ok(), accepted);
+    }
+}
+
+#[test]
+fn constant_word_splits_fold_and_reject_out_of_span_values() {
+    let mut b = CircuitBuilder::<F>::new();
+    let value = b.native_tower128_constant(0x1234abcd);
+    let words = b.native_tower128_unchecked_words(&value, 2).unwrap();
+    let expected = [
+        b.define_const(F::from_repr(0xabcd)),
+        b.define_const(F::from_repr(0x1234)),
+    ];
+    assert_eq!(words, expected);
+    assert!(b.native_tower128_unchecked_words(&value, 1).is_err());
+    let circuit = b.build().unwrap();
+    assert!(
+        circuit
+            .ops
+            .iter()
+            .all(|op| !matches!(op, p3_circuit::ops::Op::Hint { .. }))
+    );
+}

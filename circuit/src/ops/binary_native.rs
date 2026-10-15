@@ -79,6 +79,44 @@ impl BinaryCoordinateField for Poly64 {
 }
 
 impl<F: BinaryCoordinateField> CircuitBuilder<F> {
+    pub(crate) fn cached_native_words(
+        &mut self,
+        value: ExprId,
+        count: usize,
+    ) -> Result<Option<Vec<ExprId>>, CircuitBuilderError> {
+        if let Some(constant) = self.constant_value(value) {
+            let raw = constant.to_raw_coordinates();
+            let bits = count * 16;
+            if bits < 128 && raw >> bits != 0 {
+                return Err(CircuitBuilderError::InvalidDimension {
+                    expected: bits,
+                    actual: 128 - raw.leading_zeros() as usize,
+                });
+            }
+            let words = (0..count)
+                .map(|i| {
+                    let raw = (raw >> (16 * i)) & 0xffff;
+                    self.define_const(
+                        F::from_raw_coordinates(raw).expect("a sixteen-coordinate word"),
+                    )
+                })
+                .collect();
+            self.check_construction_limits()?;
+            return Ok(Some(words));
+        }
+        if let Some(known) = self.native_words(value) {
+            let mut words = known.to_vec();
+            for &high in words.iter().skip(count) {
+                self.connect(high, ExprId::ZERO);
+            }
+            words.resize(count, ExprId::ZERO);
+            self.check_construction_limits()?;
+            self.record_native_words(value, &words);
+            return Ok(Some(words));
+        }
+        Ok(None)
+    }
+
     /// Decomposes a value into low-first Boolean raw coordinates.
     ///
     /// Reconstruction binds the hint to the input. A partial decomposition

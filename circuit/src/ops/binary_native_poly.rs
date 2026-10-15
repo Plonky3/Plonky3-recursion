@@ -76,6 +76,9 @@ impl CircuitBuilder<Poly64> {
             });
         }
         self.check_construction_limits()?;
+        if let Some(words) = self.cached_native_words(value, count)? {
+            return Ok(words);
+        }
         let words = if count == 0 {
             Vec::new()
         } else {
@@ -97,6 +100,7 @@ impl CircuitBuilder<Poly64> {
         }
         self.connect(value, sum);
         self.check_construction_limits()?;
+        self.record_native_words(value, &words);
         Ok(words)
     }
 
@@ -108,8 +112,8 @@ impl CircuitBuilder<Poly64> {
     /// the product only shifts its coefficients up by `16 * j` once every word
     /// has at most sixteen coefficients. The caller must establish that range,
     /// for example by reading the words from native Keccak-f or Blake3
-    /// outputs, which the native hash AIR derives from Boolean bits. No
-    /// coordinates are recorded. IDs must belong to this builder's graph.
+    /// outputs, which the native hash AIR derives from Boolean bits. Word
+    /// provenance is retained; it does not establish checked Boolean coordinates. IDs must belong to this builder's graph.
     pub fn native_poly64_from_unchecked_words(
         &mut self,
         words: [ExprId; 4],
@@ -120,6 +124,7 @@ impl CircuitBuilder<Poly64> {
             sum = self.mul_add(word, shift, sum);
         }
         self.check_construction_limits()?;
+        self.record_native_words(sum, &words);
         Ok(sum)
     }
 

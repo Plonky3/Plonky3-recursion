@@ -137,8 +137,8 @@ impl CircuitBuilder<BinaryField128> {
     /// coordinates are the words' in order once every word has at most sixteen
     /// coordinates. The caller must establish that range, for example by
     /// reading the words from native Keccak-f or Blake3 outputs, which the
-    /// native hash AIR derives from Boolean bits. No coordinates are recorded,
-    /// so a later decomposition of the scalar is a full one. IDs must belong to
+    /// native hash AIR derives from Boolean bits. The word provenance is retained for later word splits,
+    /// while checked bit decomposition still establishes Boolean coordinates. IDs must belong to
     /// this builder's graph.
     pub fn native_tower128_from_unchecked_words(
         &mut self,
@@ -150,6 +150,7 @@ impl CircuitBuilder<BinaryField128> {
             sum = self.mul_add(word, shift, sum);
         }
         self.check_construction_limits()?;
+        self.record_native_words(sum, &words);
         Ok(NativeTower128Target { value: sum })
     }
 
@@ -192,6 +193,9 @@ impl CircuitBuilder<BinaryField128> {
             });
         }
         self.check_construction_limits()?;
+        if let Some(words) = self.cached_native_words(value.value, count)? {
+            return Ok(words);
+        }
         let words = if count == 0 {
             Vec::new()
         } else {
@@ -213,6 +217,7 @@ impl CircuitBuilder<BinaryField128> {
         }
         self.connect(value.value, sum);
         self.check_construction_limits()?;
+        self.record_native_words(value.value, &words);
         Ok(words)
     }
 }
