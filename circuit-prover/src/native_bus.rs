@@ -28,6 +28,7 @@ use p3_circuit::types::WitnessId;
 use p3_field::{Field, PrimeCharacteristicRing};
 use p3_keccak_air::{KECCAK_BINARY_ROWS_PER_PERM, NUM_KECCAK_BINARY_COLS};
 use p3_matrix::dense::RowMajorMatrix;
+use p3_sumcheck::layout::Table as TraceTable;
 use thiserror::Error;
 
 use crate::direct::{DirectCircuitError, DirectCircuitLimits};
@@ -138,6 +139,17 @@ struct GateRow<F> {
 struct Gates<F> {
     rows: Vec<GateRow<F>>,
     height: usize,
+}
+
+enum MainTraceValues<F> {
+    Dense {
+        values: Vec<F>,
+        width: usize,
+    },
+    PackedBits {
+        words: RowMajorMatrix<u64>,
+        log_height: usize,
+    },
 }
 
 /// The fanout and gate tables keep their rows and expand preprocessing only
@@ -598,6 +610,46 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         witness: &WitnessTrace<F>,
         packed: bool,
     ) -> Result<Vec<NativeBusTrace<F>>, NativeBusCircuitError> {
+        Ok(self
+            .main_trace_values::<false>(witness, packed)?
+            .into_iter()
+            .map(|trace| match trace {
+                MainTraceValues::Dense { values, width } => {
+                    NativeBusTrace::Dense(RowMajorMatrix::new(values, width))
+                }
+                MainTraceValues::PackedBits { words, log_height } => {
+                    NativeBusTrace::PackedBits { words, log_height }
+                }
+            })
+            .collect())
+    }
+
+    /// Main tables ready for the prover. Simple tables are written directly in
+    /// column order; hash generators retain their native row order until transposed.
+    pub fn column_major_tables(
+        &self,
+        witness: &WitnessTrace<F>,
+    ) -> Result<Vec<TraceTable<F>>, NativeBusCircuitError> {
+        Ok(self
+            .main_trace_values::<true>(witness, self.keccak == KeccakCommitment::Bits)?
+            .into_iter()
+            .map(|trace| match trace {
+                MainTraceValues::Dense { values, width } => {
+                    let height = values.len() / width;
+                    TraceTable::new(RowMajorMatrix::new(values, height))
+                }
+                MainTraceValues::PackedBits { words, log_height } => {
+                    TraceTable::from_packed_bits(words, log_height)
+                }
+            })
+            .collect())
+    }
+
+    fn main_trace_values<const COLUMN_MAJOR: bool>(
+        &self,
+        witness: &WitnessTrace<F>,
+        packed: bool,
+    ) -> Result<Vec<MainTraceValues<F>>, NativeBusCircuitError> {
         if witness.num_rows() != self.width {
             return Err(DirectCircuitError::WitnessLength {
                 expected: self.width,
@@ -618,50 +670,67 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         for (air, &log) in self.airs.iter().zip(&self.log_heights) {
             let height = 1usize << log;
             if packed && matches!(air.table, Table::Keccak { bits: true, .. }) {
-                traces.push(NativeBusTrace::PackedBits {
+                traces.push(MainTraceValues::PackedBits {
                     words: keccak_packed_words(&self.calls, witness, height)?,
                     log_height: log,
                 });
                 continue;
             }
             if packed && matches!(air.table, Table::Blake3 { bits: true, .. }) {
-                traces.push(NativeBusTrace::PackedBits {
+                traces.push(MainTraceValues::PackedBits {
                     words: blake3_packed_words(&self.blake3_calls, witness, height)?,
                     log_height: log,
                 });
                 continue;
             }
-            let trace = match &air.table {
+            let index = |row, column, width| {
+                if COLUMN_MAJOR {
+                    column * height + row
+                } else {
+                    row * width + column
+                }
+            };
+            let (values, width) = match &air.table {
                 Table::Witness(_) => {
                     let mut values: Vec<_> = self.fanout.ids.iter().map(|&id| read(id)).collect();
                     values.resize(height, F::ZERO);
-                    RowMajorMatrix::new(values, 1)
+                    (values, 1)
                 }
                 Table::Gates(_) => {
                     let mut values = vec![F::ZERO; cells(height, 5)?];
-                    for (row, gate) in values
-                        .as_chunks_mut::<5>()
-                        .0
-                        .iter_mut()
-                        .zip(&self.gates.rows)
-                    {
-                        for (cell, &id) in row.iter_mut().zip(&gate.ids) {
-                            *cell = read(id);
+                    for (row, gate) in self.gates.rows.iter().enumerate() {
+                        for (column, &id) in gate.ids.iter().enumerate() {
+                            values[index(row, column, 5)] = read(id);
                         }
                     }
-                    RowMajorMatrix::new(values, 5)
+                    (values, 5)
                 }
                 Table::Public(_) => {
-                    let values: Vec<_> = (0..height)
-                        .flat_map(|_| self.public.iter().map(|&w| read(w + 1)))
-                        .collect();
-                    RowMajorMatrix::new(values, self.public.len())
+                    let width = self.public.len();
+                    let mut values = vec![F::ZERO; cells(height, width)?];
+                    for (column, &w) in self.public.iter().enumerate() {
+                        let value = read(w + 1);
+                        for row in 0..height {
+                            values[index(row, column, width)] = value;
+                        }
+                    }
+                    (values, width)
                 }
-                Table::Keccak { .. } => keccak_bit_trace(&self.calls, witness, height)?,
+                Table::Keccak { .. } => {
+                    let trace = keccak_bit_trace(&self.calls, witness, height)?;
+                    let width = trace.width;
+                    (
+                        if COLUMN_MAJOR {
+                            trace.transpose().values
+                        } else {
+                            trace.values
+                        },
+                        width,
+                    )
+                }
                 Table::Bridge(_) => {
                     let mut values = vec![F::ZERO; cells(height, BRIDGE_WIDTH)?];
-                    let rows = values.as_chunks_mut::<BRIDGE_WIDTH>().0;
-                    for (row, output) in rows.iter_mut().enumerate() {
+                    for row in 0..height {
                         if let Some(call) = self.calls.get(row / 2) {
                             let ids = if row % 2 == 0 {
                                 &call.input
@@ -669,20 +738,32 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                                 &call.output
                             };
                             for i in 0..KECCAK_STATE_LIMBS {
-                                output[i] = read(ids[i] + 1);
+                                values[index(row, i, BRIDGE_WIDTH)] = read(ids[i] + 1);
                             }
                             // Generating the Keccak table, before this one, checked every
                             // boundary limb's width.
                             for m in 0..KECCAK256_DIGEST_LIMBS {
-                                output[KECCAK_STATE_LIMBS + m] = swap_bytes(output[m]);
+                                values[index(row, KECCAK_STATE_LIMBS + m, BRIDGE_WIDTH)] =
+                                    swap_bytes(values[index(row, m, BRIDGE_WIDTH)]);
                             }
                         }
                     }
-                    RowMajorMatrix::new(values, BRIDGE_WIDTH)
+                    (values, BRIDGE_WIDTH)
                 }
-                Table::Blake3 { .. } => blake3_trace(&self.blake3_calls, witness, height)?,
+                Table::Blake3 { .. } => {
+                    let trace = blake3_trace(&self.blake3_calls, witness, height)?;
+                    let width = trace.width;
+                    (
+                        if COLUMN_MAJOR {
+                            trace.transpose().values
+                        } else {
+                            trace.values
+                        },
+                        width,
+                    )
+                }
             };
-            traces.push(NativeBusTrace::Dense(trace));
+            traces.push(MainTraceValues::Dense { values, width });
         }
         Ok(traces)
     }

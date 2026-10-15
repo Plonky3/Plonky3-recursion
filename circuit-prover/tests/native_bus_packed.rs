@@ -85,6 +85,18 @@ fn packed_words_match_dense_bits() {
         let keccak = bits.keccak_table_index().unwrap();
         let dense_traces = dense.traces(&witness).unwrap();
         let tables = bits.trace_tables(&witness).unwrap();
+        let columns = bits.column_major_tables(&witness).unwrap();
+        for (table, expected) in columns.iter().zip(&dense_traces) {
+            assert_eq!(table.num_polys(), expected.width);
+            for column in 0..expected.width {
+                for row in 0..expected.values.len() / expected.width {
+                    assert_eq!(
+                        table.column(column).value(row),
+                        expected.values[row * expected.width + column]
+                    );
+                }
+            }
+        }
         let log_height = bits.log_heights()[keccak];
         assert_eq!(bits.packed_bit_variables(), Some(11 + log_height));
         for (index, (table, expected)) in tables.iter().zip(&dense_traces).enumerate() {
@@ -136,6 +148,17 @@ fn dense_mode_is_unchanged_and_has_no_packed_table() {
     assert_eq!(dense.packed_bit_variables(), None);
     let traces = dense.traces(&witness).unwrap();
     let tables = dense.trace_tables(&witness).unwrap();
+    let columns = dense.column_major_tables(&witness).unwrap();
+    for (table, expected) in columns.iter().zip(&traces) {
+        for column in 0..expected.width {
+            for row in 0..expected.values.len() / expected.width {
+                assert_eq!(
+                    table.column(column).value(row),
+                    expected.values[row * expected.width + column]
+                );
+            }
+        }
+    }
     for (table, trace) in tables.iter().zip(&traces) {
         let NativeBusTrace::Dense(matrix) = table else {
             panic!("dense mode returned a packed table");
