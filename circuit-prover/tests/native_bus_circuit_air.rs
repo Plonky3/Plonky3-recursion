@@ -24,6 +24,62 @@ use p3_test_utils::binary_field_params::{BinaryField8, BinaryField128, TowerLeve
 type F = BinaryField128;
 
 #[test]
+fn compact_gate_tables_drop_globally_unused_slots_and_selectors() {
+    let mut b = CircuitBuilder::<F>::new();
+    let [a, c, expected] = b.alloc_public_input_array::<3>("product");
+    let out = b.mul(a, c);
+    b.connect(out, expected);
+    let circuit = b.build().unwrap();
+    let full = NativeBusCircuit::new(&circuit, "full").unwrap();
+    let compact = NativeBusCircuit::with_compact_options(
+        &circuit,
+        "compact",
+        1,
+        DirectCircuitLimits::default(),
+        p3_circuit_prover::native_bus::KeccakCommitment::Dense,
+    )
+    .unwrap();
+    assert_eq!(compact.airs()[1].width(), 3);
+    assert_eq!(compact.airs()[1].preprocessed_width(), 6);
+    assert!(compact.main_variables() <= full.main_variables());
+    assert!(compact.preprocessed_variables() <= full.preprocessed_variables());
+    assert!(compact.airs()[1].preprocessed_width() < full.airs()[1].preprocessed_width());
+    let public = [
+        F::from_repr(0x8912),
+        F::from_repr(0xcafe),
+        F::from_repr(0x8912) * F::from_repr(0xcafe),
+    ];
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    let traces = compact.traces(&runner.run_witness().unwrap()).unwrap();
+    for ((air, trace), public) in compact
+        .airs()
+        .iter()
+        .zip(&traces)
+        .zip(compact.public_values(&public).unwrap())
+    {
+        check_constraints(air, trace, &public);
+    }
+    let columns = compact
+        .column_major_tables(&{
+            let mut runner = circuit.runner();
+            runner.set_public_inputs(&public).unwrap();
+            runner.run_witness().unwrap()
+        })
+        .unwrap();
+    for (table, trace) in columns.iter().zip(traces) {
+        for column in 0..trace.width {
+            for row in 0..trace.values.len() / trace.width {
+                assert_eq!(
+                    table.column(column).value(row),
+                    trace.values[row * trace.width + column]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn trusted_minimum_height_repeats_public_values_and_bounds_all_tables() {
     let mut b = CircuitBuilder::<F>::new();
     b.public_input();

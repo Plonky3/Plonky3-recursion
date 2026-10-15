@@ -55,8 +55,6 @@ const MUL_ADD: usize = 4;
 const MUL_ADD_CONSTANT: usize = 6;
 /// [`MUL_ADD_CONSTANT`] with `a` constrained to be Boolean.
 const BOOLEAN_MUL_ADD_CONSTANT: usize = 7;
-/// Gate preprocessed columns: five slot labels, the constant, one-hot selectors.
-const GATE_PP: usize = 6 + GATE_SELECTORS;
 const HASH_WIDTH: usize = NUM_KECCAK_BINARY_COLS;
 /// Bridge main columns: a boundary's 100 state limbs, then its first 16 limbs byte-swapped.
 const BRIDGE_WIDTH: usize = KECCAK_STATE_LIMBS + KECCAK256_DIGEST_LIMBS;
@@ -139,6 +137,45 @@ struct GateRow<F> {
 struct Gates<F> {
     rows: Vec<GateRow<F>>,
     height: usize,
+    schema: GateSchema,
+}
+
+#[derive(Debug)]
+struct GateSchema {
+    slots: Vec<usize>,
+    selectors: Vec<usize>,
+    constant: bool,
+}
+
+impl GateSchema {
+    fn new<F>(rows: &[GateRow<F>], compact: bool) -> Self {
+        let selectors: Vec<_> = (0..GATE_SELECTORS)
+            .filter(|&selector| !compact || rows.iter().any(|row| row.selector == selector))
+            .collect();
+        let slots = (0..5)
+            .filter(|&slot| {
+                !compact
+                    || selectors
+                        .iter()
+                        .any(|&selector| gate_slot_used(selector, slot))
+            })
+            .collect();
+        let constant = !compact
+            || selectors.iter().any(|&selector| {
+                matches!(selector, 0 | MUL_ADD_CONSTANT | BOOLEAN_MUL_ADD_CONSTANT)
+            });
+        Self {
+            slots,
+            selectors,
+            constant,
+        }
+    }
+    fn selector_start(&self) -> usize {
+        self.slots.len() + usize::from(self.constant)
+    }
+    fn pp_width(&self) -> usize {
+        self.selector_start() + self.selectors.len()
+    }
 }
 
 enum MainTraceValues<F> {
@@ -187,7 +224,6 @@ pub struct NativeBusCircuit<F> {
     calls: Vec<KeccakCall>,
     blake3_calls: Vec<Blake3Call>,
     fanout: Arc<Fanout>,
-    gates: Arc<Gates<F>>,
     airs: Vec<NativeBusCircuitAir<F>>,
     log_heights: Vec<usize>,
     main_variables: usize,
@@ -241,6 +277,29 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         min_log_height: usize,
         limits: DirectCircuitLimits,
         keccak: KeccakCommitment,
+    ) -> Result<Self, NativeBusCircuitError> {
+        Self::with_gate_layout(circuit, namespace, min_log_height, limits, keccak, false)
+    }
+
+    /// Freezes only the gate slots, constants and one-hot selectors used by this
+    /// circuit. Omitted columns do not participate in the product bus.
+    pub fn with_compact_options(
+        circuit: &Circuit<F>,
+        namespace: &str,
+        min_log_height: usize,
+        limits: DirectCircuitLimits,
+        keccak: KeccakCommitment,
+    ) -> Result<Self, NativeBusCircuitError> {
+        Self::with_gate_layout(circuit, namespace, min_log_height, limits, keccak, true)
+    }
+
+    fn with_gate_layout(
+        circuit: &Circuit<F>,
+        namespace: &str,
+        min_log_height: usize,
+        limits: DirectCircuitLimits,
+        keccak: KeccakCommitment,
+        compact: bool,
     ) -> Result<Self, NativeBusCircuitError> {
         let bits = keccak == KeccakCommitment::Bits;
         let shift = u32::try_from(min_log_height.max(1))
@@ -312,6 +371,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                 }
             }
         }
+        let gate_schema = GateSchema::new(&gate_rows, compact);
         let gate_occurrences = gate_rows.iter().try_fold(0, |total, row| {
             add(
                 total,
@@ -359,7 +419,7 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         };
         let hash_cells = cells(hash_height, hash_width)?;
         let main_cells = add(
-            add(witness_height, cells(gate_height, 5)?)?,
+            add(witness_height, cells(gate_height, gate_schema.slots.len())?)?,
             add(
                 cells(plan.public.len(), minimum_height)?,
                 add(
@@ -369,7 +429,10 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             )?,
         )?;
         let pp_cells = add(
-            add(cells(witness_height, 3)?, cells(gate_height, GATE_PP)?)?,
+            add(
+                cells(witness_height, 3)?,
+                cells(gate_height, gate_schema.pp_width())?,
+            )?,
             add(
                 cells(hash_height, hash_pp)?,
                 cells(bridge_height, BRIDGE_PP)?,
@@ -427,11 +490,12 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
         let gates = Arc::new(Gates {
             rows: gate_rows,
             height: gate_height,
+            schema: gate_schema,
         });
         let mut airs = vec![air(Table::Witness(fanout.clone()))];
         let mut log_heights = vec![witness_height.ilog2() as usize];
         if gate_height != 0 {
-            airs.push(air(Table::Gates(gates.clone())));
+            airs.push(air(Table::Gates(gates)));
             log_heights.push(gate_height.ilog2() as usize);
         }
         if !plan.public.is_empty() {
@@ -509,7 +573,6 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
             calls,
             blake3_calls,
             fanout,
-            gates,
             airs,
             log_heights,
             main_variables,
@@ -696,14 +759,15 @@ impl<F: BinaryCoordinateField> NativeBusCircuit<F> {
                     values.resize(height, F::ZERO);
                     (values, 1)
                 }
-                Table::Gates(_) => {
-                    let mut values = vec![F::ZERO; cells(height, 5)?];
-                    for (row, gate) in self.gates.rows.iter().enumerate() {
-                        for (column, &id) in gate.ids.iter().enumerate() {
-                            values[index(row, column, 5)] = read(id);
+                Table::Gates(gates) => {
+                    let width = gates.schema.slots.len();
+                    let mut values = vec![F::ZERO; cells(height, width)?];
+                    for (row, gate) in gates.rows.iter().enumerate() {
+                        for (column, &slot) in gates.schema.slots.iter().enumerate() {
+                            values[index(row, column, width)] = read(gate.ids[slot]);
                         }
                     }
-                    (values, 5)
+                    (values, width)
                 }
                 Table::Public(_) => {
                     let width = self.public.len();
@@ -801,17 +865,26 @@ impl Fanout {
 }
 
 impl<F: BinaryCoordinateField> Gates<F> {
-    /// Columns: five slot labels, constant, one-hot selector.
+    /// Columns follow the frozen slot and selector order, with a constant only when used.
     fn preprocessed(&self) -> RowMajorMatrix<F> {
-        let mut pp = vec![F::ZERO; GATE_PP * self.height];
-        for (row, gate) in pp.as_chunks_mut::<GATE_PP>().0.iter_mut().zip(&self.rows) {
-            for (cell, &id) in row.iter_mut().zip(&gate.ids) {
-                *cell = checked_label(id);
+        let width = self.schema.pp_width();
+        let mut pp = vec![F::ZERO; width * self.height];
+        for (row, gate) in pp.chunks_exact_mut(width).zip(&self.rows) {
+            for (column, &slot) in self.schema.slots.iter().enumerate() {
+                row[column] = checked_label(gate.ids[slot]);
             }
-            row[5] = gate.constant;
-            row[6 + gate.selector] = F::ONE;
+            if self.schema.constant {
+                row[self.schema.slots.len()] = gate.constant;
+            }
+            let selector = self
+                .schema
+                .selectors
+                .iter()
+                .position(|&selector| selector == gate.selector)
+                .expect("frozen gate selector");
+            row[self.schema.selector_start() + selector] = F::ONE;
         }
-        RowMajorMatrix::new(pp, GATE_PP)
+        RowMajorMatrix::new(pp, width)
     }
 }
 
@@ -1137,7 +1210,7 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
     fn width(&self) -> usize {
         match &self.table {
             Table::Witness(_) => 1,
-            Table::Gates(_) => 5,
+            Table::Gates(gates) => gates.schema.slots.len(),
             Table::Public(ids) => ids.len(),
             Table::Keccak { .. } => HASH_WIDTH,
             Table::Bridge(_) => BRIDGE_WIDTH,
@@ -1157,9 +1230,9 @@ impl<F: BinaryCoordinateField> BaseAir<F> for NativeBusCircuitAir<F> {
         }
     }
     fn preprocessed_width(&self) -> usize {
-        match self.table {
+        match &self.table {
             Table::Witness(_) => 3,
-            Table::Gates(_) => GATE_PP,
+            Table::Gates(gates) => gates.schema.pp_width(),
             Table::Public(_) => 0,
             Table::Keccak { .. } => 3,
             Table::Bridge(_) => BRIDGE_PP,
@@ -1225,37 +1298,70 @@ where
                     BusActivation::Boolean(pp[1].into()),
                 );
             }
-            Table::Gates(_) => {
-                for i in 0..5 {
-                    let active: AB::Expr = pp[6..GATE_PP]
+            Table::Gates(gates) => {
+                let schema = &gates.schema;
+                let selectors = &pp[schema.selector_start()..];
+                for (column, &slot) in schema.slots.iter().enumerate() {
+                    let active: AB::Expr = schema
+                        .selectors
                         .iter()
-                        .enumerate()
-                        .filter(|&(selector, _)| gate_slot_used(selector, i))
+                        .zip(selectors)
+                        .filter(|&(&selector, _)| gate_slot_used(selector, slot))
                         .map(|(_, &value)| value.into())
                         .sum();
-                    b.when(AB::Expr::ONE - active.clone()).assert_zero(row[i]);
+                    b.when(AB::Expr::ONE - active.clone())
+                        .assert_zero(row[column]);
                     b.push_bus_interaction(
                         BusName::new(self.witness_bus.as_ref()),
                         BusDirection::Push,
-                        [pp[i].into(), row[i].into()],
-                        BusActivation::Boolean(active.clone()),
+                        [pp[column].into(), row[column].into()],
+                        BusActivation::Boolean(active),
                     );
                 }
-                let [a, c, addend, accumulator, out] = core::array::from_fn::<_, 5, _>(|i| row[i]);
-                b.when(pp[6]).assert_eq(out, pp[5]);
-                b.when(pp[6 + SELECT])
-                    .assert_eq(out, a * (c - addend) + addend);
-                b.when(pp[8]).assert_eq(out, a * c);
-                b.when(pp[9]).assert_bool(a);
-                b.when(pp[9]).assert_eq(out, a);
-                b.when(pp[10]).assert_eq(out, a * c + addend);
-                b.when(pp[11]).assert_eq(out, accumulator * c + addend - a);
-                let constant_product = a * pp[5] + addend;
-                b.when(pp[6 + MUL_ADD_CONSTANT])
-                    .assert_eq(out, constant_product.clone());
-                b.when(pp[6 + BOOLEAN_MUL_ADD_CONSTANT]).assert_bool(a);
-                b.when(pp[6 + BOOLEAN_MUL_ADD_CONSTANT])
-                    .assert_eq(out, constant_product);
+                let logical: [AB::Expr; 5] = core::array::from_fn(|slot| {
+                    schema
+                        .slots
+                        .iter()
+                        .position(|&present| present == slot)
+                        .map_or(AB::Expr::ZERO, |column| row[column].into())
+                });
+                let [a, c, addend, accumulator, out] = logical;
+                let constant: AB::Expr = if schema.constant {
+                    pp[schema.slots.len()].into()
+                } else {
+                    AB::Expr::ZERO
+                };
+                for (&selector, &active) in schema.selectors.iter().zip(selectors) {
+                    match selector {
+                        0 => b.when(active).assert_eq(out.clone(), constant.clone()),
+                        SELECT => b.when(active).assert_eq(
+                            out.clone(),
+                            a.clone() * (c.clone() - addend.clone()) + addend.clone(),
+                        ),
+                        2 => b.when(active).assert_eq(out.clone(), a.clone() * c.clone()),
+                        3 => {
+                            b.when(active).assert_bool(a.clone());
+                            b.when(active).assert_eq(out.clone(), a.clone());
+                        }
+                        MUL_ADD => b
+                            .when(active)
+                            .assert_eq(out.clone(), a.clone() * c.clone() + addend.clone()),
+                        5 => b.when(active).assert_eq(
+                            out.clone(),
+                            accumulator.clone() * c.clone() + addend.clone() - a.clone(),
+                        ),
+                        MUL_ADD_CONSTANT | BOOLEAN_MUL_ADD_CONSTANT => {
+                            if selector == BOOLEAN_MUL_ADD_CONSTANT {
+                                b.when(active).assert_bool(a.clone());
+                            }
+                            b.when(active).assert_eq(
+                                out.clone(),
+                                a.clone() * constant.clone() + addend.clone(),
+                            );
+                        }
+                        _ => unreachable!("frozen gate selector"),
+                    }
+                }
             }
             Table::Public(_) => unreachable!("public tables have no preprocessing window"),
             Table::Keccak { weights, .. } => {
