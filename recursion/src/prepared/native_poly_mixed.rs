@@ -7,12 +7,9 @@ use alloc::vec::Vec;
 use p3_binary_field::{Poly64, Poly192};
 use p3_circuit::{Circuit, CircuitConstructionLimits};
 use p3_circuit_prover::direct::DirectCircuitLimits;
-use p3_circuit_prover::native_bus::{
-    KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir, NativeBusTrace,
-};
+use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir};
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::folder::VerifierAir;
-use p3_sumcheck::layout::Table;
 
 use super::native_binary::codeword_cells;
 use super::native_binary_mixed::NativeBinaryMixedRecursionOptions;
@@ -249,6 +246,13 @@ impl<S> PreparedNativeBinaryPolyMixedWhirLayer<S> {
         })
     }
 
+    /// Reuses this layer's graph and keys after checking a new composed security
+    /// target. Retained clones of the output authority must be dropped first.
+    pub fn with_security_bits(mut self, bits: usize) -> Result<Self, VerificationError> {
+        (self.prover, self.authority) = self.prover.with_security_bits(self.authority, bits)?;
+        Ok(self)
+    }
+
     pub const fn circuit(&self) -> &Circuit<F> {
         &self.circuit
     }
@@ -306,19 +310,11 @@ impl<S> PreparedNativeBinaryPolyMixedWhirLayer<S> {
         let mut runner = self.circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;
+        drop(private);
         let trace = runner.run_witness()?;
         let output_public = self.bus.public_values(&public)?;
-        let tables = self
-            .bus
-            .trace_tables(&trace)?
-            .into_iter()
-            .map(|trace| match trace {
-                NativeBusTrace::Dense(matrix) => Table::new(matrix.transpose()),
-                NativeBusTrace::PackedBits { words, log_height } => {
-                    Table::from_packed_bits(words, log_height)
-                }
-            })
-            .collect();
+        let tables = self.bus.column_major_tables(&trace)?;
+        drop(trace);
         self.prover.prove_tables(&output_public, tables)
     }
 

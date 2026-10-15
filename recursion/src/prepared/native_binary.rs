@@ -36,6 +36,17 @@ type OutputAir = NativeBusCircuitAir<F>;
 /// A complete native recursive proof; no prime-field output layer is involved.
 pub type NativeBinaryRecursiveProof = MultiStarkProof<BinaryNativeWhirConfig<F>>;
 
+/// Zerocheck implementation for native Tower128 output proofs.
+/// Backend selection preserves the protocol, security checks and proof format.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NativeBinaryProverBackend {
+    #[default]
+    Generic,
+    Repr,
+    ReprLate,
+    BooleanTensor,
+}
+
 /// Caller-selected native output protocol and transcript. Security and grinding
 /// settings are validated by the same checked authority used for ordinary proofs.
 /// These proofs do not hide the witness.
@@ -71,6 +82,7 @@ where
     prover: BinaryNativeWhirProver<F, OutputAir>,
     authority: BinaryNativeWhirAuthority<F, OutputAir>,
     initial_codeword_cells: usize,
+    prover_backend: NativeBinaryProverBackend,
 }
 
 impl<Base: RecursiveBinaryWhirTowerField> PreparedNativeBinaryWhirLayer<Base>
@@ -236,7 +248,21 @@ where
             prover,
             authority: output_authority,
             initial_codeword_cells,
+            prover_backend: NativeBinaryProverBackend::default(),
         })
+    }
+
+    /// Selects the proving implementation without rebuilding the verifier or keys.
+    pub const fn with_prover_backend(mut self, backend: NativeBinaryProverBackend) -> Self {
+        self.prover_backend = backend;
+        self
+    }
+
+    /// Reuses this layer's graph and keys after checking a new composed security
+    /// target. Retained clones of the output authority must be dropped first.
+    pub fn with_security_bits(mut self, bits: usize) -> Result<Self, VerificationError> {
+        (self.prover, self.authority) = self.prover.with_security_bits(self.authority, bits)?;
+        Ok(self)
     }
 
     pub const fn circuit(&self) -> &Circuit<F> {
@@ -304,9 +330,38 @@ where
         let mut runner = self.circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;
+        drop(private);
         let trace = runner.run_witness()?;
         let output_public = self.bus.public_values(&public)?;
-        self.prover.prove(&output_public, self.bus.traces(&trace)?)
+        let tables = self.bus.column_major_tables(&trace)?;
+        drop(trace);
+        match self.prover_backend {
+            NativeBinaryProverBackend::Generic => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::GenericBackend>(
+                    &output_public,
+                    tables,
+                ),
+            NativeBinaryProverBackend::Repr => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                >>(&output_public, tables),
+            NativeBinaryProverBackend::ReprLate => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                    true,
+                >>(&output_public, tables),
+            NativeBinaryProverBackend::BooleanTensor => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::BooleanTensorBackend>(
+                &output_public,
+                tables,
+            ),
+        }
     }
 
     /// Verifies against the caller's original child statement. Expected values
@@ -448,7 +503,7 @@ pub(super) fn native_verifier_circuit<C: NativeWhirChild>(
     child.verify(&mut builder, challenger, &public, &proof)?;
     builder.check_construction_limits()?;
     let circuit = builder.build()?;
-    let bus = NativeBusCircuit::with_options(
+    let bus = NativeBusCircuit::with_compact_options(
         &circuit,
         "recursion",
         minimum_log_height,

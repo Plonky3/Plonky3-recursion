@@ -29,7 +29,8 @@ pub use binary::{
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
 pub use native_binary::{
-    NativeBinaryRecursionOptions, NativeBinaryRecursiveProof, PreparedNativeBinaryWhirLayer,
+    NativeBinaryProverBackend, NativeBinaryRecursionOptions, NativeBinaryRecursiveProof,
+    PreparedNativeBinaryWhirLayer,
 };
 pub use native_binary_folding::{
     NativeBinaryFoldingRecursionOptions, NativeBinaryFoldingRecursiveProof,

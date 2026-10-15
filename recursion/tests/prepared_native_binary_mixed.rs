@@ -84,6 +84,32 @@ struct Fixture {
     layer: PreparedNativeBinaryMixedWhirLayer,
 }
 
+#[test]
+fn security_retarget_reuses_geometry_and_updates_authority_identity() {
+    let fixture = prepare(MerkleArity::Two, ByteHash::Blake3);
+    let witnesses = fixture.layer.circuit().witness_count;
+    let cells = fixture.layer.initial_codeword_cells();
+    let identity = fixture
+        .layer
+        .authority()
+        .canonical_verifier_bytes()
+        .to_vec();
+    let layer = fixture.layer.with_security_bits(5).unwrap();
+    assert_eq!(layer.circuit().witness_count, witnesses);
+    assert_eq!(layer.initial_codeword_cells(), cells);
+    assert_ne!(layer.authority().canonical_verifier_bytes(), identity);
+    assert!(layer.with_security_bits(128).is_err());
+}
+
+#[test]
+fn security_retarget_preserves_retained_authority_snapshots() {
+    let fixture = prepare(MerkleArity::Two, ByteHash::Blake3);
+    let retained = fixture.layer.authority().clone();
+    let identity = retained.canonical_verifier_bytes().to_vec();
+    assert!(fixture.layer.with_security_bits(5).is_err());
+    assert_eq!(retained.canonical_verifier_bytes(), identity);
+}
+
 /// A layer over a dense child; the child and the layer's outputs commit with `arity` trees of
 /// `hash`, and the child's transcript hashes with `hash`.
 fn prepare(arity: MerkleArity, hash: ByteHash) -> Fixture {

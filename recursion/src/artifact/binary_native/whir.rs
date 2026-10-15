@@ -176,6 +176,18 @@ where
     <BinaryField128 as ExtensionField<F>>::ExtensionPacking:
         From<BinaryField128> + From<F::Packing>,
 {
+    pub(crate) fn with_security_bits(
+        mut self,
+        authority: BinaryNativeWhirAuthority<F, A, L>,
+        bits: usize,
+    ) -> Result<(Self, BinaryNativeWhirAuthority<F, A, L>), VerificationError> {
+        self.state = State::with_security_bits(self.state, authority.state, bits)?;
+        let authority = BinaryNativeWhirAuthority {
+            state: self.state.clone(),
+        };
+        Ok((self, authority))
+    }
+
     /// Ordinary row-major AIR traces. Trusted shapes are checked before
     /// commitment or any native transcript mutation.
     pub fn prove(

@@ -81,7 +81,7 @@ use p3_recursion::artifact::{
 use p3_recursion::pcs::binary::{BinaryCodewordGrouping, MerkleArity};
 use p3_recursion::prepared::{
     NativeBinaryFoldingRecursionOptions, NativeBinaryMixedRecursionOptions,
-    NativeBinaryMixedRecursiveProof, NativeBinaryRecursionOptions,
+    NativeBinaryMixedRecursiveProof, NativeBinaryProverBackend, NativeBinaryRecursionOptions,
     PreparedNativeBinaryGroupedLayer, PreparedNativeBinaryLayer,
     PreparedNativeBinaryMixedWhirLayer, PreparedNativeBinaryWhirLayer,
 };
@@ -140,8 +140,28 @@ enum Leaves {
     /// One Merkle leaf per codeword symbol.
     Symbol,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum ProverBackend {
+    Generic,
+    Repr,
+    ReprLate,
+    BooleanTensor,
+}
+impl From<ProverBackend> for NativeBinaryProverBackend {
+    fn from(value: ProverBackend) -> Self {
+        match value {
+            ProverBackend::Generic => Self::Generic,
+            ProverBackend::Repr => Self::Repr,
+            ProverBackend::ReprLate => Self::ReprLate,
+            ProverBackend::BooleanTensor => Self::BooleanTensor,
+        }
+    }
+}
 #[derive(Parser)]
 struct Args {
+    /// Zerocheck backend for recursive output proofs.
+    #[arg(long, value_enum, default_value_t = ProverBackend::Generic)]
+    prover_backend: ProverBackend,
     /// Polynomial commitment for the source proof and every recursion layer.
     #[arg(long, value_enum, default_value_t = Pcs::Whir)]
     pcs: Pcs,
@@ -377,6 +397,7 @@ fn with_security<L>(
     args: &Args,
     build: impl Fn(Security) -> Result<L, VerificationError>,
     report: impl Fn(&L) -> MultiStarkSecurityReport,
+    require: impl Fn(L, usize) -> Result<L, VerificationError>,
 ) -> Result<L, Box<dyn Error>> {
     let Some(target) = args.security_target else {
         return build(Security {
@@ -388,8 +409,9 @@ fn with_security<L>(
     // Each WHIR opening's term union-composes rounds that each target the level, so in
     // practice it does not exceed the level and no level below the target meets it.
     let mut level = target.max(args.pow_bits + 1);
-    loop {
-        let report = report(&build(Security { level, bits: 1 }).map_err(at_layer(depth))?);
+    let layer = loop {
+        let layer = build(Security { level, bits: 1 }).map_err(at_layer(depth))?;
+        let report = report(&layer);
         let composed = report.security_bits().ok_or_else(|| {
             format!(
                 "layer {depth} security is unassessed: {:?}",
@@ -397,7 +419,7 @@ fn with_security<L>(
             )
         })?;
         if composed >= target as f64 {
-            break;
+            break layer;
         }
         let ceiling = composed_without_whir(&report);
         if ceiling < target as f64 {
@@ -408,13 +430,9 @@ fn with_security<L>(
             .into());
         }
         level += 1;
-    }
+    };
     println!("Layer {depth} PCS security level: {level}");
-    build(Security {
-        level,
-        bits: target,
-    })
-    .map_err(at_layer(depth))
+    require(layer, target).map_err(at_layer(depth))
 }
 /// Composed security of every term of `report` but the WHIR openings', the only terms the PCS
 /// security level raises.
@@ -582,7 +600,9 @@ fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
             )
         },
         |layer| layer.authority().security_report().clone(),
-    )?;
+        |layer, bits| layer.with_security_bits(bits),
+    )?
+    .with_prover_backend(args.prover_backend.into());
     println!("Layer 1 prepared in {:.2?}", start.elapsed());
     for depth in 1..=args.layers {
         print_security(depth, layer.authority().security_report());
@@ -628,7 +648,9 @@ fn run_whir(args: &Args) -> Result<(), Box<dyn Error>> {
                     )
                 },
                 |layer| layer.authority().security_report().clone(),
-            )?;
+                |layer, bits| layer.with_security_bits(bits),
+            )?
+            .with_prover_backend(args.prover_backend.into());
             println!("Layer {} prepared in {:.2?}", depth + 1, start.elapsed());
         }
     }
@@ -695,7 +717,9 @@ fn run_mixed(args: &Args) -> Result<(), Box<dyn Error>> {
             )
         },
         |layer| layer.authority().security_report().clone(),
-    )?;
+        |layer, bits| layer.with_security_bits(bits),
+    )?
+    .with_prover_backend(args.prover_backend.into());
     println!("Layer 1 prepared in {:.2?}", start.elapsed());
     let (mut expected, mut checked) =
         prove_mixed(1, &first, &expected, |layer| layer.prove_verified(&source))?;
@@ -716,7 +740,9 @@ fn run_mixed(args: &Args) -> Result<(), Box<dyn Error>> {
                 )
             },
             |layer| layer.authority().security_report().clone(),
-        )?;
+            |layer, bits| layer.with_security_bits(bits),
+        )?
+        .with_prover_backend(args.prover_backend.into());
         println!("Layer {depth} prepared in {:.2?}", start.elapsed());
         (expected, checked) = prove_mixed(depth, &layer, &expected, |layer| {
             layer.prove_verified(&checked)
@@ -775,7 +801,8 @@ fn run_folding(args: &Args) -> Result<(), Box<dyn Error>> {
         &limits,
         &construction_limits,
     )
-    .map_err(at_layer(1))?;
+    .map_err(at_layer(1))?
+    .with_prover_backend(args.prover_backend.into());
     drop(prover);
     for depth in 1..=args.layers {
         let start = Instant::now();
@@ -813,7 +840,8 @@ fn run_folding(args: &Args) -> Result<(), Box<dyn Error>> {
                 &limits,
                 &construction_limits,
             )
-            .map_err(at_layer(depth + 1))?;
+            .map_err(at_layer(depth + 1))?
+            .with_prover_backend(args.prover_backend.into());
         }
     }
     Ok(())
@@ -857,7 +885,8 @@ fn run_grouped_folding(args: &Args) -> Result<(), Box<dyn Error>> {
             &limits,
             &construction_limits,
         )
-        .map_err(at_layer(1))?;
+        .map_err(at_layer(1))?
+        .with_prover_backend(args.prover_backend.into());
     drop(prover);
     for depth in 1..=args.layers {
         let start = Instant::now();
@@ -896,7 +925,8 @@ fn run_grouped_folding(args: &Args) -> Result<(), Box<dyn Error>> {
                     &limits,
                     &construction_limits,
                 )
-                .map_err(at_layer(depth + 1))?;
+                .map_err(at_layer(depth + 1))?
+                .with_prover_backend(args.prover_backend.into());
         }
     }
     Ok(())

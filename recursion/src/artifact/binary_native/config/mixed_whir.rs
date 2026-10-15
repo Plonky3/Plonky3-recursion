@@ -670,7 +670,7 @@ where
                 "the supplied values do not match the opening batches",
             ));
         }
-        let [_, packed_known] = self.split_entries(protocol, known);
+        let [dense_known, packed_known] = self.split_entries(protocol, known);
         let MixedWhirData { dense, packed, .. } = prover_data;
         let packed = match (&self.packed, packed) {
             (Some((pcs, _)), Some(data)) => Some((pcs, data)),
@@ -683,7 +683,13 @@ where
         };
         let dense = self
             .dense
-            .open_at(dense, &dense_protocol, &dense_points, challenger)
+            .open_at_known(
+                dense,
+                &dense_protocol,
+                &dense_points,
+                &dense_known,
+                challenger,
+            )
             .map_err(MixedWhirError::Dense)?;
         let packed = packed
             .map(|(pcs, data)| {

@@ -12,17 +12,15 @@ use p3_binary_pcs::{ChallengeField, FoldAlphabet};
 use p3_circuit::ops::{ByteHash, NativeTower128Target};
 use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
 use p3_circuit_prover::direct::DirectCircuitLimits;
-use p3_circuit_prover::native_bus::{
-    KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir, NativeBusTrace,
-};
+use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir};
 use p3_field::{ExtensionField, PackedValue};
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::folder::VerifierAir;
-use p3_sumcheck::layout::Table;
 use p3_whir::{ProtocolParameters, WhirDomain};
 
 use super::native_binary::{
-    NativeBinaryRecursionOptions, NativeWhirChild, codeword_cells, native_verifier_circuit,
+    NativeBinaryProverBackend, NativeBinaryRecursionOptions, NativeWhirChild, codeword_cells,
+    native_verifier_circuit,
 };
 use crate::BinaryTower128Challenger;
 use crate::artifact::{
@@ -70,6 +68,7 @@ where
     prover: BinaryNativeMixedWhirProver<OutputAir>,
     authority: BinaryNativeMixedWhirAuthority<OutputAir>,
     initial_codeword_cells: usize,
+    prover_backend: NativeBinaryProverBackend,
 }
 
 impl<Base: RecursiveBinaryWhirTowerField> PreparedNativeBinaryMixedWhirLayer<Base>
@@ -320,7 +319,21 @@ where
             prover,
             authority: output_authority,
             initial_codeword_cells,
+            prover_backend: NativeBinaryProverBackend::default(),
         })
+    }
+
+    /// Selects the proving implementation without rebuilding the verifier or keys.
+    pub const fn with_prover_backend(mut self, backend: NativeBinaryProverBackend) -> Self {
+        self.prover_backend = backend;
+        self
+    }
+
+    /// Reuses this layer's graph and keys after checking a new composed security
+    /// target. Retained clones of the output authority must be dropped first.
+    pub fn with_security_bits(mut self, bits: usize) -> Result<Self, VerificationError> {
+        (self.prover, self.authority) = self.prover.with_security_bits(self.authority, bits)?;
+        Ok(self)
     }
 
     pub const fn circuit(&self) -> &Circuit<F> {
@@ -384,20 +397,38 @@ where
         let mut runner = self.circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;
+        drop(private);
         let trace = runner.run_witness()?;
         let output_public = self.bus.public_values(&public)?;
-        let tables = self
-            .bus
-            .trace_tables(&trace)?
-            .into_iter()
-            .map(|trace| match trace {
-                NativeBusTrace::Dense(matrix) => Table::new(matrix.transpose()),
-                NativeBusTrace::PackedBits { words, log_height } => {
-                    Table::from_packed_bits(words, log_height)
-                }
-            })
-            .collect();
-        self.prover.prove_tables(&output_public, tables)
+        let tables = self.bus.column_major_tables(&trace)?;
+        drop(trace);
+        match self.prover_backend {
+            NativeBinaryProverBackend::Generic => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::GenericBackend>(
+                    &output_public,
+                    tables,
+                ),
+            NativeBinaryProverBackend::Repr => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                >>(&output_public, tables),
+            NativeBinaryProverBackend::ReprLate => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                    true,
+                >>(&output_public, tables),
+            NativeBinaryProverBackend::BooleanTensor => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::BooleanTensorBackend>(
+                &output_public,
+                tables,
+            ),
+        }
     }
 
     /// Verifies against the caller's original child statement. Expected values are never

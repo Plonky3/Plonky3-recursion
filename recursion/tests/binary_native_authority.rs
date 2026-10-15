@@ -154,6 +154,47 @@ fn owned_native_authority_verifies_all_caps_and_independent_statements() {
 }
 
 #[test]
+fn native_setup_materializes_preprocessing_once() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountedAir(Arc<AtomicUsize>);
+    impl BaseAir<F> for CountedAir {
+        fn width(&self) -> usize {
+            1
+        }
+        fn preprocessed_width(&self) -> usize {
+            1
+        }
+        fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Some(RowMajorMatrix::new(vec![F::ONE; 4], 1))
+        }
+    }
+    impl<AB: AirBuilder<F = F>> Air<AB> for CountedAir {
+        fn eval(&self, b: &mut AB) {
+            b.assert_eq(
+                b.main().current_slice()[0],
+                b.preprocessed().current_slice()[0],
+            );
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (prover, authority) = BinaryNativeAuthority::<F, F, _>::setup(
+        vec![CountedAir(calls.clone())],
+        vec![2],
+        spec(ByteHash::Blake3, true),
+        &VerifierLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    let proof = prover
+        .prove(&[vec![]], vec![RowMajorMatrix::new(vec![F::ONE; 4], 1)])
+        .unwrap();
+    authority.verify_native(&proof, &[vec![]]).unwrap();
+}
+
+#[test]
 fn native_authority_identity_pins_air_prefix_hash_and_preprocessed_values() {
     let make = |fixed, preprocessed, spec| {
         BinaryNativeAuthority::<F, F, _>::setup(

@@ -14,11 +14,10 @@ use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_circuit_prover::native_bus::{NativeBusCircuit, NativeBusCircuitAir};
 use p3_field::{ExtensionField, PackedValue};
-use p3_matrix::dense::RowMajorMatrix;
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::folder::VerifierAir;
 
-use super::native_binary::codeword_cells;
+use super::native_binary::{NativeBinaryProverBackend, codeword_cells};
 use crate::artifact::{
     ArtifactLimits, BinaryNativeAuthority, BinaryNativeConfig, BinaryNativeGroupedAuthority,
     BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,
@@ -175,7 +174,7 @@ where
 }
 
 /// Output public values in output AIR order, and the output traces.
-type OutputWitness = (Vec<Vec<F>>, Vec<RowMajorMatrix<F>>);
+type OutputWitness = (Vec<Vec<F>>, Vec<p3_sumcheck::layout::Table<F>>);
 
 /// Child identity, native verifier graph and product-bus relation shared by
 /// the ordinary and grouped folding layers.
@@ -186,6 +185,7 @@ struct FoldingCore<S> {
     circuit: Circuit<F>,
     bus: NativeBusCircuit<F>,
     initial_codeword_cells: usize,
+    prover_backend: NativeBinaryProverBackend,
 }
 
 impl<S> FoldingCore<S> {
@@ -240,7 +240,13 @@ impl<S> FoldingCore<S> {
         child.verify(&mut builder, challenger, &public, &proof)?;
         builder.check_construction_limits()?;
         let circuit = builder.build()?;
-        let bus = NativeBusCircuit::with_limits(&circuit, "recursion", *circuit_limits)?;
+        let bus = NativeBusCircuit::with_compact_options(
+            &circuit,
+            "recursion",
+            1,
+            *circuit_limits,
+            p3_circuit_prover::native_bus::KeccakCommitment::Dense,
+        )?;
         let required_draws = bus.log_heights().iter().copied().max().unwrap_or(0);
         if options.max_tau_draws < required_draws {
             return Err(VerificationError::InvalidProofShape(alloc::format!(
@@ -314,6 +320,7 @@ impl<S> FoldingCore<S> {
             circuit,
             bus,
             initial_codeword_cells,
+            prover_backend: NativeBinaryProverBackend::default(),
         };
         Ok((core, spec, options.artifact_limits))
     }
@@ -364,9 +371,12 @@ impl<S> FoldingCore<S> {
         let mut runner = self.circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;
+        drop(private);
         let trace = runner.run_witness()?;
         let output_public = self.bus.public_values(&public)?;
-        Ok((output_public, self.bus.traces(&trace)?))
+        let tables = self.bus.column_major_tables(&trace)?;
+        drop(trace);
+        Ok((output_public, tables))
     }
 }
 
@@ -460,6 +470,12 @@ where
         })
     }
 
+    /// Selects the proving implementation without rebuilding the verifier or keys.
+    pub const fn with_prover_backend(mut self, backend: NativeBinaryProverBackend) -> Self {
+        self.core.prover_backend = backend;
+        self
+    }
+
     pub const fn circuit(&self) -> &Circuit<F> {
         &self.core.circuit
     }
@@ -500,7 +516,29 @@ where
                 .witness(&checked.identity, checked.public_values(), |shape| {
                     checked.native_input().private_native_values(shape)
                 })?;
-        self.prover.prove(&public, traces)
+        match self.core.prover_backend {
+            NativeBinaryProverBackend::Generic => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::GenericBackend>(&public, traces),
+            NativeBinaryProverBackend::Repr => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                >>(&public, traces),
+            NativeBinaryProverBackend::ReprLate => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                    true,
+                >>(&public, traces),
+            NativeBinaryProverBackend::BooleanTensor => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::BooleanTensorBackend>(
+                &public, traces,
+            ),
+        }
     }
 
     /// Verifies against the caller's original child statement. Expected values
@@ -624,6 +662,12 @@ where
         })
     }
 
+    /// Selects the proving implementation without rebuilding the verifier or keys.
+    pub const fn with_prover_backend(mut self, backend: NativeBinaryProverBackend) -> Self {
+        self.core.prover_backend = backend;
+        self
+    }
+
     pub const fn circuit(&self) -> &Circuit<F> {
         &self.core.circuit
     }
@@ -664,7 +708,29 @@ where
                 .witness(&checked.identity, checked.public_values(), |shape| {
                     checked.native_input().private_native_values(shape)
                 })?;
-        self.prover.prove(&public, traces)
+        match self.core.prover_backend {
+            NativeBinaryProverBackend::Generic => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::GenericBackend>(&public, traces),
+            NativeBinaryProverBackend::Repr => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                >>(&public, traces),
+            NativeBinaryProverBackend::ReprLate => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                    true,
+                >>(&public, traces),
+            NativeBinaryProverBackend::BooleanTensor => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::BooleanTensorBackend>(
+                &public, traces,
+            ),
+        }
     }
 
     /// Verifies against the caller's original child statement. Expected values

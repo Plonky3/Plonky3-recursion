@@ -99,6 +99,7 @@ where
     total_usage.add_metadata_entries(&limits.verifier, spec.initial_bytes.len())?;
     // Native setup panics on a missing preprocessing table. Validate trusted
     // tables after the recursive plan has checked the heights and widths.
+    let mut preprocessed_tables = Vec::new();
     for (air, &height) in airs.iter().zip(&heights) {
         if air.preprocessed_width() != 0 {
             let trace = air
@@ -107,14 +108,20 @@ where
             if trace.width() != air.preprocessed_width() || trace.height() != 1usize << height {
                 return Err(invalid("binary native preprocessed trace shape mismatch"));
             }
+            preprocessed_tables.push(Table::new(trace.transpose()));
         }
     }
     let trees = K::trees(&spec.main);
     let preprocessed_trees = spec.preprocessed.as_ref().map(K::trees);
     let config = K::build_config(&spec, &trees, preprocessed_trees.as_ref())?;
     let mut setup_ch = BinaryNativeChallenger::for_setup(roots, spec.transcript_hash);
-    let (proving, verifying) = p3_multi_stark::setup(&config, &refs, &mut setup_ch)
-        .map_err(|_| invalid("binary native setup rejected"))?;
+    let (proving, verifying) = p3_multi_stark::setup_with_preprocessed_tables(
+        &config,
+        &refs,
+        preprocessed_tables,
+        &mut setup_ch,
+    )
+    .map_err(|_| invalid("binary native setup rejected"))?;
     if let Some(cap) = setup_ch.finish_setup(roots)? {
         K::bind_preprocessing(&mut binary, cap)?;
     }
@@ -192,6 +199,43 @@ where
     E: ExtensionField<F> + PackedValue<Value = E>,
     K: NativeFamily<F, E>,
 {
+    /// Changes only the enforced security target. Consuming the matched pair
+    /// prevents a retained authority snapshot from being mutated.
+    pub(super) fn with_security_bits(
+        state: Arc<Self>,
+        authority: Arc<Self>,
+        bits: usize,
+    ) -> Result<Arc<Self>, VerificationError> {
+        if !Arc::ptr_eq(&state, &authority) {
+            return Err(invalid(
+                "binary native security update requires matched keys",
+            ));
+        }
+        if bits == 0 || bits > 128 {
+            return Err(invalid(
+                "binary native security target must be within 1..=128",
+            ));
+        }
+        state.security.require_security(bits).map_err(|error| {
+            VerificationError::InvalidProofShape(alloc::format!(
+                "binary native statement security target is not met: {error}",
+            ))
+        })?;
+        drop(authority);
+        if state.spec.security_bits == bits {
+            return Ok(state);
+        }
+        let mut state = Arc::try_unwrap(state).map_err(|_| {
+            invalid("binary native security update has retained authority snapshots")
+        })?;
+        state.spec.security_bits = bits;
+        state.identity = Arc::from(
+            identity::<F, E, K>(&state.binary, &state.spec, &state.limits)
+                .map_err(|error| identity_error(&error))?,
+        );
+        Ok(Arc::new(state))
+    }
+
     fn challenger(&self) -> BinaryNativeChallenger<F> {
         BinaryNativeChallenger::fresh(self.spec.initial_bytes.clone(), self.spec.transcript_hash)
     }

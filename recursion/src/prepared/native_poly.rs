@@ -197,6 +197,13 @@ impl PreparedNativeBinaryPolyWhirLayer {
         })
     }
 
+    /// Reuses this layer's graph and keys after checking a new composed security
+    /// target. Retained clones of the output authority must be dropped first.
+    pub fn with_security_bits(mut self, bits: usize) -> Result<Self, VerificationError> {
+        (self.prover, self.authority) = self.prover.with_security_bits(self.authority, bits)?;
+        Ok(self)
+    }
+
     pub const fn circuit(&self) -> &Circuit<F> {
         &self.circuit
     }
@@ -258,9 +265,13 @@ impl PreparedNativeBinaryPolyWhirLayer {
         let mut runner = self.circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;
+        drop(private);
         let trace = runner.run_witness()?;
         let output_public = self.bus.public_values(&public)?;
-        self.prover.prove(&output_public, self.bus.traces(&trace)?)
+        let tables = self.bus.column_major_tables(&trace)?;
+        drop(trace);
+        self.prover
+            .prove_tables_with_backend::<p3_multi_stark::GenericBackend>(&output_public, tables)
     }
 
     /// Verifies against the caller's original child statement. Expected values
@@ -434,7 +445,7 @@ pub(super) fn native_poly_verifier_circuit<C: NativePolyWhirChild>(
     child.verify(&mut builder, challenger, &public, &proof)?;
     builder.check_construction_limits()?;
     let circuit = builder.build()?;
-    let bus = NativeBusCircuit::with_options(
+    let bus = NativeBusCircuit::with_compact_options(
         &circuit,
         "recursion",
         minimum_log_height,

@@ -149,6 +149,18 @@ where
         + Air<InteractionMultilinearFolder<'a, Poly64, Poly64Packing, Poly192Packing>>
         + Air<InteractionMultilinearFolder<'a, Poly64, Poly192PackedExt, Poly192PackedExt>>,
 {
+    pub(crate) fn with_security_bits(
+        mut self,
+        authority: BinaryNativePolyWhirAuthority<A, L>,
+        bits: usize,
+    ) -> Result<(Self, BinaryNativePolyWhirAuthority<A, L>), VerificationError> {
+        self.state = State::with_security_bits(self.state, authority.state, bits)?;
+        let authority = BinaryNativePolyWhirAuthority {
+            state: self.state.clone(),
+        };
+        Ok((self, authority))
+    }
+
     /// Ordinary row-major AIR traces. Trusted shapes are checked before
     /// commitment or any native transcript mutation.
     pub fn prove(
@@ -157,5 +169,18 @@ where
         traces: Vec<RowMajorMatrix<Poly64>>,
     ) -> Result<MultiStarkProof<BinaryNativePolyWhirConfig<L>>, VerificationError> {
         self.state.prove(&self.key, public, traces)
+    }
+
+    /// Proves column-major tables with the selected backend and ordinary security checks.
+    pub fn prove_tables_with_backend<B>(
+        &self,
+        public: &[Vec<Poly64>],
+        tables: Vec<p3_sumcheck::layout::Table<Poly64>>,
+    ) -> Result<MultiStarkProof<BinaryNativePolyWhirConfig<L>>, VerificationError>
+    where
+        B: p3_multi_stark::ZerocheckBackend<Poly64, Poly192, A>,
+    {
+        self.state
+            .prove_tables_with_backend::<B>(&self.key, public, tables)
     }
 }

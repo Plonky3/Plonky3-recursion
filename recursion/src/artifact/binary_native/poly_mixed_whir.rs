@@ -130,6 +130,18 @@ where
         + Air<InteractionMultilinearFolder<'a, Poly64, Poly64Packing, Poly192Packing>>
         + Air<InteractionMultilinearFolder<'a, Poly64, Poly192PackedExt, Poly192PackedExt>>,
 {
+    pub(crate) fn with_security_bits(
+        mut self,
+        authority: BinaryNativePolyMixedWhirAuthority<A>,
+        bits: usize,
+    ) -> Result<(Self, BinaryNativePolyMixedWhirAuthority<A>), VerificationError> {
+        self.state = State::with_security_bits(self.state, authority.state, bits)?;
+        let authority = BinaryNativePolyMixedWhirAuthority {
+            state: self.state.clone(),
+        };
+        Ok((self, authority))
+    }
+
     /// Main tables in AIR order: field cells, or packed bits for the bit-committed table.
     /// Trusted shapes are checked before commitment or any native transcript mutation, and the
     /// commitment refuses a non-bit cell of the bit-committed table before it binds anything.
