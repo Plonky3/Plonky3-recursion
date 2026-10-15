@@ -5,7 +5,9 @@ use alloc::vec::Vec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 
-use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_binary_field::BinaryField128;
+#[cfg(test)]
+use p3_binary_field::TowerLevel;
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::BinaryPcsShape;
 use p3_circuit::ops::binary_encoding::{
@@ -19,18 +21,19 @@ use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout::{
     Layout, SuffixProver, Verifier, commitment_domain_separator, plan_stacked_layout,
 };
-use p3_sumcheck::strategy::Basis;
+use p3_sumcheck::strategy::{Basis, VariableOrder};
 use p3_sumcheck::transcript::SumcheckShape;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol};
 
-use super::gadgets::{next_eval_using, reduce_sumcheck_using};
+use super::gadgets::reduce_sumcheck_using;
+use super::whir_kernel::{Batched, batched_weight_using, horner_using};
 use super::{
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
     verify_binary_pcs_query_indices_with_host,
 };
 use crate::transcript::{SeedTap, domain_separator_seed};
 use crate::verifier::binary_field_policy::{
-    BinaryFoldPolicy, NativeTower128Relation, TowerRelation,
+    BinaryFoldPolicy, BinaryWhirPolicy, NativeTower128Relation, TowerRelation,
 };
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -497,7 +500,7 @@ where
     where
         CF: Field + Eq + Hash,
         H: BinaryPcsMmcsHost<CF>,
-        P: BinaryFoldPolicy<CF, Base = F, Challenge = E>,
+        P: BinaryFoldPolicy<CF, Base = F, Challenge = E> + BinaryWhirPolicy<CF>,
     {
         self.check_targets_with(cap, points, proof, leaves)?;
         let seed = self.opening_seeds.first().cloned().unwrap_or_else(|| {
@@ -528,7 +531,7 @@ where
     where
         CF: Field + Eq + Hash,
         H: BinaryPcsMmcsHost<CF>,
-        P: BinaryFoldPolicy<CF, Base = F, Challenge = E>,
+        P: BinaryFoldPolicy<CF, Base = F, Challenge = E> + BinaryWhirPolicy<CF>,
     {
         self.check_targets_with(cap, points, proof, leaves)?;
         H::check_hash(self.hash)?;
@@ -576,21 +579,39 @@ where
         let alpha = P::sample::<H>(circuit, &mut challenger)?;
         let shapes = self.protocol.table_shapes();
         let (_, placements) = plan_stacked_layout(&shapes);
-        let one = P::constant(circuit, 1)?;
-        let mut power = one.clone();
-        let mut claim = P::constant(circuit, 0)?;
+        let mut values = Vec::new();
+        let mut batched = Vec::new();
         // Native batching order is placements, then per-table claims, current, next.
         for placement in &placements {
-            for (i, (table, _)) in self.protocol.iter_openings().enumerate() {
+            for (i, (table, batch)) in self.protocol.iter_openings().enumerate() {
                 if table != placement.idx() {
                     continue;
                 }
-                for eval in proof.evals[i].current().iter().chain(proof.evals[i].next()) {
-                    claim = P::mul_add(circuit, &power, eval, &claim);
-                    power = P::mul(circuit, &power, &alpha);
+                values.extend(
+                    proof.evals[i]
+                        .current()
+                        .iter()
+                        .chain(proof.evals[i].next())
+                        .cloned(),
+                );
+                for (columns, next) in [(batch.current(), false), (batch.next(), true)] {
+                    if columns.is_empty() {
+                        continue;
+                    }
+                    let selector_variables = placement.selectors()[columns[0]].num_variables();
+                    batched.push(Batched::Columns {
+                        point: points[i].clone(),
+                        next,
+                        selector_variables,
+                        slots: columns
+                            .iter()
+                            .map(|&column| placement.selectors()[column].index())
+                            .collect(),
+                    });
                 }
             }
         }
+        let mut claim = horner_using::<P, CF>(circuit, &values, &alpha)?;
         let round_seed = domain_separator_seed(
             &SumcheckShape::new(1, 0, Basis::Evaluation).domain_separator::<F, E>(),
         );
@@ -614,42 +635,8 @@ where
             }
             circuit.check_construction_limits()?;
         }
-        let fold_point: Vec<_> = betas.iter().rev().cloned().collect();
-        let mut weight = P::constant(circuit, 0)?;
-        power = one;
-        for placement in &placements {
-            for (i, (table, batch)) in self.protocol.iter_openings().enumerate() {
-                if table != placement.idx() {
-                    continue;
-                }
-                for (columns, successor) in [(batch.current(), false), (batch.next(), true)] {
-                    for &column in columns {
-                        let selector = placement.selectors()[column];
-                        let selector_point: Vec<_> = selector
-                            .point::<BinaryField128>()
-                            .as_slice()
-                            .iter()
-                            .map(|x| P::constant(circuit, x.to_repr()))
-                            .collect::<Result<_, _>>()?;
-                        let selector_vars = selector.num_variables();
-                        let local_weight = if successor {
-                            next_eval_using::<P, CF>(
-                                circuit,
-                                &points[i],
-                                &fold_point[selector_vars..],
-                            )?
-                        } else {
-                            P::eq_eval(circuit, &points[i], &fold_point[selector_vars..])?
-                        };
-                        let selector_weight =
-                            P::eq_eval(circuit, &selector_point, &fold_point[..selector_vars])?;
-                        let selected_weight = P::mul(circuit, &selector_weight, &local_weight);
-                        weight = P::mul_add(circuit, &power, &selected_weight, &weight);
-                        power = P::mul(circuit, &power, &alpha);
-                    }
-                }
-            }
-        }
+        let weight =
+            batched_weight_using::<P, CF>(circuit, VariableOrder::Suffix, batched, &betas, &alpha)?;
         let final_value = &proof.final_codeword[0];
         for value in &proof.final_codeword[1..] {
             P::assert_equal(circuit, value, final_value);

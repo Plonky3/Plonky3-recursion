@@ -89,6 +89,21 @@ impl BinaryWhirQueryPlan {
         self.num_queries
     }
 
+    /// Consecutive native query ranges, each covering every high-bit stratum once.
+    pub(super) fn groups(&self) -> impl Iterator<Item = (core::ops::Range<usize>, usize)> + '_ {
+        let mut start = 0;
+        (self.query_draws == 0)
+            .then_some(self.index_bits)
+            .into_iter()
+            .chain(self.depths.iter().copied())
+            .map(move |depth| {
+                let end = start + (1usize << depth);
+                let range = start..end;
+                start = end;
+                (range, depth)
+            })
+    }
+
     /// Returns little-endian index bits in native query order. The fixed draw
     /// schedule leaves the ordinary challenger at its exact continuation.
     /// On error the challenger is unchanged; the builder may retain emitted

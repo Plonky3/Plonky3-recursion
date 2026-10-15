@@ -25,7 +25,7 @@ enum Weight<T> {
 }
 /// Terms of the initial claim that take consecutive powers of the batching
 /// challenge `alpha`.
-enum Batched<T> {
+pub(super) enum Batched<T> {
     /// Columns of one opening and kind. A column at selector slot `c` has
     /// weight `eq(c, r_sel) * w(point, r_x)`, with `w` the equality or the
     /// successor weight, so the group's weight is `w(point, r_x)` times the
@@ -279,70 +279,173 @@ where
     let expected = P::mul(b, &weight, &final_value);
     P::assert_equal(b, &claim, &expected);
     for check in checks {
-        for ((row, path), index) in check.rows.iter().zip(check.paths).zip(&check.indices) {
-            // Every value of a row shares one width, so either all of them
-            // split into words or none does.
-            let words = row
-                .iter()
-                .map(|value| P::oracle_words(b, value, check.mode))
-                .collect::<Result<Option<Vec<_>>, _>>()?;
-            let mut bytes = Vec::new();
-            if words.is_none() {
-                for value in row {
-                    bytes.extend(P::oracle_bytes::<H>(b, value, check.mode)?);
-                    b.check_construction_limits()?;
-                }
-            }
-            for sibling in path {
-                H::constrain_sibling(b, sibling)?;
-            }
-            let heights = [1usize << check.site.log_height];
-            let (hash, cap) = (p.hash, &check.cap);
-            match (words, p.arity) {
-                (Some(words), MerkleArity::Two) => b
-                    .verify_byte_hash_mmcs_opening_words_with_host::<H>(
-                        hash,
-                        &[words.concat()],
-                        &heights,
-                        index,
-                        path,
-                        cap,
-                    )?,
-                (Some(words), MerkleArity::Four) => b
-                    .verify_byte_hash_mmcs_opening_words_with_host_arity::<H, 4>(
-                        hash,
-                        &[words.concat()],
-                        &heights,
-                        index,
-                        path,
-                        cap,
-                    )?,
-                (None, MerkleArity::Two) => b.verify_byte_hash_mmcs_opening_bytes_with_host::<H>(
-                    hash,
-                    &[bytes],
-                    &heights,
-                    index,
-                    path,
-                    cap,
-                )?,
-                (None, MerkleArity::Four) => b
-                    .verify_byte_hash_mmcs_opening_bytes_with_host_arity::<H, 4>(
-                        hash,
-                        &[bytes],
-                        &heights,
-                        index,
-                        path,
-                        cap,
-                    )?,
-            }
-            b.check_construction_limits()?;
-        }
+        authenticate_using::<P, H, CF>(b, p.hash, p.arity, &check)?;
     }
     Ok((proof.evals.clone(), ch))
 }
 
+fn authenticate_using<P, H, CF>(
+    b: &mut CircuitBuilder<CF>,
+    hash: p3_circuit::ops::ByteHash,
+    arity: MerkleArity,
+    check: &Authentication<'_, P::ChallengeTarget>,
+) -> Result<(), VerificationError>
+where
+    CF: Field + Eq + Hash,
+    H: BinaryCircuitHost<CF>,
+    P: BinaryWhirPolicy<CF>,
+{
+    let cap_height = check.cap.len().ilog2() as usize;
+    for (range, depth) in check.site.queries.groups() {
+        if arity == MerkleArity::Two
+            && check.site.log_height == check.site.queries.index_bits()
+            && depth > cap_height
+        {
+            let low = check.site.log_height - depth;
+            let mut layer: Vec<_> = (0..range.len())
+                .map(|s| check.paths[range.start + (s ^ 1)][low].clone())
+                .collect();
+            for (s, root) in layer.iter().enumerate() {
+                let q = range.start + s;
+                authenticate_row_using::<P, H, CF>(
+                    b,
+                    hash,
+                    arity,
+                    &check.rows[q],
+                    check.mode,
+                    low,
+                    &check.indices[q][..low],
+                    &check.paths[q][..low],
+                    core::slice::from_ref(root),
+                )?;
+            }
+            for k in 0..depth - cap_height {
+                // Bind every redundant upper sibling, including paths that did
+                // not supply a representative root. No proof input is discarded.
+                for s in 0..range.len() {
+                    let expected = &layer[(s >> k) ^ 1];
+                    for (&actual, &expected) in
+                        check.paths[range.start + s][low + k].iter().zip(expected)
+                    {
+                        b.connect(actual, expected);
+                    }
+                    b.check_construction_limits()?;
+                }
+                layer = layer
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| {
+                        let digest = H::compress(b, hash, &pair[0], &pair[1])?;
+                        b.check_construction_limits()?;
+                        Ok(digest)
+                    })
+                    .collect::<Result<_, VerificationError>>()?;
+            }
+            for (actual, expected) in layer.iter().zip(&check.cap) {
+                for (&actual, &expected) in actual.iter().zip(expected) {
+                    b.connect(actual, expected);
+                }
+                b.check_construction_limits()?;
+            }
+        } else {
+            for q in range {
+                authenticate_row_using::<P, H, CF>(
+                    b,
+                    hash,
+                    arity,
+                    &check.rows[q],
+                    check.mode,
+                    check.site.log_height,
+                    &check.indices[q],
+                    &check.paths[q],
+                    &check.cap,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Each opening keeps its trusted geometry and proof inputs explicit."
+)]
+fn authenticate_row_using<P, H, CF>(
+    b: &mut CircuitBuilder<CF>,
+    hash: p3_circuit::ops::ByteHash,
+    arity: MerkleArity,
+    row: &[P::ChallengeTarget],
+    mode: BinaryOracleWord,
+    log_height: usize,
+    index: &[ExprId],
+    path: &[Vec<ExprId>],
+    cap: &[Vec<ExprId>],
+) -> Result<(), VerificationError>
+where
+    CF: Field + Eq + Hash,
+    H: BinaryCircuitHost<CF>,
+    P: BinaryWhirPolicy<CF>,
+{
+    // Every value of a row shares one width, so either all of them
+    // split into words or none does.
+    let words = row
+        .iter()
+        .map(|value| P::oracle_words(b, value, mode))
+        .collect::<Result<Option<Vec<_>>, _>>()?;
+    let mut bytes = Vec::new();
+    if words.is_none() {
+        for value in row {
+            bytes.extend(P::oracle_bytes::<H>(b, value, mode)?);
+            b.check_construction_limits()?;
+        }
+    }
+    for sibling in path {
+        H::constrain_sibling(b, sibling)?;
+    }
+    let heights = [1usize << log_height];
+    match (words, arity) {
+        (Some(words), MerkleArity::Two) => b.verify_byte_hash_mmcs_opening_words_with_host::<H>(
+            hash,
+            &[words.concat()],
+            &heights,
+            index,
+            path,
+            cap,
+        )?,
+        (Some(words), MerkleArity::Four) => b
+            .verify_byte_hash_mmcs_opening_words_with_host_arity::<H, 4>(
+                hash,
+                &[words.concat()],
+                &heights,
+                index,
+                path,
+                cap,
+            )?,
+        (None, MerkleArity::Two) => b.verify_byte_hash_mmcs_opening_bytes_with_host::<H>(
+            hash,
+            &[bytes],
+            &heights,
+            index,
+            path,
+            cap,
+        )?,
+        (None, MerkleArity::Four) => b
+            .verify_byte_hash_mmcs_opening_bytes_with_host_arity::<H, 4>(
+                hash,
+                &[bytes],
+                &heights,
+                index,
+                path,
+                cap,
+            )?,
+    }
+    b.check_construction_limits()?;
+    Ok(())
+}
+
 /// `sum_i x^i * values[i]`, accumulated from the last value.
-fn horner_using<P, CF>(
+pub(super) fn horner_using<P, CF>(
     b: &mut CircuitBuilder<CF>,
     values: &[P::ChallengeTarget],
     x: &P::ChallengeTarget,
@@ -366,7 +469,7 @@ where
 /// The weight of the initial claim at the folded point `all_r`: every
 /// batched item's weight times `alpha` to the number of columns before it,
 /// accumulated from the last item.
-fn batched_weight_using<P, CF>(
+pub(super) fn batched_weight_using<P, CF>(
     b: &mut CircuitBuilder<CF>,
     order: VariableOrder,
     batched: Vec<Batched<P::ChallengeTarget>>,
@@ -586,5 +689,83 @@ fn check_opening<T>(
         Err(invalid("binary WHIR target query opening shape mismatch"))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod forest_tests {
+    use alloc::vec;
+
+    use p3_binary_field::BinaryField128;
+    use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
+    use p3_circuit::ops::{ByteHash, NpoTypeId, Op};
+    use p3_field::PrimeCharacteristicRing;
+
+    use super::*;
+    use crate::pcs::binary::BinaryWhirQueryPlan;
+    use crate::verifier::binary_field_policy::NativeTower128Relation;
+
+    #[test]
+    fn shared_upper_forest_saves_the_expected_keccak_calls() {
+        let mut b = CircuitBuilder::<BinaryField128>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let site = OracleSite {
+            variables: 4,
+            width: 1,
+            log_height: 4,
+            path_len: 3,
+            query_pow_bits: 0,
+            queries: BinaryWhirQueryPlan::new(4, 8).unwrap(),
+            ood: 0,
+            fold: FoldShape {
+                rounds: 0,
+                pow_bits: 0,
+            },
+        };
+        let rows: Vec<_> = (0..8)
+            .map(|_| {
+                let value = b.public_input();
+                vec![b.native_tower128_from_expr(value)]
+            })
+            .collect();
+        let paths: Vec<_> = (0..8)
+            .map(|_| {
+                (0..3)
+                    .map(|_| (0..16).map(|_| b.public_input()).collect())
+                    .collect()
+            })
+            .collect();
+        let cap = (0..2)
+            .map(|_| (0..16).map(|_| b.public_input()).collect())
+            .collect();
+        let zero = ExprId::ZERO;
+        let one = b.define_const(BinaryField128::ONE);
+        let indices = (0..8)
+            .map(|s| {
+                let mut bits = vec![b.public_input()];
+                bits.extend((0..3).map(|bit| if (s >> bit) & 1 == 0 { zero } else { one }));
+                bits
+            })
+            .collect();
+        authenticate_using::<NativeTower128Relation<BinaryField128>, NativeBinaryEncoding, _>(
+            &mut b,
+            ByteHash::Keccak256,
+            MerkleArity::Two,
+            &Authentication {
+                site: &site,
+                rows: &rows,
+                paths: &paths,
+                cap,
+                indices,
+                mode: BinaryOracleWord::Base,
+            },
+        )
+        .unwrap();
+        let circuit = b.build().unwrap();
+        let hashes = circuit.ops.iter().filter(|op| matches!(op,
+            Op::NonPrimitiveOpWithExecutor { executor, .. } if executor.op_type() == &NpoTypeId::native_keccak_f1600()
+        )).count();
+        // Eight leaf hashes, eight lower-path hashes, and eight minus two upper nodes.
+        assert_eq!(hashes, 22);
     }
 }
