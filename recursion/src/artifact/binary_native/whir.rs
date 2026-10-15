@@ -185,4 +185,18 @@ where
     ) -> Result<MultiStarkProof<BinaryNativeWhirConfig<F, L>>, VerificationError> {
         self.state.prove(&self.key, public, traces)
     }
+
+    /// Proves column-major tables with a selected zerocheck backend, retaining
+    /// the ordinary statement shape and composed security checks.
+    pub fn prove_tables_with_backend<B>(
+        &self,
+        public: &[Vec<F>],
+        tables: Vec<p3_sumcheck::layout::Table<F>>,
+    ) -> Result<MultiStarkProof<BinaryNativeWhirConfig<F, L>>, VerificationError>
+    where
+        B: p3_multi_stark::ZerocheckBackend<F, BinaryField128, A>,
+    {
+        self.state
+            .prove_tables_with_backend::<B>(&self.key, public, tables)
+    }
 }

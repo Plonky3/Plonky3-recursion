@@ -132,6 +132,19 @@ where
         public: &[Vec<E>],
         tables: Vec<Table<E>>,
     ) -> Result<MultiStarkProof<BinaryNativeMixedWhirConfig>, VerificationError> {
+        self.prove_tables_with_backend::<p3_multi_stark::GenericBackend>(public, tables)
+    }
+
+    /// Selects the zerocheck backend while retaining the ordinary commitment,
+    /// indexed lookup, statement shape and composed security checks.
+    pub fn prove_tables_with_backend<B>(
+        &self,
+        public: &[Vec<E>],
+        tables: Vec<Table<E>>,
+    ) -> Result<MultiStarkProof<BinaryNativeMixedWhirConfig>, VerificationError>
+    where
+        B: p3_multi_stark::ZerocheckBackend<E, E, A>,
+    {
         if self.state.decode.indexed.is_some()
             && tables.iter().any(|table| table.packed_bits().is_some())
         {
@@ -139,6 +152,7 @@ where
                 "binary native mixed WHIR indexed lookups read no packed-bit table",
             ));
         }
-        self.state.prove_tables(&self.key, public, tables)
+        self.state
+            .prove_tables_with_backend::<B>(&self.key, public, tables)
     }
 }

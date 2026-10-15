@@ -289,6 +289,21 @@ where
         E::ExtensionPacking: From<E> + From<F::Packing>,
         ProverData<K::Config>: Clone,
     {
+        self.prove_tables_with_backend::<p3_multi_stark::GenericBackend>(key, public, tables)
+    }
+
+    pub(super) fn prove_tables_with_backend<B>(
+        &self,
+        key: &ProvingKey<K::Config>,
+        public: &[Vec<F>],
+        tables: Vec<Table<F>>,
+    ) -> Result<MultiStarkProof<K::Config>, VerificationError>
+    where
+        A: ProverAir<F, E>,
+        B: p3_multi_stark::ZerocheckBackend<F, E, A>,
+        E::ExtensionPacking: From<E> + From<F::Packing>,
+        ProverData<K::Config>: Clone,
+    {
         self.check_public(public)?;
         if tables.len() != self.airs.len()
             || tables
@@ -309,7 +324,7 @@ where
                 .map(|((table, air), values)| ProverInstance::new(air, table, key, values))
                 .collect(),
         );
-        p3_multi_stark::prove_with_security(
+        p3_multi_stark::prove_with_security_and_backend::<K::Config, A, B>(
             &self.config,
             instances,
             self.spec.sumcheck_pow_bits,

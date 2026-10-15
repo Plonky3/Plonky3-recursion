@@ -100,6 +100,21 @@ fn owned_native_authority_verifies_all_caps_and_independent_statements() {
                         vec![RowMajorMatrix::new(vec![public[0][0] + fixed; 4], 1)],
                     )
                     .unwrap();
+                let selected = prover
+                    .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                        p3_binary_field::BinaryField2,
+                        p3_binary_field::Ghash128,
+                    >>(
+                        &public,
+                        vec![p3_sumcheck::layout::Table::new(
+                            RowMajorMatrix::new(vec![public[0][0] + fixed; 4], 1).transpose(),
+                        )],
+                    )
+                    .unwrap();
+                assert_eq!(
+                    postcard::to_allocvec(&proof).unwrap(),
+                    postcard::to_allocvec(&selected).unwrap()
+                );
                 let verified = authority.verify_native(&proof, &public).unwrap();
                 assert_eq!(verified.public_values(), public);
                 let encoded = authority.encode_native_proof(&proof, &public).unwrap();
