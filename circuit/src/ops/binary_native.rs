@@ -79,6 +79,21 @@ impl BinaryCoordinateField for Poly64 {
 }
 
 impl<F: BinaryCoordinateField> CircuitBuilder<F> {
+    /// Reuses the expensive trace-dual and root tables for a raw coordinate.
+    /// Returned extractors share their witness lookup tables within this builder.
+    pub fn binary_coordinate_extractor(
+        &mut self,
+        column: usize,
+    ) -> Result<BinaryCoordinateExtractor<F>, CircuitBuilderError> {
+        if let Some(extractor) = self.native_coordinate_extractors.get(&column) {
+            return Ok(extractor.clone());
+        }
+        let extractor = BinaryCoordinateExtractor::new(column)?;
+        self.native_coordinate_extractors
+            .insert(column, extractor.clone());
+        Ok(extractor)
+    }
+
     pub(crate) fn cached_native_words(
         &mut self,
         value: ExprId,

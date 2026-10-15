@@ -52,7 +52,6 @@ use alloc::{format, vec};
 
 use p3_binary_field::{Poly64, Poly192};
 use p3_circuit::ops::NativePoly192Target;
-use p3_circuit::ops::binary_native::BinaryCoordinateExtractor;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
 use p3_field::{Field, PrimeCharacteristicRing};
 
@@ -176,7 +175,7 @@ impl NativePolyBitTensorTarget {
         if self.bits.is_some() || self.columns[v].is_some() {
             return self.column(b, v);
         }
-        let extractor = BinaryCoordinateExtractor::new(v)?;
+        let extractor = b.binary_coordinate_extractor(v)?;
         let mut column_bits = Vec::with_capacity(ROWS);
         for &row in &self.rows {
             column_bits.push(extractor.extract(b, row)?);

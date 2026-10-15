@@ -240,6 +240,9 @@ pub struct CircuitBuilder<F: Field> {
     /// Reconstructed sixteen-coordinate words. Their range is still the caller's
     /// responsibility; these entries never imply checked Boolean coordinates.
     native_word_splits: HashMap<ExprId, Vec<ExprId>>,
+    /// Field-specific coordinate constants and shared witness lookup tables.
+    pub(crate) native_coordinate_extractors:
+        HashMap<usize, crate::ops::binary_native::BinaryCoordinateExtractor<F>>,
 
     /// Coefficient wires a constraint pins to a base-field element: the inputs of a
     /// `recompose/coeff` row, whose per-coefficient bus tuple is zero-padded, and `Const`s
@@ -359,6 +362,7 @@ where
             ext_recompose_coeffs: HashMap::new(),
             native_coordinate_bits: HashMap::new(),
             native_word_splits: HashMap::new(),
+            native_coordinate_extractors: HashMap::new(),
             base_bound_coeffs: HashSet::new(),
             coefficient_normalization_sources: HashMap::new(),
             ext_select_sources: HashMap::new(),
