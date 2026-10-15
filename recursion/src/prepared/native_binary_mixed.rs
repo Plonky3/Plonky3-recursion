@@ -422,12 +422,6 @@ where
                     p3_binary_field::Ghash128,
                     true,
                 >>(&output_public, tables),
-            NativeBinaryProverBackend::BooleanTensor => self
-                .prover
-                .prove_tables_with_backend::<p3_multi_stark::BooleanTensorBackend>(
-                &output_public,
-                tables,
-            ),
         }
     }
 

@@ -99,7 +99,6 @@ where
     total_usage.add_metadata_entries(&limits.verifier, spec.initial_bytes.len())?;
     // Native setup panics on a missing preprocessing table. Validate trusted
     // tables after the recursive plan has checked the heights and widths.
-    let mut preprocessed_tables = Vec::new();
     for (air, &height) in airs.iter().zip(&heights) {
         if air.preprocessed_width() != 0 {
             let trace = air
@@ -108,20 +107,14 @@ where
             if trace.width() != air.preprocessed_width() || trace.height() != 1usize << height {
                 return Err(invalid("binary native preprocessed trace shape mismatch"));
             }
-            preprocessed_tables.push(Table::new(trace.transpose()));
         }
     }
     let trees = K::trees(&spec.main);
     let preprocessed_trees = spec.preprocessed.as_ref().map(K::trees);
     let config = K::build_config(&spec, &trees, preprocessed_trees.as_ref())?;
     let mut setup_ch = BinaryNativeChallenger::for_setup(roots, spec.transcript_hash);
-    let (proving, verifying) = p3_multi_stark::setup_with_preprocessed_tables(
-        &config,
-        &refs,
-        preprocessed_tables,
-        &mut setup_ch,
-    )
-    .map_err(|_| invalid("binary native setup rejected"))?;
+    let (proving, verifying) = p3_multi_stark::setup(&config, &refs, &mut setup_ch)
+        .map_err(|_| invalid("binary native setup rejected"))?;
     if let Some(cap) = setup_ch.finish_setup(roots)? {
         K::bind_preprocessing(&mut binary, cap)?;
     }
@@ -360,6 +353,11 @@ where
         {
             return Err(invalid("binary native main table shape mismatch"));
         }
+        // The authority assessed these exact AIRs, heights and public-value counts at setup.
+        // Validate the retained target before the selected backend mutates the transcript.
+        self.security
+            .require_security(self.spec.security_bits)
+            .map_err(|_| invalid("binary native proof generation rejected"))?;
         let instances = ProverInstances::new(
             tables
                 .into_iter()
@@ -368,11 +366,10 @@ where
                 .map(|((table, air), values)| ProverInstance::new(air, table, key, values))
                 .collect(),
         );
-        p3_multi_stark::prove_with_security_and_backend::<K::Config, A, B>(
+        p3_multi_stark::prove_with_backend::<K::Config, A, B>(
             &self.config,
             instances,
             self.spec.sumcheck_pow_bits,
-            self.spec.security_bits,
             &mut self.challenger(),
         )
         .map_err(|_| invalid("binary native proof generation rejected"))

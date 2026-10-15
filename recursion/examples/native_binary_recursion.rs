@@ -145,7 +145,6 @@ enum ProverBackend {
     Generic,
     Repr,
     ReprLate,
-    BooleanTensor,
 }
 impl From<ProverBackend> for NativeBinaryProverBackend {
     fn from(value: ProverBackend) -> Self {
@@ -153,7 +152,6 @@ impl From<ProverBackend> for NativeBinaryProverBackend {
             ProverBackend::Generic => Self::Generic,
             ProverBackend::Repr => Self::Repr,
             ProverBackend::ReprLate => Self::ReprLate,
-            ProverBackend::BooleanTensor => Self::BooleanTensor,
         }
     }
 }
