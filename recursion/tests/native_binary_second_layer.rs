@@ -345,7 +345,7 @@ fn second_layer_is_bounded_and_refuses_forged_proof_fields(case: &Case) {
                 assert_eq!(op, NpoTypeId::native_keccak_f1600());
             }
             Err(CircuitError::WitnessConflict { witness_id, .. })
-                if case.arity == MerkleArity::Two =>
+                if case.arity == MerkleArity::Two && sibling == last[12] =>
             {
                 assert_eq!(witness_id, circuit.expr_to_widx[&sibling]);
             }
