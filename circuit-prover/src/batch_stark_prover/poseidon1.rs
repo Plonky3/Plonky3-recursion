@@ -1513,7 +1513,7 @@ where
 
 /// Shared helper implementing Poseidon1-specific preprocessing on generic preprocessed columns.
 fn poseidon1_preprocess_for_prover<F, ExtF, const D: usize>(
-    preprocessed: &mut PreprocessedColumns<ExtF, D>,
+    preprocessed: &PreprocessedColumns<ExtF, D>,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,

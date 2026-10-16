@@ -658,7 +658,9 @@ impl<
 /// `OL` sponge chain helpers `(1 − new_start)(1 − merkle_path)(1 − in_ctl_i)`, `OL` Merkle chain helpers
 /// `(1 − new_start)(merkle_path)(1 − in_ctl_i)`, then `IL` input indices, `OL` output indices,
 /// `OL` per-limb `out_ctl`, then four tail flags. Rate `in_ctl` may vary (e.g. partial-chunk overwrite).
-/// Capacity inputs are not CTL-verified; sponge `new_start` rows enforce zero capacity in `eval`.
+/// Only rate-indexed inputs are looked up; sponge `new_start` rows enforce zero capacity in `eval`.
+/// A Merkle row whose witnesses feed the capacity half (an injected digest) carries them in the
+/// rate-indexed `in_ctl` / index columns and sets the capacity-side tail flag.
 ///
 /// # Precomputed Selectors
 ///
@@ -671,8 +673,8 @@ impl<
 /// - The **Merkle chain selector** is true when the row is not a chain
 ///   boundary, is a Merkle row, and the limb is not looked up via CTL.
 ///
-/// - The **MMCS Merkle flag** is true when MMCS CTL is enabled and the
-///   row is a Merkle row.
+/// - The **MMCS Merkle flag** column is the capacity-side flag of a compact
+///   D=1 Merkle row; the general layout writes `mmcs_ctl_enabled && merkle_path`.
 ///
 /// Computing these products at setup time avoids degree-4 expressions
 /// in the constraint polynomial.
@@ -712,7 +714,10 @@ pub fn extract_preprocessed_from_operations<
         debug_assert_eq!(output_indices.len(), OL);
 
         if compact_d1 {
-            for ctl in in_ctl.iter().take(OL) {
+            // A capacity-fed Merkle row carries its witnesses in the rate-indexed columns.
+            let capacity_fed = *merkle_path && in_ctl.iter().take(IL).skip(OL).any(|&ctl| ctl);
+            let fed = if capacity_fed { OL } else { 0 };
+            for ctl in in_ctl.iter().skip(fed).take(OL) {
                 preprocessed.push(F::from_bool(*ctl));
             }
             if !*merkle_path {
@@ -732,17 +737,19 @@ pub fn extract_preprocessed_from_operations<
             for ctl in in_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(!*new_start && *merkle_path && !ctl));
             }
-            for input_index in input_indices.iter().take(IL) {
+            for input_index in input_indices.iter().skip(fed).take(OL) {
                 preprocessed.push(F::from_u32(input_index * d));
             }
+            preprocessed.extend(core::iter::repeat_n(F::ZERO, IL - OL));
             for output_index in output_indices.iter().take(OL) {
                 preprocessed.push(F::from_u32(output_index * d));
             }
             for ctl in out_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(*ctl));
             }
-            preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64 * d as u64));
-            preprocessed.push(F::from_bool(*mmcs_ctl_enabled && *merkle_path));
+            let bit_source_idx = if *merkle_path { *mmcs_index_sum_idx } else { 0 };
+            preprocessed.push(F::from_u64(bit_source_idx as u64 * d as u64));
+            preprocessed.push(F::from_bool(capacity_fed));
             preprocessed.push(F::from_bool(*new_start));
             preprocessed.push(F::from_bool(*merkle_path));
         } else {
@@ -778,7 +785,11 @@ pub fn extract_preprocessed_from_operations<
                     out_ctl: F::from_bool(out_ctl[i]),
                 }),
 
-                mmcs_index_sum_ctl_idx: F::from_u64(*mmcs_index_sum_idx as u64 * d as u64),
+                mmcs_index_sum_ctl_idx: F::from_u64(if *merkle_path {
+                    *mmcs_index_sum_idx as u64 * d as u64
+                } else {
+                    0
+                }),
 
                 mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
 
@@ -1002,6 +1013,14 @@ pub(crate) fn eval<
             .assert_zero(
                 next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
             );
+
+        // The rate input lookups read the half `mmcs_bit + capacity_fed` selects, so the direction
+        // bit must be zero wherever it is not a bound Merkle direction (sponge rows) and on
+        // capacity-fed Merkle rows, keeping the selector boolean. Row-local on the `next` row, so
+        // the wrap-around window covers row 0.
+        let next_capacity_fed = s[tail + 1];
+        builder.when(not_merkle).assert_zero(next.mmcs_bit);
+        builder.when(next_capacity_fed).assert_zero(next.mmcs_bit);
     } else {
         let next_prep: &Poseidon1PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
             next_preprocessed.borrow();
@@ -1084,6 +1103,13 @@ pub(crate) fn eval<
                     .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
             }
         }
+
+        // The input lookups read the half `mmcs_bit` selects, so the bit must be zero wherever it
+        // is not a bound Merkle direction. Row-local on the `next` row, so the wrap-around window
+        // covers row 0.
+        builder
+            .when(AB::Expr::ONE - next_prep.merkle_path.into())
+            .assert_zero(next.mmcs_bit);
 
         // MMCS accumulator
         //
@@ -1472,8 +1498,7 @@ where
 }
 
 /// Push the WitnessChecks CTL interactions for one row of the Poseidon1 circuit AIR: input
-/// limb sends, output limb receives, and the MMCS-accumulator send at the end of each
-/// Merkle chain.
+/// limb sends, output limb receives, and the direction-bit send of each Merkle row.
 fn eval_interactions<
     AB: AirBuilder + InteractionBuilder,
     const D: usize,
@@ -1513,23 +1538,28 @@ fn eval_interactions<
         debug_assert_eq!(next_preprocessed.len(), tail + 4);
 
         let merkle_path_p: AB::Expr = local_preprocessed[tail + 3].into();
-        let not_merkle = AB::Expr::ONE - merkle_path_p;
         let idx_base = hdr;
 
-        // Input limb sends (rate only; capacity is zero-asserted in eval)
+        // Input limb sends (rate-indexed; sponge capacity is zero-asserted in eval). A Merkle row
+        // swaps its halves when `mmcs_bit = 1`, and a capacity-fed Merkle row (an injected digest)
+        // carries its witnesses in these rate-indexed slots, so each send reads the half selected
+        // by `mmcs_bit + capacity_fed`. Eval keeps that selector boolean and zero on sponge rows,
+        // and the bit send below binds `mmcs_bit` on Merkle rows.
+        let half_sel: AB::Expr = local.mmcs_bit.into() + local_preprocessed[tail + 1].into();
         for limb_idx in 0..RATE_EXT {
             let idx: AB::Expr = local_preprocessed[idx_base + limb_idx].into();
             let in_ctl: AB::Expr = local_preprocessed[limb_idx].into();
             let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
             input_idx_limb.push(idx);
             for d in 0..D {
-                input_idx_limb.push(local.perm.inputs[limb_idx * D + d].into());
+                let left: AB::Expr = local.perm.inputs[limb_idx * D + d].into();
+                let right: AB::Expr = local.perm.inputs[(RATE_EXT + limb_idx) * D + d].into();
+                input_idx_limb.push(left.clone() + half_sel.clone() * (right - left));
             }
             for _ in 0..(WITNESS_EXT_D - D) {
                 input_idx_limb.push(AB::Expr::ZERO);
             }
-            let mult = in_ctl * not_merkle.clone();
-            builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
+            builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-in_ctl, 1));
         }
 
         // Output limb receives
@@ -1552,45 +1582,50 @@ fn eval_interactions<
             builder.push_interaction("WitnessChecks", output_idx_limb, Count::bounded(out_ctl, 1));
         }
 
-        // MMCS accumulator send.
-        let mult_a: AB::Expr = local_preprocessed[tail + 1].into();
-        let mult_b: AB::Expr = next_preprocessed[tail + 2].into();
-        let multiplicity = mult_a * mult_b;
-        let mut mmcs_index_sum_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
-        mmcs_index_sum_lookup.push(local_preprocessed[tail].into());
-        mmcs_index_sum_lookup.push(local.mmcs_index_sum.into());
+        // Direction-bit send: every Merkle row reads its bit from the witness it was sourced from.
+        let mut bit_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+        bit_lookup.push(local_preprocessed[tail].into());
+        bit_lookup.push(local.mmcs_bit.into());
         for _ in 0..(WITNESS_EXT_D - 1) {
-            mmcs_index_sum_lookup.push(AB::Expr::ZERO);
+            bit_lookup.push(AB::Expr::ZERO);
         }
         builder.push_interaction(
             "WitnessChecks",
-            mmcs_index_sum_lookup,
-            Count::bounded(-multiplicity, 1),
+            bit_lookup,
+            Count::bounded(-merkle_path_p, 1),
         );
     } else {
         let local_pre: &Poseidon1PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
             local_preprocessed.borrow();
-        let next_pre: &Poseidon1PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
-            next_preprocessed.borrow();
 
-        // Input limb sends; disabled on Merkle rows (mult zero) so degree stays ≤ 3.
-        let not_merkle = AB::Expr::ONE - local_pre.merkle_path.into();
-
+        // Input limb sends. A Merkle row swaps its halves when `mmcs_bit = 1`, so each send reads
+        // the slot its witness occupies after the swap. Eval keeps `mmcs_bit` zero on every
+        // non-Merkle row and the bit send below binds it on Merkle rows.
+        let swaps_halves = 2 * RATE_EXT == WIDTH_EXT;
         for limb_idx in 0..WIDTH_EXT {
             let limb = &local_pre.input_limbs[limb_idx];
+            let swapped_idx = (limb_idx + RATE_EXT) % WIDTH_EXT;
 
             let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
             input_idx_limb.push(limb.idx.into());
             for d in 0..D {
-                input_idx_limb.push(local.perm.inputs[limb_idx * D + d].into());
+                let own: AB::Expr = local.perm.inputs[limb_idx * D + d].into();
+                if swaps_halves {
+                    let other: AB::Expr = local.perm.inputs[swapped_idx * D + d].into();
+                    input_idx_limb.push(own.clone() + local.mmcs_bit.into() * (other - own));
+                } else {
+                    input_idx_limb.push(own);
+                }
             }
             for _ in 0..(WITNESS_EXT_D - D) {
                 input_idx_limb.push(AB::Expr::ZERO);
             }
 
-            let in_ctl: AB::Expr = limb.in_ctl.into();
-            let mult = in_ctl * not_merkle.clone();
-            builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
+            builder.push_interaction(
+                "WitnessChecks",
+                input_idx_limb,
+                Count::bounded(-limb.in_ctl.into(), 1),
+            );
         }
 
         // Output limb receives.
@@ -1616,21 +1651,18 @@ fn eval_interactions<
             );
         }
 
-        // MMCS accumulator send.
-        let mmf: AB::Expr = local_pre.mmcs_merkle_flag.into();
-        let next_ns: AB::Expr = next_pre.new_start.into();
-        let multiplicity = mmf * next_ns;
-
-        let mut mmcs_index_sum_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
-        mmcs_index_sum_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
-        mmcs_index_sum_lookup.push(local.mmcs_index_sum.into());
+        // Direction-bit send: every Merkle row reads its bit from the witness it was sourced
+        // from. The accumulator idx slot carries that witness index.
+        let mut bit_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+        bit_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
+        bit_lookup.push(local.mmcs_bit.into());
         for _ in 0..(WITNESS_EXT_D - 1) {
-            mmcs_index_sum_lookup.push(AB::Expr::ZERO);
+            bit_lookup.push(AB::Expr::ZERO);
         }
         builder.push_interaction(
             "WitnessChecks",
-            mmcs_index_sum_lookup,
-            Count::bounded(-multiplicity, 1),
+            bit_lookup,
+            Count::bounded(-local_pre.merkle_path.into(), 1),
         );
     }
 }
@@ -1846,7 +1878,7 @@ mod test {
         let sponge_b = Poseidon1CircuitRow {
             new_start: false,
             merkle_path: false,
-            mmcs_bit: true,
+            mmcs_bit: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_b.to_vec(),
             in_ctl: vec![false; POSEIDON2_LIMBS],
@@ -2045,6 +2077,14 @@ mod test {
         let (full, partial) = BabyBearD4Width16::round_constants();
         let air = Poseidon1CircuitAirBabyBearD4Width16::new(full, partial);
         p3_test_utils::assert_air_constraint_degree!(air, "Poseidon1CircuitAir");
+    }
+
+    #[test]
+    fn test_air_constraint_degree_compact_d1() {
+        // The compact layout's rate input sends read the half `mmcs_bit + capacity_fed` selects,
+        // a degree-2 payload whose lookup must stay within degree 3.
+        let air = crate::BabyBearD1Width16::default_air();
+        p3_test_utils::assert_air_constraint_degree!(air, "Poseidon1CircuitAirBabyBearD1Width16");
     }
 
     /// Build an AIR with the given preprocessed data and optional minimum

@@ -40,8 +40,7 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_poseidon_circuit_cols::{
     PoseidonPrepInputLimb, poseidon_d1_compact_preprocessed_header_cols,
-    poseidon_preprocessed_row_width, poseidon_preprocessed_row_width_for_air,
-    poseidon_uses_compact_d1_preprocessed,
+    poseidon_preprocessed_row_width_for_air, poseidon_uses_compact_d1_preprocessed,
 };
 use p3_uni_stark::{PcsProverError, SymbolicExpression, SymbolicExpressionExt};
 use p3_util::log2_strict_usize;
@@ -187,7 +186,7 @@ const fn poseidon_d1_witness_bus_dim(witness_ctl_scale: u32) -> Option<u32> {
 /// `prefix` is the variant's CTL bus prefix (e.g. `poseidon1_perm/`); only op types under it
 /// are touched. `parse_cfg` resolves a variant-name suffix to its `(d, width_ext, rate_ext)`.
 fn poseidon_preprocess_for_prover<F, ExtF, const D: usize>(
-    preprocessed: &mut PreprocessedColumns<ExtF, D>,
+    preprocessed: &PreprocessedColumns<ExtF, D>,
     prefix: &str,
     parse_cfg: impl Fn(&str) -> Option<(usize, usize, usize)>,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
@@ -197,79 +196,7 @@ where
 {
     let neg_one = F::NEG_ONE;
 
-    // Phase 1: scan preprocessed data to count mmcs_index_sum conditional reads,
-    // and update `ext_reads` accordingly. This must happen before computing multiplicities.
-    for (op_type, prep) in preprocessed.non_primitive.iter() {
-        let op_str = op_type.as_str();
-        if !op_str.starts_with(prefix) {
-            continue;
-        }
-        let rest = op_str
-            .strip_prefix(prefix)
-            .ok_or(CircuitError::InvalidPreprocessedValues)?;
-        let (d, w_ext, r_ext) = parse_cfg(rest).ok_or(CircuitError::InvalidPreprocessedValues)?;
-
-        // Arity-4 tables bind each direction bit to the sampled index directly; the base-4
-        // accumulator is unused and its idx / merkle-flag column slots are repurposed to carry the
-        // bit-source witness indices (already counted in `ext_reads` during preprocessing). The
-        // accumulator read-counting below would misread those slots, so skip arity-4 op types.
-        if 4 * (w_ext - r_ext) == w_ext {
-            continue;
-        }
-
-        let prep_row_width = poseidon_preprocessed_row_width_for_air(d, w_ext, r_ext);
-
-        let prep_base: Vec<F> = prep
-            .iter()
-            .map(|v| v.as_base().ok_or(CircuitError::InvalidPreprocessedValues))
-            .collect::<Result<Vec<_>, CircuitError>>()?;
-
-        if !prep_base.len().is_multiple_of(prep_row_width) {
-            return Err(CircuitError::InvalidPreprocessedValues);
-        }
-
-        let num_rows = prep_base.len() / prep_row_width;
-        let trace_height = num_rows.next_power_of_two();
-        let has_padding = trace_height > num_rows;
-        let compact = poseidon_uses_compact_d1_preprocessed(d, w_ext, r_ext);
-        let tail = if compact {
-            poseidon_d1_compact_preprocessed_header_cols(r_ext) + w_ext + r_ext + r_ext
-        } else {
-            poseidon_preprocessed_row_width(w_ext, r_ext) - 4
-        };
-
-        for row_idx in 0..num_rows {
-            let row_start = row_idx * prep_row_width;
-            let mmcs_flag_off = row_start + tail + 1;
-            let current_mmcs_merkle_flag = prep_base[mmcs_flag_off];
-
-            // Check if next row exists and has new_start = 1.
-            // The Poseidon AIR pads the trace and sets new_start = 1 in the first
-            // padding row (only if padding exists), so the last real row can trigger a
-            // lookup if its mmcs_merkle_flag = 1 and there is padding.
-            let next_new_start = if row_idx + 1 < num_rows {
-                let next_start = (row_idx + 1) * prep_row_width;
-                prep_base[next_start + tail + 2]
-            } else if has_padding {
-                F::ONE
-            } else {
-                prep_base[tail + 2]
-            };
-
-            let multiplicity = current_mmcs_merkle_flag * next_new_start;
-            if multiplicity != F::ZERO {
-                let mmcs_idx_u64 = F::as_canonical_u64(&prep_base[row_start + tail]);
-                let mmcs_witness_idx = (mmcs_idx_u64 as usize) / D;
-
-                if mmcs_witness_idx >= preprocessed.ext_reads.len() {
-                    preprocessed.ext_reads.resize(mmcs_witness_idx + 1, 0);
-                }
-                preprocessed.ext_reads[mmcs_witness_idx] += 1;
-            }
-        }
-    }
-
-    // Phase 2: update out_ctl values in the base-field preprocessed data.
+    // Update out_ctl values in the base-field preprocessed data.
     //
     // Duplicate creators (from optimizer witness_rewrite deduplication)
     // are recorded in plugin-owned metadata under this op_type. For those, out_ctl = -1

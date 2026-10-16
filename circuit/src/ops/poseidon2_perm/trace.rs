@@ -122,9 +122,10 @@ pub struct Poseidon2CircuitRow<F> {
     pub out_ctl: PoseidonRowValues<bool>,
     /// Output exposure indices: index into the witness table for rate limbs.
     pub output_indices: PoseidonRowValues<u32>,
-    /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
+    /// MMCS bus witness index: on an arity-2 Merkle row, the direction bit's source witness;
+    /// otherwise the `mmcs_index_sum` source witness, if any.
     pub mmcs_index_sum_idx: u32,
-    /// Whether mmcs_index_sum CTL is enabled. When false, the mmcs_index_sum lookup is disabled.
+    /// Whether an `mmcs_index_sum` source witness was supplied on a non-Merkle or arity-4 row.
     pub mmcs_ctl_enabled: bool,
     /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
     ///

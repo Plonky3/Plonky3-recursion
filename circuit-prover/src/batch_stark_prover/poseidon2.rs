@@ -1627,8 +1627,8 @@ impl Poseidon2Prover {
                 if source_trace.operations.is_empty() {
                     continue;
                 }
-                // Each independently generated stream must begin a chain. This is also the
-                // condition that keeps MMCS terminal multiplicities unchanged at the merge seam.
+                // Each independently generated stream must begin a chain, so no chain
+                // constraint spans the merge seam.
                 debug_assert!(source_trace.operations[0].new_start);
                 let challenger = source.is_challenger();
                 operations.extend(source_trace.operations.iter().cloned().map(|mut row| {
@@ -2320,7 +2320,7 @@ where
 
 /// Shared helper implementing Poseidon2-specific preprocessing on generic preprocessed columns.
 fn poseidon2_preprocess_for_prover<F, ExtF, const D: usize>(
-    preprocessed: &mut PreprocessedColumns<ExtF, D>,
+    preprocessed: &PreprocessedColumns<ExtF, D>,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
@@ -2899,7 +2899,7 @@ mod shared_preprocessing_tests {
     }
 
     #[test]
-    fn shared_preprocessing_counts_boundary_wrap_and_padding_reads_per_source() {
+    fn shared_preprocessing_sets_output_multiplicities_per_source() {
         type Ext = BinomialExtensionField<BabyBear, 4>;
         let config = Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table();
         let challenger = config.source_configs()[0];
@@ -2914,8 +2914,6 @@ mod shared_preprocessing_tests {
             let mut rows = vec![Ext::ZERO; row_width * new_starts.len()];
             for (row_idx, new_start) in new_starts.iter().copied().enumerate() {
                 let row = &mut rows[row_idx * row_width..(row_idx + 1) * row_width];
-                row[tail] = Ext::ZERO;
-                row[tail + 1] = Ext::ONE;
                 row[tail + 2] = Ext::from(BabyBear::from_bool(new_start));
                 row[config.width_ext() * 4 + 1] = Ext::ONE;
             }
@@ -2924,16 +2922,15 @@ mod shared_preprocessing_tests {
         let mut columns = PreprocessedColumns::<Ext, 4>::new();
         columns.non_primitive.insert(
             NpoTypeId::poseidon2_perm(challenger),
-            // The first two starts exercise an in-table chain boundary; the final row's
-            // terminal read is against the first padded row.
             source_rows(&[true, true, false]),
         );
         columns.non_primitive.insert(
             NpoTypeId::poseidon2_perm(ordinary),
-            // A power-of-two source has no padding, so its final terminal read wraps to
-            // the first row's chain start.
             source_rows(&[true, true, false, false]),
         );
+        // Every row exposes its first output to witness 0, which four consumers read; the
+        // ordinary source's copy of that witness is a deduplicated creator.
+        columns.ext_reads = vec![4];
         columns
             .dup_npo_outputs
             .insert(NpoTypeId::poseidon2_perm(ordinary), vec![true]);

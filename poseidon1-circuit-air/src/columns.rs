@@ -40,9 +40,10 @@ pub struct Poseidon1CircuitRow<F> {
     pub out_ctl: Vec<bool>,
     /// Per-rate-output-limb CTL witness indices.
     pub output_indices: Vec<u32>,
-    /// CTL witness index for `mmcs_index_sum`.
+    /// MMCS bus witness index: on a Merkle row, the direction bit's source witness; otherwise
+    /// the `mmcs_index_sum` source witness, if any.
     pub mmcs_index_sum_idx: u32,
-    /// Whether the `mmcs_index_sum` CTL is enabled.
+    /// Whether an `mmcs_index_sum` source witness was supplied on a non-Merkle row.
     pub mmcs_ctl_enabled: bool,
     /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
     ///

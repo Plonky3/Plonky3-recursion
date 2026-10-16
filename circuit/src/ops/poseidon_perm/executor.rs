@@ -1,9 +1,9 @@
 //! Poseidon permutation executor — generic over [`PoseidonVariant`].
 
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::{format, vec};
 use core::fmt;
 use core::marker::PhantomData;
 
@@ -101,6 +101,35 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
     #[inline]
     const fn limb_ctl_enabled(slot: &[WitnessId]) -> bool {
         !slot.is_empty()
+    }
+
+    /// Whether a Merkle row feeds its witnesses into the capacity half (an injected digest).
+    /// Sponge rows and rate-fed Merkle rows return `false`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a layout error when a compact D=1 Merkle row feeds witnesses into both halves: that
+    /// layout looks up one half per row.
+    fn compact_merkle_capacity_fed(&self, inputs: &[Vec<WitnessId>]) -> Result<bool, CircuitError> {
+        if !self.merkle_path {
+            return Ok(false);
+        }
+        let rate_ext = self.config.rate_ext();
+        let width_ext = self.config.width_ext();
+        let rate_fed = inputs[..rate_ext]
+            .iter()
+            .any(|inp| Self::limb_ctl_enabled(inp));
+        let capacity_fed = inputs[rate_ext..width_ext]
+            .iter()
+            .any(|inp| Self::limb_ctl_enabled(inp));
+        if rate_fed && capacity_fed {
+            return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                op: self.op_type.clone(),
+                expected: "compact D=1 Merkle rows feed witnesses into one half only".into(),
+                got: width_ext,
+            });
+        }
+        Ok(capacity_fed)
     }
 
     /// Build the initial permutation state vector.
@@ -414,14 +443,19 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             }
         }
 
-        let (mmcs_index_sum, mmcs_index_sum_idx, mmcs_ctl_enabled) = if inputs[width_ext].len() == 1
-        {
-            let wid = inputs[width_ext][0];
-            let val = ctx.get_witness(wid)?;
-            (val, wid.0, true)
-        } else {
-            (F::ZERO, 0, false)
-        };
+        let (mmcs_index_sum, mut mmcs_index_sum_idx, mut mmcs_ctl_enabled) =
+            if inputs[width_ext].len() == 1 {
+                let wid = inputs[width_ext][0];
+                let val = ctx.get_witness(wid)?;
+                (val, wid.0, true)
+            } else {
+                (F::ZERO, 0, false)
+            };
+        // An arity-2 Merkle row's bus slot carries its direction-bit source.
+        if self.merkle_path && !self.is_arity4() {
+            mmcs_index_sum_idx = inputs[width_ext + 1].first().map_or(0, |wid| wid.0);
+            mmcs_ctl_enabled = false;
+        }
 
         debug_assert_eq!(
             input_values.len(),
@@ -735,7 +769,11 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
 
         if self.compact_d1_preprocessed_layout() {
             // Sponge rows: capacity is never witness-fed (AIR zero-assert on new_start; else chain).
-            // Merkle rows: siblings live in capacity slots and use witness indices without input CTL.
+            // Merkle rows: the AIR only looks up rate-indexed slots, so a Merkle row feeds witnesses
+            // into one half. A capacity-fed row (an injected digest) carries its witnesses in the
+            // rate-indexed `in_ctl` / index columns and sets the capacity-side flag, which makes the
+            // AIR read them from the capacity half.
+            let capacity_fed = self.compact_merkle_capacity_fed(inputs)?;
             if !self.merkle_path {
                 for input in inputs.iter().skip(rate_ext).take(width_ext - rate_ext) {
                     if Self::limb_ctl_enabled(input) {
@@ -749,10 +787,15 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                     }
                 }
             }
+            let fed_half = if capacity_fed {
+                &inputs[rate_ext..2 * rate_ext]
+            } else {
+                &inputs[..rate_ext]
+            };
 
             let cap_chain_enable = !self.new_start;
             let mut hdr = Vec::with_capacity(rate_ext + 2 + rate_ext + rate_ext);
-            for inp in inputs.iter().take(rate_ext) {
+            for inp in fed_half {
                 hdr.push(F::from_bool(Self::limb_ctl_enabled(inp)));
             }
             // Prefix-free sponge length tag: the first capacity element is bound to
@@ -770,19 +813,14 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             }
             preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &hdr);
 
-            for inp in inputs[0..width_ext].iter() {
+            // Rate-indexed slots carry the fed half's witnesses; the AIR never looks up the
+            // capacity-indexed slots, so they stay zero.
+            for inp in fed_half {
                 if inp.is_empty() {
                     preprocessed
                         .register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
-                } else if let [wid] = inp.as_slice() {
-                    if self.merkle_path {
-                        preprocessed.register_non_primitive_preprocessed_no_read(
-                            &self.op_type,
-                            &[preprocessed.witness_index_as_field(*wid)],
-                        );
-                    } else {
-                        preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
-                    }
+                } else if let [_] = inp.as_slice() {
+                    preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
                 } else {
                     return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                         op: self.op_type.clone(),
@@ -791,6 +829,10 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                     });
                 }
             }
+            preprocessed.register_non_primitive_preprocessed_no_read(
+                &self.op_type,
+                &vec![F::ZERO; width_ext - rate_ext],
+            );
             return Ok(());
         }
 
@@ -820,19 +862,6 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
                     &self.op_type,
                     &[F::ZERO, F::ZERO],
                 );
-            } else if self.merkle_path {
-                if self.config.is_arity4_shape() {
-                    // Arity-4 merkle rows emit a bare `in_ctl` input-limb send in the AIR, so the
-                    // creator multiplicity must see these injected/pad slots as reads to balance the
-                    // bus (pads -> zero const witness, injected slot -> W32 leaf-hash digest).
-                    preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
-                } else {
-                    preprocessed.register_non_primitive_preprocessed_no_read(
-                        &self.op_type,
-                        &[preprocessed.witness_index_as_field(inp[0])],
-                    );
-                }
-                preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
             } else {
                 preprocessed.register_non_primitive_witness_reads(&self.op_type, inp)?;
                 preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ONE]);
@@ -913,8 +942,8 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
 
     /// Emit preprocessed columns for control flags.
     ///
-    /// Registers the MMCS index accumulator witness index, the Merkle CTL flag,
-    /// and the `new_start` / `merkle_path` boolean selectors.
+    /// Registers the direction-bit witness index (read on the WitnessChecks bus by Merkle rows),
+    /// the compact D=1 capacity-side flag, and the `new_start` / `merkle_path` boolean selectors.
     fn preprocess_flags<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
@@ -951,19 +980,29 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             return Ok(());
         }
 
-        if inputs[width_ext].is_empty() {
-            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
+        // Arity-2 Merkle rows bind their direction bit directly to its witness: the first flag slot
+        // carries the bit-source witness index, read on the WitnessChecks bus to balance the AIR's
+        // bit send. The second slot is the compact D=1 capacity-side flag (zero otherwise).
+        if self.merkle_path {
+            let bit_source = &inputs[width_ext + 1];
+            if bit_source.len() != 1 {
+                return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
+                    op: self.op_type.clone(),
+                    expected: "exactly one direction-bit witness on a Merkle row".into(),
+                    got: bit_source.len(),
+                });
+            }
+            preprocessed.register_non_primitive_witness_reads(&self.op_type, bit_source)?;
         } else {
-            preprocessed.register_non_primitive_preprocessed_no_read(
-                &self.op_type,
-                &[preprocessed.witness_index_as_field(inputs[width_ext][0])],
-            );
+            preprocessed.register_non_primitive_preprocessed_no_read(&self.op_type, &[F::ZERO]);
         }
 
-        let mmcs_ctl_enabled = !inputs[width_ext].is_empty();
-        let mmcs_merkle_flag = F::from_bool(mmcs_ctl_enabled && self.merkle_path);
-        preprocessed
-            .register_non_primitive_preprocessed_no_read(&self.op_type, &[mmcs_merkle_flag]);
+        let capacity_fed =
+            self.compact_d1_preprocessed_layout() && self.compact_merkle_capacity_fed(inputs)?;
+        preprocessed.register_non_primitive_preprocessed_no_read(
+            &self.op_type,
+            &[F::from_bool(capacity_fed)],
+        );
 
         let new_start_val = F::from_bool(self.new_start);
         let merkle_path_val = F::from_bool(self.merkle_path);

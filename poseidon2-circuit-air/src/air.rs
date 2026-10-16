@@ -767,7 +767,9 @@ impl<
 /// `OL` sponge chain helpers `(1 − new_start)(1 − merkle_path)(1 − in_ctl_i)`, `OL` Merkle chain helpers
 /// `(1 − new_start)(merkle_path)(1 − in_ctl_i)`, then `IL` input indices, `OL` output indices,
 /// `OL` per-limb `out_ctl`, then four tail flags. Rate `in_ctl` may vary (e.g. partial-chunk overwrite).
-/// Capacity inputs are not CTL-verified; sponge `new_start` rows enforce zero capacity in `eval`.
+/// Only rate-indexed inputs are looked up; sponge `new_start` rows enforce zero capacity in `eval`.
+/// A Merkle row whose witnesses feed the capacity half (an injected digest) carries them in the
+/// rate-indexed `in_ctl` / index columns and sets the capacity-side tail flag.
 ///
 /// # Precomputed Selectors
 ///
@@ -780,8 +782,8 @@ impl<
 /// - The **Merkle chain selector** is true when the row is not a chain
 ///   boundary, is a Merkle row, and the limb is not looked up via CTL.
 ///
-/// - The **MMCS Merkle flag** is true when MMCS CTL is enabled and the
-///   row is a Merkle row.
+/// - The **MMCS Merkle flag** column is the capacity-side flag of a compact
+///   D=1 Merkle row; the general layout writes `mmcs_ctl_enabled && merkle_path`.
 ///
 /// Computing these products at setup time avoids degree-4 expressions
 /// in the constraint polynomial.
@@ -843,7 +845,10 @@ pub fn extract_preprocessed_from_operations_with_role<
         debug_assert_eq!(output_indices.len(), OL);
 
         if compact_d1 {
-            for ctl in in_ctl.iter().take(OL) {
+            // A capacity-fed Merkle row carries its witnesses in the rate-indexed columns.
+            let capacity_fed = *merkle_path && in_ctl.iter().take(IL).skip(OL).any(|&ctl| ctl);
+            let fed = if capacity_fed { OL } else { 0 };
+            for ctl in in_ctl.iter().skip(fed).take(OL) {
                 preprocessed.push(F::from_bool(*ctl));
             }
             if !*merkle_path {
@@ -863,17 +868,19 @@ pub fn extract_preprocessed_from_operations_with_role<
             for ctl in in_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(!*new_start && *merkle_path && !ctl));
             }
-            for input_index in input_indices.iter().take(IL) {
+            for input_index in input_indices.iter().skip(fed).take(OL) {
                 preprocessed.push(F::from_u32(input_index * d));
             }
+            preprocessed.extend(core::iter::repeat_n(F::ZERO, IL - OL));
             for output_index in output_indices.iter().take(OL) {
                 preprocessed.push(F::from_u32(output_index * d));
             }
             for ctl in out_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(*ctl));
             }
-            preprocessed.push(F::from_u64(*mmcs_index_sum_idx as u64 * d as u64));
-            preprocessed.push(F::from_bool(*mmcs_ctl_enabled && *merkle_path));
+            let bit_source_idx = if *merkle_path { *mmcs_index_sum_idx } else { 0 };
+            preprocessed.push(F::from_u64(bit_source_idx as u64 * d as u64));
+            preprocessed.push(F::from_bool(capacity_fed));
             preprocessed.push(F::from_bool(*new_start));
             preprocessed.push(F::from_bool(*merkle_path));
         } else {
@@ -919,7 +926,11 @@ pub fn extract_preprocessed_from_operations_with_role<
                     out_ctl: F::from_bool(out_ctl[i]),
                 }),
 
-                mmcs_index_sum_ctl_idx: F::from_u64(*mmcs_index_sum_idx as u64 * d as u64),
+                mmcs_index_sum_ctl_idx: F::from_u64(if *merkle_path {
+                    *mmcs_index_sum_idx as u64 * d as u64
+                } else {
+                    0
+                }),
 
                 mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
 
@@ -1170,6 +1181,14 @@ pub(crate) fn eval<
             .assert_zero(
                 next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
             );
+
+        // The rate input lookups read the half `mmcs_bit + capacity_fed` selects, so the direction
+        // bit must be zero wherever it is not a bound Merkle direction (sponge rows) and on
+        // capacity-fed Merkle rows, keeping the selector boolean. Row-local on the `next` row, so
+        // the wrap-around window covers row 0.
+        let next_capacity_fed = s[tail + 1];
+        builder.when(not_merkle).assert_zero(next.mmcs_bit);
+        builder.when(next_capacity_fed).assert_zero(next.mmcs_bit);
     } else {
         let next_prep: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
             next_preprocessed.borrow();
@@ -1266,6 +1285,13 @@ pub(crate) fn eval<
         } else {
             builder.assert_zero(next_prep.merkle_path.into());
         }
+
+        // The input lookups read the half `mmcs_bit` selects, so the bit must be zero wherever it
+        // is not a bound Merkle direction. Row-local on the `next` row, so the wrap-around window
+        // covers row 0.
+        builder
+            .when(AB::Expr::ONE - next_prep.merkle_path.into())
+            .assert_zero(next.mmcs_bit);
 
         // MMCS accumulator
         //
@@ -1820,8 +1846,7 @@ where
 }
 
 /// Push the WitnessChecks CTL interactions for one row of the Poseidon2 circuit AIR: input
-/// limb sends, output limb receives, and the MMCS-accumulator send at the end of each
-/// Merkle chain.
+/// limb sends, output limb receives, and the direction-bit send of each Merkle row.
 fn eval_interactions<
     AB: AirBuilder + InteractionBuilder,
     const D: usize,
@@ -1946,30 +1971,28 @@ fn eval_interactions_inner<
         debug_assert_eq!(next_preprocessed.len(), tail + 4);
 
         let merkle_path_p: AB::Expr = local_preprocessed[tail + 3].into();
-        let not_merkle = AB::Expr::ONE - merkle_path_p;
         let idx_base = hdr;
 
-        // Input limb sends (rate only; capacity is zero-asserted in eval)
+        // Input limb sends (rate-indexed; sponge capacity is zero-asserted in eval). A Merkle row
+        // swaps its halves when `mmcs_bit = 1`, and a capacity-fed Merkle row (an injected digest)
+        // carries its witnesses in these rate-indexed slots, so each send reads the half selected
+        // by `mmcs_bit + capacity_fed`. Eval keeps that selector boolean and zero on sponge rows,
+        // and the bit send below binds `mmcs_bit` on Merkle rows.
+        let half_sel: AB::Expr = local.mmcs_bit.into() + local_preprocessed[tail + 1].into();
         for limb_idx in 0..RATE_EXT {
             let idx: AB::Expr = local_preprocessed[idx_base + limb_idx].into();
             let in_ctl: AB::Expr = local_preprocessed[limb_idx].into();
             let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
             input_idx_limb.push(idx);
             for d in 0..D {
-                input_idx_limb.push(local.perm.inputs[limb_idx * D + d].into());
+                let left: AB::Expr = local.perm.inputs[limb_idx * D + d].into();
+                let right: AB::Expr = local.perm.inputs[(RATE_EXT + limb_idx) * D + d].into();
+                input_idx_limb.push(left.clone() + half_sel.clone() * (right - left));
             }
             for _ in 0..(WITNESS_EXT_D - D) {
                 input_idx_limb.push(AB::Expr::ZERO);
             }
-            // Arity-4 merkle rows carry `in_ctl = 1` only on injected/pad slots, so the bare
-            // `in_ctl` send (degree 1) pins exactly those to their witnesses. Other shapes keep the
-            // `not_merkle` gate so Merkle siblings stay free.
-            let mult = if is_arity4 {
-                in_ctl
-            } else {
-                in_ctl * not_merkle.clone()
-            };
-            builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
+            builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-in_ctl, 1));
         }
 
         // Output limb receives
@@ -1992,55 +2015,51 @@ fn eval_interactions_inner<
             builder.push_interaction("WitnessChecks", output_idx_limb, Count::bounded(out_ctl, 1));
         }
 
-        // MMCS accumulator send.
-        let mult_a: AB::Expr = local_preprocessed[tail + 1].into();
-        let mult_b: AB::Expr = next_preprocessed[tail + 2].into();
-        let multiplicity = mult_a * mult_b;
-        let mut mmcs_index_sum_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
-        mmcs_index_sum_lookup.push(local_preprocessed[tail].into());
-        mmcs_index_sum_lookup.push(local.mmcs_index_sum.into());
+        // Direction-bit send: every Merkle row reads its bit from the witness it was sourced from.
+        let mut bit_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+        bit_lookup.push(local_preprocessed[tail].into());
+        bit_lookup.push(local.mmcs_bit.into());
         for _ in 0..(WITNESS_EXT_D - 1) {
-            mmcs_index_sum_lookup.push(AB::Expr::ZERO);
+            bit_lookup.push(AB::Expr::ZERO);
         }
         builder.push_interaction(
             "WitnessChecks",
-            mmcs_index_sum_lookup,
-            Count::bounded(-multiplicity, 1),
+            bit_lookup,
+            Count::bounded(-merkle_path_p, 1),
         );
     } else {
         let local_pre: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
             local_preprocessed.borrow();
-        let next_pre: &Poseidon2PreprocessedRow<WIDTH_EXT, RATE_EXT, AB::Var> =
-            next_preprocessed.borrow();
 
-        // Input limb sends; disabled on Merkle rows (mult zero) so degree stays ≤ 3.
-        let not_merkle = AB::Expr::ONE - local_pre.merkle_path.into();
-
+        // Input limb sends. An arity-2 Merkle row swaps its halves when `mmcs_bit = 1`, so each
+        // send reads the slot its witness occupies after the swap. Eval keeps `mmcs_bit` zero on
+        // every non-Merkle row and the bit send below binds it on Merkle rows. Arity-4 rows feed
+        // witnesses only into fixed injected/pad slots, and other shapes have no Merkle rows.
+        let swaps_halves = !is_arity4 && 2 * RATE_EXT == WIDTH_EXT;
         for limb_idx in 0..WIDTH_EXT {
             let limb = &local_pre.input_limbs[limb_idx];
+            let swapped_idx = (limb_idx + RATE_EXT) % WIDTH_EXT;
 
             let mut input_idx_limb: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
             input_idx_limb.push(limb.idx.into());
             for d in 0..D {
-                input_idx_limb.push(local.perm.inputs[limb_idx * D + d].into());
+                let own: AB::Expr = local.perm.inputs[limb_idx * D + d].into();
+                if swaps_halves {
+                    let other: AB::Expr = local.perm.inputs[swapped_idx * D + d].into();
+                    input_idx_limb.push(own.clone() + local.mmcs_bit.into() * (other - own));
+                } else {
+                    input_idx_limb.push(own);
+                }
             }
             for _ in 0..(WITNESS_EXT_D - D) {
                 input_idx_limb.push(AB::Expr::ZERO);
             }
 
-            let in_ctl: AB::Expr = limb.in_ctl.into();
-            // Arity-4 merkle rows carry `in_ctl = 1` only on injected/pad slots, so the bare
-            // `in_ctl` send (degree 1) pins exactly those to their witnesses. Other shapes keep the
-            // `not_merkle` gate so Merkle siblings stay free.
-            // Arity-4 merkle rows carry `in_ctl = 1` only on injected/pad slots, so the bare
-            // `in_ctl` send (degree 1) pins exactly those to their witnesses. Other shapes keep the
-            // `not_merkle` gate so Merkle siblings stay free.
-            let mult = if is_arity4 {
-                in_ctl
-            } else {
-                in_ctl * not_merkle.clone()
-            };
-            builder.push_interaction("WitnessChecks", input_idx_limb, Count::bounded(-mult, 1));
+            builder.push_interaction(
+                "WitnessChecks",
+                input_idx_limb,
+                Count::bounded(-limb.in_ctl.into(), 1),
+            );
         }
 
         // Output limb receives.
@@ -2096,21 +2115,18 @@ fn eval_interactions_inner<
             }
             builder.push_interaction("WitnessChecks", bit1_lookup, Count::bounded(-merkle, 1));
         } else {
-            // MMCS accumulator send.
-            let mmf: AB::Expr = local_pre.mmcs_merkle_flag.into();
-            let next_ns: AB::Expr = next_pre.new_start.into();
-            let multiplicity = mmf * next_ns;
-
-            let mut mmcs_index_sum_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
-            mmcs_index_sum_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
-            mmcs_index_sum_lookup.push(local.mmcs_index_sum.into());
+            // Direction-bit send: every Merkle row reads its bit from the witness it was sourced
+            // from. The accumulator idx slot carries that witness index.
+            let mut bit_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
+            bit_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
+            bit_lookup.push(local.mmcs_bit.into());
             for _ in 0..(WITNESS_EXT_D - 1) {
-                mmcs_index_sum_lookup.push(AB::Expr::ZERO);
+                bit_lookup.push(AB::Expr::ZERO);
             }
             builder.push_interaction(
                 "WitnessChecks",
-                mmcs_index_sum_lookup,
-                Count::bounded(-multiplicity, 1),
+                bit_lookup,
+                Count::bounded(-local_pre.merkle_path.into(), 1),
             );
         }
     }
@@ -2136,12 +2152,12 @@ mod test {
     use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
     use crate::{
         BabyBearD4Width16, BabyBearD4Width24, BabyBearD4Width32, GoldilocksD2Width16,
-        KoalaBearD1Width32, KoalaBearD4Width16, KoalaBearD4Width24, KoalaBearD4Width32,
-        Poseidon2CircuitAirBabyBearD4Width16, Poseidon2CircuitAirBabyBearD4Width24,
-        Poseidon2CircuitAirBabyBearD4Width32, Poseidon2CircuitAirGoldilocksD2Width8,
-        Poseidon2CircuitAirKoalaBearD1Width32, Poseidon2CircuitAirKoalaBearD4Width16,
-        Poseidon2CircuitAirKoalaBearD4Width24, Poseidon2CircuitAirKoalaBearD4Width32,
-        goldilocks_d2_width8_round_constants,
+        KoalaBearD1Width16, KoalaBearD1Width32, KoalaBearD4Width16, KoalaBearD4Width24,
+        KoalaBearD4Width32, Poseidon2CircuitAirBabyBearD4Width16,
+        Poseidon2CircuitAirBabyBearD4Width24, Poseidon2CircuitAirBabyBearD4Width32,
+        Poseidon2CircuitAirGoldilocksD2Width8, Poseidon2CircuitAirKoalaBearD1Width32,
+        Poseidon2CircuitAirKoalaBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width24,
+        Poseidon2CircuitAirKoalaBearD4Width32, goldilocks_d2_width8_round_constants,
     };
 
     const WIDTH: usize = 16;
@@ -2544,7 +2560,7 @@ mod test {
             challenger: false,
             new_start: false,
             merkle_path: false,
-            mmcs_bit: true,
+            mmcs_bit: false,
             mmcs_bit2: false,
             mmcs_index_sum: Val::ZERO,
             input_values: state_b.to_vec().into(),
@@ -2980,6 +2996,17 @@ mod test {
 
         let gl_d2_w16 = GoldilocksD2Width16::default_air();
         assert_arity4_constraint_degree::<GlF, GlEF, _>(&gl_d2_w16, "GoldilocksD2Width16");
+    }
+
+    #[test]
+    fn test_air_constraint_degree_compact_d1() {
+        // The compact layout's rate input sends read the half `mmcs_bit + capacity_fed` selects,
+        // a degree-2 payload whose lookup must stay within degree 3.
+        type KbEF = BinomialExtensionField<KoalaBear, 4>;
+        let air = KoalaBearD1Width16::default_air();
+        let max_degree =
+            assert_arity4_constraint_degree::<KoalaBear, KbEF, _>(&air, "KoalaBearD1Width16");
+        assert_eq!(max_degree, p3_test_utils::MAX_TEST_CONSTRAINT_DEGREE);
     }
 
     #[test]
