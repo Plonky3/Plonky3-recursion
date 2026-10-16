@@ -10,7 +10,49 @@ use crate::CircuitBuilderError;
 use crate::builder::CircuitBuilder;
 use crate::types::{ExprId, NonPrimitiveOpId};
 
+/// Number of leading input lanes a chain-start row must take from the witness bus.
+///
+/// A non-challenger chain start begins from the zero state, which the executor reproduces for an
+/// empty lane. No AIR constraint pins those lanes except the capacity of a compact D=1 sponge
+/// start, so every other empty lane is fed a bus-checked zero. An arity-2 Merkle chain start
+/// holds its sibling in the capacity, so only its rate is fed; challenger tables pin their own
+/// chain starts.
+///
+/// Returns `None` for a length-tagged start on a table that neither pins its capacity nor is a
+/// challenger table: the executor applies the tag to a capacity lane no constraint would bind.
+fn zero_fed_start_lanes<C: PoseidonConfigApi>(
+    config: C,
+    new_start: bool,
+    merkle_path: bool,
+    absorb_len: usize,
+) -> Option<usize> {
+    if !new_start || config.is_challenger() {
+        return Some(0);
+    }
+    let (d, width_ext, rate_ext) = (config.d(), config.width_ext(), config.rate_ext());
+    let compact =
+        p3_poseidon_circuit_cols::poseidon_uses_compact_d1_preprocessed(d, width_ext, rate_ext);
+    if compact || (merkle_path && !config.is_arity4_shape()) {
+        Some(rate_ext)
+    } else if absorb_len > 0 {
+        None
+    } else {
+        Some(width_ext)
+    }
+}
+
 impl<F: Field> CircuitBuilder<F> {
+    /// Feed a bus-checked zero to the empty lanes among the first `lanes` inputs.
+    fn zero_fill_lanes(&mut self, inputs: &mut [Option<ExprId>], lanes: usize) {
+        if lanes == 0 {
+            return;
+        }
+        let zero = self.define_const(F::ZERO);
+        for lane in inputs.iter_mut().take(lanes) {
+            lane.get_or_insert(zero);
+        }
+    }
+
     /// Shared body for the extension-mode `add_*_perm` builder methods.
     ///
     /// The caller validates the `mmcs_bit`/`merkle_path` pairing and supplies the
@@ -28,8 +70,20 @@ impl<F: Field> CircuitBuilder<F> {
         let width_ext = call.config.width_ext();
         let rate_ext = call.config.rate_ext();
 
+        let mut inputs = call.inputs.clone();
+        let start_lanes = zero_fed_start_lanes(
+            call.config,
+            call.new_start,
+            call.merkle_path,
+            call.absorb_len,
+        )
+        .ok_or_else(|| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+            op: op_type.clone(),
+        })?;
+        self.zero_fill_lanes(&mut inputs, start_lanes);
+
         let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(width_ext + 3);
-        for limb in &call.inputs {
+        for limb in &inputs {
             input_exprs.push(limb.map_or_else(Vec::new, |v| vec![v]));
         }
         input_exprs.push(call.mmcs_index_sum.map_or_else(Vec::new, |v| vec![v]));
@@ -75,9 +129,15 @@ impl<F: Field> CircuitBuilder<F> {
         let op_type = V::npo_type_id(call.config);
         self.ensure_op_enabled(&op_type)?;
 
-        let input_exprs: [Vec<ExprId>; 16] = call
-            .inputs
-            .map(|opt| opt.map_or_else(Vec::new, |v| vec![v]));
+        let mut inputs = call.inputs;
+        let start_lanes = zero_fed_start_lanes(call.config, call.new_start, false, call.absorb_len)
+            .ok_or_else(|| CircuitBuilderError::InvalidNonPrimitiveOpConfiguration {
+                op: op_type.clone(),
+            })?;
+        self.zero_fill_lanes(&mut inputs, start_lanes);
+
+        let input_exprs: [Vec<ExprId>; 16] =
+            inputs.map(|opt| opt.map_or_else(Vec::new, |v| vec![v]));
 
         let output_labels: [Option<&'static str>; 16] = core::array::from_fn(|i| match i {
             0..8 if call.out_ctl[i] => Some(out_label),

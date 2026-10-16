@@ -1,13 +1,14 @@
-//! Cross-key soundness regressions for Poseidon Merkle rows.
+//! Cross-key soundness regressions for Poseidon Merkle rows and sponge starts.
 //!
 //! Each case builds a pair of circuits over identical constant tables that differ in one value the
-//! Poseidon table must bind: a Merkle direction bit or a digest entering a Merkle row. The honest trace of the first circuit is proven under the second
+//! Poseidon table must bind: a Merkle direction bit, a digest entering a Merkle row, or a lane of a
+//! sponge's starting state. The honest trace of the first circuit is proven under the second
 //! circuit's prepared key and checked by that key's verifier. A sound relation rejects the proof,
 //! because the second circuit's statement is false. Changing the claimed root, which the output
 //! lookup binds, is the control showing the harness detects a missing binding at all.
 
 use p3_circuit::ops::{
-    PermConfig, Poseidon1Config, Poseidon2Config, generate_poseidon1_trace,
+    PermConfig, Poseidon1Config, Poseidon2Config, Poseidon2PermCall, generate_poseidon1_trace,
     generate_poseidon2_trace, perm_private_data,
 };
 use p3_circuit::tables::Traces;
@@ -27,8 +28,9 @@ use p3_field::extension::{BinomialExtensionField, QuinticTrinomialExtensionField
 use p3_field::{ExtensionField, PrimeCharacteristicRing};
 use p3_koala_bear::{
     KoalaBear, default_koalabear_poseidon1_16, default_koalabear_poseidon2_16,
+    default_koalabear_poseidon2_32,
 };
-use p3_poseidon2_circuit_air::{KoalaBearD1Width16, KoalaBearD4Width16};
+use p3_poseidon2_circuit_air::{KoalaBearD1Width16, KoalaBearD4Width16, KoalaBearD4Width32};
 use p3_symmetric::Permutation;
 use p3_test_utils::LiftPermToQuintic;
 
@@ -378,4 +380,144 @@ fn poseidon2_compact_d1_merkle_rows_bind_bits_and_digests() {
 #[test]
 fn poseidon1_compact_d1_merkle_rows_bind_bits_and_digests() {
     assert_merkle_family::<P1D1Compact>();
+}
+
+/// A one-row sponge whose `honest` variant feeds the lanes in `seeded` explicit constants while
+/// the `target` variant leaves them empty. Both variants define the same constants and connect the
+/// rate output to the digest of the seeded start state.
+fn sponge_start_cross_key<EF: ExtensionField<F> + ExtractBinomialW<F>>(
+    cfg: Poseidon2Config,
+    enable: impl Fn(&mut CircuitBuilder<EF>),
+    prepare: impl Fn(&Circuit<EF>) -> PreparedCircuitProver<SC>,
+    native_output: &[F],
+    data_lanes: usize,
+    seeded: core::ops::Range<usize>,
+) -> Result<(), String> {
+    let width_ext = cfg.width_ext();
+    let rate_ext = cfg.rate_ext();
+    let d = cfg.d();
+    let build = |seed_lanes: bool| {
+        let mut b = CircuitBuilder::<EF>::new();
+        enable(&mut b);
+        b.define_const(EF::ZERO);
+        let lane_value = |lane: usize| -> Vec<F> { lane_state(lane, d, data_lanes) };
+        let lanes: Vec<ExprId> = (0..width_ext)
+            .map(|lane| define(&mut b, &lane_value(lane), d)[0])
+            .collect();
+        let outputs = define(&mut b, &native_output[..rate_ext * d], d);
+        let inputs = (0..width_ext)
+            .map(|lane| {
+                (lane < data_lanes || (seed_lanes && seeded.contains(&lane))).then_some(lanes[lane])
+            })
+            .collect();
+        let (_, out) = b
+            .add_poseidon2_perm(&Poseidon2PermCall {
+                config: cfg,
+                new_start: true,
+                merkle_path: false,
+                mmcs_bit: None,
+                mmcs_bit2: None,
+                inputs,
+                out_ctl: vec![true; rate_ext],
+                return_all_outputs: false,
+                mmcs_index_sum: None,
+                absorb_len: 0,
+            })
+            .unwrap();
+        for (o, e) in out.iter().take(rate_ext).zip(outputs) {
+            b.connect(o.unwrap(), e);
+        }
+        b.build().unwrap()
+    };
+
+    let honest = build(true);
+    let traces = honest.runner().run().expect("seeded start state executes");
+    prove_under(&prepare(&honest), &traces).expect("seeded start state verifies under its own key");
+    let target = build(false);
+    assert!(
+        target.runner().run().is_err(),
+        "the zero-start statement must be false for the seeded digest"
+    );
+    prove_under(&prepare(&target), &traces)
+}
+
+/// Base elements of one start-state lane: data lanes count from 10, seeded lanes from 900.
+fn lane_state(lane: usize, d: usize, data_lanes: usize) -> Vec<F> {
+    let base = if lane < data_lanes { 10 } else { 900 };
+    (0..d)
+        .map(|j| F::from_u64(base + (lane * d + j) as u64))
+        .collect()
+}
+
+fn seeded_state(lanes: usize, d: usize, data_lanes: usize) -> Vec<F> {
+    (0..lanes)
+        .flat_map(|lane| lane_state(lane, d, data_lanes))
+        .collect()
+}
+
+#[test]
+fn poseidon2_d4_sponge_start_binds_capacity() {
+    let state: [F; 16] = seeded_state(4, 4, 2).try_into().unwrap();
+    let output = default_koalabear_poseidon2_16().permute(state);
+    let result = sponge_start_cross_key::<EF4>(
+        Poseidon2Config::KOALA_BEAR_D4_W16,
+        P2D4::enable,
+        P2D4::prepare,
+        &output,
+        2,
+        2..4,
+    );
+    assert!(
+        rejected_by_verifier(&result),
+        "a non-zero starting capacity was not rejected: {result:?}"
+    );
+}
+
+#[test]
+fn poseidon2_compact_d1_sponge_start_binds_rate_lanes() {
+    let mut state: [F; 16] = seeded_state(16, 1, 3).try_into().unwrap();
+    state[8..].fill(F::ZERO);
+    let output = default_koalabear_poseidon2_16().permute(state);
+    let result = sponge_start_cross_key::<EF5>(
+        Poseidon2Config::KOALA_BEAR_D1_W16,
+        P2D1Compact::enable,
+        P2D1Compact::prepare,
+        &output,
+        3,
+        3..8,
+    );
+    assert!(
+        rejected_by_verifier(&result),
+        "non-zero starting rate lanes were not rejected: {result:?}"
+    );
+}
+
+#[test]
+fn poseidon2_arity4_sponge_start_binds_empty_lanes() {
+    let state: [F; 32] = seeded_state(8, 4, 1).try_into().unwrap();
+    let output = default_koalabear_poseidon2_32().permute(state);
+    let result = sponge_start_cross_key::<EF4>(
+        Poseidon2Config::KOALA_BEAR_D4_W32,
+        |b| {
+            b.enable_poseidon2_perm_width_32::<KoalaBearD4Width32, _>(
+                generate_poseidon2_trace::<EF4, KoalaBearD4Width32>,
+                default_koalabear_poseidon2_32(),
+            );
+        },
+        |circuit| {
+            prepare::<EF4, 4>(
+                circuit,
+                &[Box::new(Poseidon2Preprocessor)],
+                &poseidon2_air_builders::<SC, 4>(),
+                |p| p.register_poseidon2_table::<4>(Poseidon2Config::KOALA_BEAR_D4_W32),
+            )
+        },
+        &output,
+        1,
+        1..8,
+    );
+    assert!(
+        rejected_by_verifier(&result),
+        "a non-zero arity-4 starting state was not rejected: {result:?}"
+    );
 }
