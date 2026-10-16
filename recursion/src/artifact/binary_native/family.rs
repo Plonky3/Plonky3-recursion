@@ -2,6 +2,10 @@
 
 mod boolean_whir;
 pub(super) use boolean_whir::BooleanWhirTraceFamily;
+mod mixed_whir;
+pub(super) use mixed_whir::MixedWhirFamily;
+mod poly_mixed_whir;
+pub(super) use poly_mixed_whir::PolyMixedWhirFamily;
 mod poly_whir;
 pub(super) use poly_whir::PolyWhirFamily;
 mod whir;
@@ -12,6 +16,7 @@ use p3_sumcheck::PrescribedPointPcs;
 pub(super) use whir::WhirFamily;
 
 use super::*;
+use crate::pcs::binary::MerkleArity;
 
 type NativeBooleanTraceError<E> =
     p3_binary_pcs::BooleanTraceError<E, <NativeMmcs<E> as p3_commit::Mmcs<E>>::Error>;
@@ -42,10 +47,17 @@ where
     type Recursive;
     type Input;
     type Decode;
+    /// The byte-hash Merkle trees one commitment opens.
+    type Trees;
 
-    fn hash(p: &Self::Parameters) -> ByteHash;
     fn cap_height(p: &Self::Parameters) -> usize;
+    /// The compression arity of the commitment's Merkle trees.
+    fn arity(p: &Self::Parameters) -> MerkleArity;
     fn pow_bits(p: &Self::Parameters) -> usize;
+    /// Whether the main commitment stores `table` as bits, so no cell of it can be a non-bit.
+    fn bits_committed(_parameters: &Self::Parameters, _table: usize) -> bool {
+        false
+    }
     fn build_recursive<A: VerifierAir<F, E>>(
         airs: &[&A],
         heights: &[usize],
@@ -53,11 +65,12 @@ where
         roots: usize,
         limits: &VerifierLimits,
     ) -> Result<Self::Recursive, VerificationError>;
+    /// The trees of the commitment `p` configures.
+    fn trees(p: &Self::Parameters) -> Self::Trees;
     fn build_config(
         spec: &BinaryNativeVerifierSpec<Self::Parameters>,
-        base: &NativeMmcs<F>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<E>)>,
+        main: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError>;
     fn bind_preprocessing(
         recursive: &mut Self::Recursive,
@@ -66,16 +79,11 @@ where
     fn usage(recursive: &Self::Recursive) -> InputResourceUsage;
     fn public_counts(decode: &Self::Decode) -> &[usize];
     fn decode_shape(recursive: &Self::Recursive) -> Self::Decode;
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "The verifier keeps protocol inputs explicit."
-    )]
     fn import_native(
         recursive: &Self::Recursive,
         config: &Self::Config,
-        base: &NativeMmcs<F>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<E>)>,
+        main: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<F>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<F>,
@@ -103,12 +111,13 @@ where
     type Recursive = BinaryMultiStarkVerifier<F, E>;
     type Input = NativeBinaryMultiStarkInput<F, E>;
     type Decode = codec::MultiDecode;
+    type Trees = (NativeMmcs<F>, NativeMmcs<E>);
 
-    fn hash(p: &Self::Parameters) -> ByteHash {
-        p.hash
-    }
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
+    }
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.config.pow_bits()
@@ -157,11 +166,13 @@ where
             },
         )
     }
+    fn trees(p: &Self::Parameters) -> Self::Trees {
+        tree_pair(p.hash, p.cap_height)
+    }
     fn build_config(
         spec: &BinaryNativeVerifierSpec,
-        base: &NativeMmcs<F>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<E>)>,
+        (base, round): &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
         Ok(BinaryNativeConfig {
             main: BinaryPcs::new(spec.main.config, base.clone(), round.clone())
@@ -195,9 +206,8 @@ where
     fn import_native(
         recursive: &Self::Recursive,
         _config: &Self::Config,
-        base: &NativeMmcs<F>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<E>)>,
+        (base, round): &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<F>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<F>,
@@ -239,12 +249,13 @@ where
     type Recursive = crate::verifier::BinaryGroupedMultiStarkVerifier<F, E>;
     type Input = crate::verifier::NativeBinaryGroupedMultiStarkInput<F, E>;
     type Decode = codec::MultiDecode<codec::PcsDecode<codec::GroupedOracleDecode>>;
+    type Trees = (NativeMmcs<F>, NativeMmcs<E>);
 
-    fn hash(p: &Self::Parameters) -> ByteHash {
-        p.pcs.hash
-    }
     fn cap_height(p: &Self::Parameters) -> usize {
         p.pcs.cap_height
+    }
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.pcs.config.pow_bits()
@@ -299,11 +310,13 @@ where
             },
         )
     }
+    fn trees(p: &Self::Parameters) -> Self::Trees {
+        tree_pair(p.pcs.hash, p.pcs.cap_height)
+    }
     fn build_config(
         spec: &BinaryNativeGroupedVerifierSpec,
-        base: &NativeMmcs<F>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<E>)>,
+        (base, round): &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
         // Native constructors validate both adapters even when a short PCS
         // never commits an intermediate oracle. Check unused round policies too.
@@ -351,9 +364,8 @@ where
     fn import_native(
         recursive: &Self::Recursive,
         _config: &Self::Config,
-        base: &NativeMmcs<F>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<F>, NativeMmcs<E>)>,
+        (base, round): &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<F>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<F>,
@@ -400,12 +412,13 @@ where
     type Recursive = crate::verifier::BinaryGroupedBooleanTraceMultiStarkVerifier<E>;
     type Input = crate::verifier::NativeBinaryGroupedBooleanTraceMultiStarkInput<E>;
     type Decode = codec::MultiDecode<codec::BooleanTraceDecode>;
+    type Trees = (NativeMmcs<E>, NativeMmcs<E>);
 
-    fn hash(p: &Self::Parameters) -> ByteHash {
-        p.pcs.hash
-    }
     fn cap_height(p: &Self::Parameters) -> usize {
         p.pcs.cap_height
+    }
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.pcs.config.pow_bits()
@@ -460,11 +473,13 @@ where
             },
         )
     }
+    fn trees(p: &Self::Parameters) -> Self::Trees {
+        tree_pair(p.pcs.hash, p.pcs.cap_height)
+    }
     fn build_config(
         spec: &BinaryNativeGroupedVerifierSpec,
-        base: &NativeMmcs<E>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<E>, NativeMmcs<E>)>,
+        (base, round): &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
         // Native constructors validate both adapters even when a short PCS
         // never commits an intermediate oracle. Check unused round policies too.
@@ -512,9 +527,8 @@ where
     fn import_native(
         recursive: &Self::Recursive,
         _config: &Self::Config,
-        base: &NativeMmcs<E>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<E>, NativeMmcs<E>)>,
+        (base, round): &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<E>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<E>,
@@ -562,12 +576,13 @@ where
     type Input = crate::verifier::NativeBinaryBooleanTraceMultiStarkInput<E>;
     type Decode =
         codec::MultiDecode<codec::BooleanTraceDecode<codec::PcsDecode<codec::OracleDecode>>>;
+    type Trees = (NativeMmcs<E>, NativeMmcs<E>);
 
-    fn hash(p: &Self::Parameters) -> ByteHash {
-        p.hash
-    }
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
+    }
+    fn arity(_parameters: &Self::Parameters) -> MerkleArity {
+        MerkleArity::Two
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.config.pow_bits()
@@ -616,11 +631,13 @@ where
             },
         )
     }
+    fn trees(p: &Self::Parameters) -> Self::Trees {
+        tree_pair(p.hash, p.cap_height)
+    }
     fn build_config(
         spec: &BinaryNativeVerifierSpec,
-        base: &NativeMmcs<E>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<E>, NativeMmcs<E>)>,
+        (base, round): &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
         Ok(config::BinaryNativeBooleanTraceConfig {
             main: boolean_trace_pcs(&spec.main, base, round)
@@ -655,9 +672,8 @@ where
     fn import_native(
         recursive: &Self::Recursive,
         _config: &Self::Config,
-        base: &NativeMmcs<E>,
-        round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<E>, NativeMmcs<E>)>,
+        (base, round): &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<E>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<E>,
@@ -680,6 +696,11 @@ where
     fn suite() -> u16 {
         field_suite::<E, E>() | 0x300
     }
+}
+
+/// The base and round trees of a folding commitment.
+const fn tree_pair<F, E>(hash: ByteHash, cap_height: usize) -> (NativeMmcs<F>, NativeMmcs<E>) {
+    (tree(hash, cap_height), tree(hash, cap_height))
 }
 
 fn write_grouping(

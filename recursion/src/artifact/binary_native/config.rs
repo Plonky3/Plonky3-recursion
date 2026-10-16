@@ -3,20 +3,35 @@
 mod boolean_whir;
 pub use boolean_whir::BinaryNativeBooleanWhirTraceConfig;
 pub(super) use boolean_whir::NativeBooleanWhirTracePcs;
+mod mixed_whir;
+pub use mixed_whir::{
+    BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters,
+    BinaryNativePolyMixedWhirConfig, BinaryNativePolyMixedWhirPcsParameters,
+};
+pub(crate) use mixed_whir::{MixedWhirError, MixedWhirPcs, NativeMixedWhirPcs};
+pub(super) use mixed_whir::{
+    MixedWhirPartParameters, MixedWhirProof, NativeMixedWhirPcsParameters, NativeMixedWhirProof,
+    PackedTableParameters,
+};
 mod poly_whir;
 pub(super) use poly_whir::NativePolyWhirPcs;
 pub use poly_whir::{
     BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
 };
+#[cfg(test)]
+mod poly_packed_tests;
+mod transcript;
 mod whir;
+mod whir_mmcs;
 use alloc::vec::Vec;
+use core::marker::PhantomData;
 
 use p3_binary_dft::EncodableLevel;
 use p3_binary_field::{BinaryChallenger, TowerLevel};
 use p3_binary_pcs::{BinaryPcs, ChallengeField, FoldAlphabet, GroupedCodewordMmcs};
 use p3_challenger::{
     CanObserve, CanSample, CanSampleBits, CanSampleUniformBits, FieldChallenger,
-    GrindingChallenger, HashChallenger, ResamplingError,
+    GrindingChallenger, ResamplingError,
 };
 use p3_circuit::ops::ByteHash;
 use p3_field::{BasedVectorSpace, ExtensionField, PackedValue};
@@ -24,8 +39,11 @@ use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
 use p3_multi_stark::config::{MultiStarkConfig, ProverData};
 use p3_sumcheck::layout::{Layout, SuffixProver, Table, Witness};
 use p3_symmetric::{CompressionFunctionFromHasher, CryptographicHasher, SerializingHasher};
+use tracing::instrument;
+use transcript::NativeTranscript;
 pub(super) use whir::NativeWhirPcs;
 pub use whir::{BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters};
+pub(crate) use whir_mmcs::NativeWhirMmcs;
 
 use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::VerificationError;
@@ -67,16 +85,18 @@ impl CryptographicHasher<u8, [u8; 32]> for BinaryNativeHash {
     }
 }
 
-pub(super) type NativeMmcs<F> = MerkleTreeMmcs<
+/// A native byte-hash Merkle tree whose nodes compress `N` digests.
+pub(crate) type NativeArityMmcs<F, const N: usize> = MerkleTreeMmcs<
     F,
     u8,
     SerializingHasher<BinaryNativeHash>,
-    CompressionFunctionFromHasher<BinaryNativeHash, 2, 32>,
-    2,
+    CompressionFunctionFromHasher<BinaryNativeHash, N, 32>,
+    N,
     32,
 >;
+pub(crate) type NativeMmcs<F> = NativeArityMmcs<F, 2>;
 pub(super) type NativePcs<F, E> = BinaryPcs<F, E, NativeMmcs<F>, NativeMmcs<E>>;
-type Inner<F> = BinaryChallenger<F, HashChallenger<u8, BinaryNativeHash, 32>>;
+type Binary<'a, F> = BinaryChallenger<F, &'a mut NativeTranscript>;
 
 #[derive(Clone)]
 enum Capture {
@@ -89,16 +109,22 @@ enum Capture {
 /// Native transcript with private configuration and setup capture state.
 #[derive(Clone)]
 pub struct BinaryNativeChallenger<F> {
-    inner: Inner<F>,
+    transcript: NativeTranscript,
     capture: Capture,
+    _field: PhantomData<F>,
 }
 
 impl<F> BinaryNativeChallenger<F> {
-    pub(super) const fn fresh(initial: Vec<u8>, hash: ByteHash) -> Self {
+    pub(crate) const fn fresh(initial: Vec<u8>, hash: ByteHash) -> Self {
         Self {
-            inner: Inner::from_hasher(initial, BinaryNativeHash(hash)),
+            transcript: NativeTranscript::new(initial, hash),
             capture: Capture::Off,
+            _field: PhantomData,
         }
+    }
+    /// The byte transcript read and written as a transcript over `F`.
+    const fn binary(&mut self) -> Binary<'_, F> {
+        BinaryChallenger::new(&mut self.transcript)
     }
     pub(super) fn for_setup(expected_roots: usize, hash: ByteHash) -> Self {
         let mut ch = Self::fresh(Vec::new(), hash);
@@ -143,23 +169,23 @@ impl NativeAlphabet for p3_binary_field::Poly64 {}
 
 impl<F: NativeAlphabet> CanObserve<F> for BinaryNativeChallenger<F> {
     fn observe(&mut self, value: F) {
-        self.inner.observe(value);
+        self.binary().observe(value);
     }
 }
 impl<F: NativeAlphabet, G> CanObserve<MerkleCap<G, [u8; 32]>> for BinaryNativeChallenger<F> {
     fn observe(&mut self, cap: MerkleCap<G, [u8; 32]>) {
         self.record_cap(cap.roots());
-        self.inner.observe(cap);
+        self.binary().observe(cap);
     }
 }
 impl<F: NativeAlphabet, T: BasedVectorSpace<F>> CanSample<T> for BinaryNativeChallenger<F> {
     fn sample(&mut self) -> T {
-        <Inner<F> as CanSample<T>>::sample(&mut self.inner)
+        <Binary<'_, F> as CanSample<T>>::sample(&mut self.binary())
     }
 }
 impl<F: NativeAlphabet> CanSampleBits<usize> for BinaryNativeChallenger<F> {
     fn sample_bits(&mut self, bits: usize) -> usize {
-        self.inner.sample_bits(bits)
+        self.binary().sample_bits(bits)
     }
 }
 impl<F: NativeAlphabet> CanSampleUniformBits<F> for BinaryNativeChallenger<F> {
@@ -167,16 +193,20 @@ impl<F: NativeAlphabet> CanSampleUniformBits<F> for BinaryNativeChallenger<F> {
         &mut self,
         bits: usize,
     ) -> Result<usize, ResamplingError> {
-        self.inner.sample_uniform_bits::<RESAMPLE>(bits)
+        self.binary().sample_uniform_bits::<RESAMPLE>(bits)
     }
 }
+/// Witnesses are checked as by `BinaryChallenger`: observe the witness, then
+/// draw `bits` bits that must all be zero.
 impl<F: NativeAlphabet> GrindingChallenger for BinaryNativeChallenger<F> {
     type Witness = F;
+    /// The smallest-index witness of `BinaryChallenger`'s candidates, found
+    /// from the transcript hash state after the pending input.
+    #[instrument(name = "grind for proof-of-work witness", skip_all)]
     fn grind(&mut self, bits: usize) -> F {
-        self.inner.grind(bits)
-    }
-    fn check_witness(&mut self, bits: usize, witness: F) -> bool {
-        self.inner.check_witness(bits, witness)
+        let witness = self.transcript.grind(bits);
+        assert!(self.check_witness(bits, witness));
+        witness
     }
 }
 impl<F: NativeAlphabet> FieldChallenger<F> for BinaryNativeChallenger<F> {}
@@ -367,7 +397,7 @@ where
     }
 }
 
-pub(super) const fn tree<F>(hash: ByteHash, cap_height: usize) -> NativeMmcs<F> {
+pub(crate) const fn tree<F>(hash: ByteHash, cap_height: usize) -> NativeMmcs<F> {
     NativeMmcs::new(
         SerializingHasher::new(BinaryNativeHash(hash)),
         CompressionFunctionFromHasher::new(BinaryNativeHash(hash)),

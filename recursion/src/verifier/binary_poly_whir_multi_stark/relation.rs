@@ -51,6 +51,24 @@ pub(super) struct PolyMultiStarkRelation {
     pub(super) usage: InputResourceUsage,
 }
 
+/// The relation's own proof parts: the bus, the AIR sumcheck and the indexed lookups, without
+/// the openings of any commitment.
+pub(super) struct PolyRelationProof<'a, T = BinaryPoly192Target, B = BinaryPoly64Target> {
+    pub(super) bus: Option<&'a super::super::BinaryPolyProductGkrProofTargets<T>>,
+    pub(super) sumcheck: &'a BinaryPolyGenericSumcheckProofTargets<T, B>,
+    pub(super) indexed: Option<&'a super::super::BinaryPolyIndexedLookupProofTargets>,
+}
+
+impl<T, B> BinaryPolyWhirMultiStarkProofTargets<T, B> {
+    pub(super) const fn relation(&self) -> PolyRelationProof<'_, T, B> {
+        PolyRelationProof {
+            bus: self.bus.as_ref(),
+            sumcheck: &self.sumcheck,
+            indexed: self.indexed.as_ref(),
+        }
+    }
+}
+
 pub(super) struct Reduction<T = BinaryPoly192Target> {
     alpha: T,
     beta: T,
@@ -104,7 +122,37 @@ impl PolyMultiStarkRelation {
         A: Air<InteractionSymbolicBuilder<Poly64, Poly192>>
             + Air<BusSymbolicBuilder<Poly64, Poly192>>,
     {
-        if airs.is_empty() || airs.len() != heights.len() || heights.contains(&0) {
+        Self::build_with_bit_tables(
+            airs,
+            heights,
+            &alloc::vec![false; airs.len()],
+            pow_bits,
+            max_tau_draws,
+            has_preprocessing,
+            limits,
+        )
+    }
+
+    /// As [`Self::build`], where `bits_committed[i]` states that the main commitment stores
+    /// AIR `i`'s trace as bits. Only such an AIR may declare bit columns.
+    pub(super) fn build_with_bit_tables<A>(
+        airs: &[&A],
+        heights: &[usize],
+        bits_committed: &[bool],
+        pow_bits: usize,
+        max_tau_draws: usize,
+        has_preprocessing: bool,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, OpeningProtocol, Option<OpeningProtocol>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<Poly64, Poly192>>
+            + Air<BusSymbolicBuilder<Poly64, Poly192>>,
+    {
+        if airs.is_empty()
+            || airs.len() != heights.len()
+            || airs.len() != bits_committed.len()
+            || heights.contains(&0)
+        {
             return Err(invalid(
                 "polynomial MultiStark trusted instance shape mismatch",
             ));
@@ -123,9 +171,9 @@ impl PolyMultiStarkRelation {
         usage.add_instances(limits, airs.len())?;
         let mut plans = Vec::with_capacity(airs.len());
         let mut declarations = Vec::with_capacity(airs.len());
-        for (&air, &height) in airs.iter().zip(heights) {
+        for ((&air, &height), &bits) in airs.iter().zip(heights).zip(bits_committed) {
             let (plan, bus) =
-                BinaryPolyAirConstraintPlan::with_interaction_limits(air, height, limits)?;
+                BinaryPolyAirConstraintPlan::with_interaction_limits(air, height, limits, bits)?;
             declarations.push(bus);
             if plan.preprocessed_width() != 0 && !has_preprocessing {
                 return Err(invalid(
@@ -231,6 +279,7 @@ impl PolyMultiStarkRelation {
                     num_public_values: air.public_value_count(),
                     main_next_row_columns: air.next_columns().to_vec(),
                     preprocessed_next_row_columns: air.preprocessed_next_columns().to_vec(),
+                    periodic_statement: air.periodic_statement().to_vec(),
                 })
                 .collect(),
             pow_bits,
@@ -276,15 +325,15 @@ impl PolyMultiStarkRelation {
     pub(super) fn check_targets<Public, T, B>(
         &self,
         public: &[Vec<Public>],
-        proof: &BinaryPolyWhirMultiStarkProofTargets<T, B>,
+        proof: &PolyRelationProof<'_, T, B>,
     ) -> Result<(), VerificationError> {
         self.check_public(public)?;
-        match (&self.bus, &proof.bus) {
+        match (&self.bus, proof.bus) {
             (Some(verifier), Some(proof)) => verifier.check_targets(proof)?,
             (None, None) => {}
             _ => return Err(invalid("binary Poly MultiStark bus target shape mismatch")),
         }
-        match (&self.indexed, &proof.indexed) {
+        match (&self.indexed, proof.indexed) {
             (Some(verifier), Some(proof)) => verifier.check_proof_targets(proof)?,
             (None, None) => {}
             _ => {
@@ -293,7 +342,7 @@ impl PolyMultiStarkRelation {
                 ));
             }
         }
-        self.sumcheck.check_targets(&proof.sumcheck)
+        self.sumcheck.check_targets(proof.sumcheck)
     }
 
     pub(super) fn check_public<T>(&self, public: &[Vec<T>]) -> Result<(), VerificationError> {
@@ -359,8 +408,12 @@ impl PolyMultiStarkRelation {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let mut reduction = self
-            .reduce_common::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(b, ch, public, proof)?;
+        let mut reduction = self.reduce_common::<Poly64Relation, PrimeBinaryEncoding<BF>, EF>(
+            b,
+            ch,
+            public,
+            &proof.relation(),
+        )?;
         let indexed = if let (Some(verifier), Some(proof)) = (&self.indexed, &proof.indexed) {
             Some(verifier.verify::<BF, EF>(
                 b,
@@ -400,7 +453,7 @@ impl PolyMultiStarkRelation {
         b: &mut CircuitBuilder<CF>,
         mut ch: BinaryTower128Challenger,
         public: &[Vec<P::BaseTarget>],
-        proof: &BinaryPolyWhirMultiStarkProofTargets<P::ChallengeTarget, P::BaseTarget>,
+        proof: &PolyRelationProof<'_, P::ChallengeTarget, P::BaseTarget>,
     ) -> Result<Reduction<P::ChallengeTarget>, VerificationError>
     where
         CF: Field + Eq + Hash,
@@ -410,7 +463,7 @@ impl PolyMultiStarkRelation {
         for values in public {
             P::observe_base::<H>(b, &mut ch, values)?;
         }
-        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, &proof.bus) {
+        let bus_claims = if let (Some(verifier), Some(proof)) = (&self.bus, proof.bus) {
             let (claims, next) = verifier.verify_using::<P, H, CF>(b, ch, proof)?;
             ch = next;
             Some(claims)
@@ -440,7 +493,7 @@ impl PolyMultiStarkRelation {
             b,
             sampled.continuation,
             &initial,
-            &proof.sumcheck,
+            proof.sumcheck,
         )?;
         Ok(Reduction {
             alpha,
@@ -455,6 +508,20 @@ impl PolyMultiStarkRelation {
             main_points: Vec::new(),
             preprocessed_points: None,
         })
+    }
+
+    /// The opening points of a relation without indexed lookups, from the reduced point alone.
+    pub(super) fn set_unindexed_points<T: Clone>(&self, reduction: &mut Reduction<T>) {
+        let heights: Vec<_> = self.input.airs.iter().map(|air| air.log_height()).collect();
+        reduction.main_points = self
+            .input
+            .main_schedule
+            .points(&heights, &reduction.point, None);
+        reduction.preprocessed_points = self
+            .input
+            .preprocessed_schedule
+            .as_ref()
+            .map(|schedule| schedule.points(&heights, &reduction.point, None));
     }
 
     pub(super) fn finish<EF: Field + Eq + Hash>(
@@ -525,8 +592,7 @@ impl PolyMultiStarkRelation {
                 &public[i],
                 &reduction.alpha,
             )?;
-            let term = P::mul(b, &weight, &evaluation.folded);
-            folded = P::add(b, &folded, &term);
+            folded = P::mul_add(b, &weight, &evaluation.folded, &folded);
             weight = P::mul(b, &weight, &reduction.beta);
             air_evaluations.push(evaluation);
         }

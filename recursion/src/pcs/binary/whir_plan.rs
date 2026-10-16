@@ -18,8 +18,8 @@ use p3_sumcheck::{OpeningBatch, OpeningProtocol};
 use p3_whir::WhirConfig;
 use p3_whir::transcript::WhirShape;
 
-use super::BinaryWhirQueryPlan;
 use super::fields::WhirFieldPair;
+use super::{BinaryWhirQueryPlan, MerkleArity};
 use crate::transcript::{SeedTap, domain_separator_seed};
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
@@ -34,6 +34,8 @@ pub(super) struct OracleSite {
     pub variables: usize,
     pub width: usize,
     pub log_height: usize,
+    /// The sibling digests of one query's authentication path below the cap.
+    pub path_len: usize,
     pub query_pow_bits: usize,
     pub queries: BinaryWhirQueryPlan,
     pub ood: usize,
@@ -46,7 +48,10 @@ pub(super) struct WhirPlan<F, E = BinaryField128> {
     pub protocol: OpeningProtocol,
     pub order: VariableOrder,
     pub hash: ByteHash,
+    pub arity: MerkleArity,
     pub cap_height: usize,
+    /// The roots of every commitment's cap: `cap_height` levels of `arity`.
+    pub cap_roots: usize,
     pub limits: VerifierLimits,
     pub usage: InputResourceUsage,
     pub variables: usize,
@@ -73,6 +78,7 @@ where
         protocol: OpeningProtocol,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError>
@@ -102,7 +108,17 @@ where
                 .max_log_domain_or_degree
                 .min(usize::BITS as usize - 1),
         )?;
-        limit("binary WHIR cap height", cap_height, log_domain)?;
+        limit(
+            "binary WHIR cap height",
+            cap_height,
+            arity.levels(log_domain),
+        )?;
+        let cap_roots =
+            arity
+                .cap_roots(cap_height)
+                .ok_or(VerificationError::ResourceArithmeticOverflow {
+                    component: "binary WHIR cap roots",
+                })?;
         let cells =
             protocol
                 .checked_num_cells()
@@ -215,11 +231,12 @@ where
                     },
                 )
             };
-            if cap_height > bits || bits > F::ALPHABET_BITS {
-                return Err(invalid(
-                    "binary WHIR cap or query width exceeds its tree or alphabet",
-                ));
-            }
+            let path_len = arity
+                .path_siblings(bits, cap_height)
+                .filter(|_| bits <= F::ALPHABET_BITS)
+                .ok_or_else(|| {
+                    invalid("binary WHIR cap or query width exceeds its tree or alphabet")
+                })?;
             let width = 1usize
                 .checked_shl(
                     params
@@ -269,13 +286,12 @@ where
                     },
                 )?,
             )?;
-            let paths = mul(q, bits - cap_height)?;
-            usage.add_restored_authentication_path_hashes(limits, q, bits - cap_height)?;
+            let paths = mul(q, path_len)?;
+            usage.add_restored_authentication_path_hashes(limits, q, path_len)?;
             usage.add_compressed_frontier_hashes(limits, paths)?;
             usage.add_scalar_elements(limits, mul(paths, 16)?)?;
-            let roots = 1usize << cap_height;
-            usage.add_cap_roots(limits, roots)?;
-            usage.add_scalar_elements(limits, mul(roots, 16)?)?;
+            usage.add_cap_roots(limits, cap_roots)?;
+            usage.add_scalar_elements(limits, mul(cap_roots, 16)?)?;
             fold_usage::<F, E>(&mut usage, limits, &fold)?;
             if params.pow_bits >= usize::BITS as usize {
                 return Err(invalid("binary WHIR query grinding width is invalid"));
@@ -284,6 +300,7 @@ where
                 variables: params.num_variables,
                 width,
                 log_height: bits,
+                path_len,
                 query_pow_bits: params.pow_bits,
                 queries,
                 ood,
@@ -340,7 +357,9 @@ where
             protocol,
             order,
             hash,
+            arity,
             cap_height,
+            cap_roots,
             limits: *limits,
             usage,
             variables,

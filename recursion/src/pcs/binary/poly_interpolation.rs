@@ -67,6 +67,27 @@ impl Poly192SumcheckInterpolator {
         values.push(evaluations[0].clone());
         values.push(P::add(b, claim, &evaluations[0]));
         values.extend_from_slice(&evaluations[1..]);
+        if P::SCALAR_INTERPOLATION && self.coefficients.len() > 8 {
+            // At small degrees, base scaling plus Horner uses fewer full-extension
+            // products. Larger native rounds avoid the quadratic coefficient pass.
+            let scale = |b: &mut CircuitBuilder<EF>, value, basis: &[u64]| {
+                P::scale_base_constant(b, value, *basis.last().expect("nonempty basis"))
+            };
+            let mut result = scale(b, &values[0], &self.coefficients[0])?;
+            let mut product = challenge.clone();
+            for (i, (value, basis)) in values.iter().zip(&self.coefficients).enumerate().skip(1) {
+                let node = P::constant(b, Poly64::interpolation_node(i).to_bits().into())?;
+                let factor = P::add(b, challenge, &node);
+                let scaled = scale(b, value, basis)?;
+                let term = P::mul(b, &scaled, &product);
+                result = P::mul_add(b, &result, &factor, &term);
+                if i + 1 != values.len() {
+                    product = P::mul(b, &product, &factor);
+                }
+                b.check_construction_limits()?;
+            }
+            return Ok(result);
+        }
         let zero = P::constant(b, 0)?;
         let mut polynomial = vec![zero; self.coefficients.len()];
         for (value, basis) in values.iter().zip(&self.coefficients) {
@@ -86,8 +107,7 @@ impl Poly192SumcheckInterpolator {
         let mut iter = polynomial.into_iter().rev();
         let mut result = iter.next().expect("checked positive degree");
         for coefficient in iter {
-            let product = P::mul(b, &result, challenge);
-            result = P::add(b, &product, &coefficient);
+            result = P::mul_add(b, &result, challenge, &coefficient);
             b.check_construction_limits()?;
         }
         Ok(result)
@@ -113,7 +133,7 @@ mod native_tests {
     }
     #[test]
     fn native_interpolation_matches_nodes_and_full_extension_challenges() {
-        for degree in [1, 2, 3, 4, 5, 7] {
+        for degree in [1, 2, 3, 4, 5, 7, 15, 31] {
             let recursive =
                 Poly192SumcheckInterpolator::with_limits(degree, &VerifierLimits::default())
                     .unwrap();

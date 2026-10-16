@@ -71,6 +71,11 @@ impl NpoTypeId {
         Self::new("native_keccak_f1600")
     }
 
+    /// BLAKE3 compression over raw binary-coordinate limbs, for the native backend.
+    pub fn native_blake3_compress() -> Self {
+        Self::new("native_blake3_compress")
+    }
+
     /// Reserved identifier for the built-in statement export sink.
     pub fn statement() -> Self {
         Self::new("statement")

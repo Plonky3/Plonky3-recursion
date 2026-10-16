@@ -17,7 +17,7 @@ use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, prove, setup, verify,
 };
 use p3_recursion::BinaryTower128Challenger;
-use p3_recursion::pcs::binary::RecursiveBinaryTowerField;
+use p3_recursion::pcs::binary::{MerkleArity, RecursiveBinaryTowerField};
 use p3_recursion::verifier::{
     BinaryWhirMultiStarkPreprocessing, BinaryWhirMultiStarkVerifier,
     NativeBinaryWhirMultiStarkInput, VerificationError, VerifierLimits,
@@ -381,6 +381,7 @@ fn check_preprocessed(
             &main_cfg,
             GateLayout::variable_order(),
             ByteHash::Keccak256,
+            MerkleArity::Two,
             0,
             0,
             8,
@@ -388,6 +389,7 @@ fn check_preprocessed(
                 config: pp_cfg.clone(),
                 order: GateLayout::variable_order(),
                 hash: ByteHash::Keccak256,
+                arity: MerkleArity::Two,
                 cap_height: 1,
                 commitment: pp_cap.clone(),
             },
@@ -428,7 +430,7 @@ fn check_preprocessed(
     .unwrap();
     let mut imported_ch = make();
     let input = recursive
-        .import_native_with_preprocessing::<GateConfig, _, _, _>(
+        .import_native_with_preprocessing::<GateConfig, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),
@@ -524,7 +526,7 @@ fn check_preprocessed(
     let mut unchanged = make();
     let mut before = unchanged.clone();
     assert!(
-        matches!(recursive.import_native_with_preprocessing::<GateConfig, _, _, _>(&main_cfg, &main_tree, Some((&pp_cfg, &pp_tree)), &public, &proof, &mut unchanged), Err(VerificationError::InvalidProofShape(message)) if message == "binary WHIR native path restoration failed")
+        matches!(recursive.import_native_with_preprocessing::<GateConfig, _, _>(&main_cfg, &main_tree, Some((&pp_cfg, &pp_tree)), &public, &proof, &mut unchanged), Err(VerificationError::InvalidProofShape(message)) if message == "binary WHIR native path restoration failed")
     );
     assert_eq!(
         unchanged.sample_algebra_element::<E>(),

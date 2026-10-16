@@ -186,4 +186,17 @@ where
     ) -> Result<MultiStarkProof<BinaryNativeGroupedConfig<F, E>>, VerificationError> {
         self.state.prove(&self.key, public, traces)
     }
+
+    /// Proves column-major tables with the selected backend and ordinary security checks.
+    pub fn prove_tables_with_backend<B>(
+        &self,
+        public: &[Vec<F>],
+        tables: Vec<p3_sumcheck::layout::Table<F>>,
+    ) -> Result<MultiStarkProof<BinaryNativeGroupedConfig<F, E>>, VerificationError>
+    where
+        B: p3_multi_stark::ZerocheckBackend<F, E, A>,
+    {
+        self.state
+            .prove_tables_with_backend::<B>(&self.key, public, tables)
+    }
 }

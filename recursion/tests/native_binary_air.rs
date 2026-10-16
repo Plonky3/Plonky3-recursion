@@ -6,16 +6,21 @@ use p3_air::boundary::{BoundaryEnd, BoundaryPublic};
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
 use p3_binary_pcs::{BinaryPcsConfig, BinaryPcsParams};
-use p3_circuit::CircuitBuilder;
+use p3_blake3_air::Blake3BinaryAir;
+use p3_bus::BusSymbolicBuilder;
 use p3_circuit::ops::{ByteHash, NativeTower128Target};
+use p3_circuit::{Circuit, CircuitBuilder};
 use p3_circuit_prover::native_bus::NativeBusCircuit;
 use p3_field::PrimeCharacteristicRing;
+use p3_lookup::InteractionSymbolicBuilder;
 use p3_multi_stark::folder::MultilinearFolder;
 use p3_multi_stark::selectors::BoundaryEvals;
 use p3_recursion::artifact::{
     BinaryNativeAuthority, BinaryNativePcsParameters, BinaryNativeVerifierSpec,
 };
 use p3_recursion::verifier::{BinaryAirConstraintPlan, VerifierLimits};
+
+use crate::sum_shapes_air::{CarryAir, SUM_SHAPE_COLUMNS, SumShapesAir};
 
 type F = BinaryField128;
 
@@ -85,6 +90,270 @@ fn tower32_air_uses_native_challenges_and_rejects_high_base_coordinates() {
         plan.evaluate_native(&mut b, &[zero], &[zero], &[], &[invalid], &zero)
             .is_err()
     );
+}
+
+/// Columns of [`ZeroColumnsAir`].
+const COLUMNS: usize = 4;
+
+/// Asserts its first `asserted` columns zero, in column order, so its fold is the Horner sum of
+/// those openings.
+struct ZeroColumnsAir {
+    asserted: usize,
+}
+impl BaseAir<F> for ZeroColumnsAir {
+    fn width(&self) -> usize {
+        COLUMNS
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+}
+impl<AB: AirBuilder<F = F>> Air<AB> for ZeroColumnsAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main();
+        for &value in &main.current_slice()[..self.asserted] {
+            b.assert_zero(value);
+        }
+    }
+}
+
+/// The native fold weights the assertions by descending powers of alpha, the first under the
+/// highest, as the native folder does. The ascending order and the sum weighted by alpha alone
+/// are refused.
+#[test]
+fn native_fold_weights_assertions_by_descending_alpha_powers() {
+    let air = ZeroColumnsAir { asserted: COLUMNS };
+    let plan = BinaryAirConstraintPlan::<F, F>::from_air(&air, 1).unwrap();
+    let mut b = CircuitBuilder::<F>::new();
+    let current: [_; COLUMNS] = core::array::from_fn(|_| scalar(&mut b));
+    let point = [scalar(&mut b)];
+    let alpha = scalar(&mut b);
+    let folded = plan
+        .evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+        .unwrap();
+    let expected = scalar(&mut b);
+    let difference = b.sub(folded.as_expr(), expected.as_expr());
+    b.assert_zero(difference);
+    let circuit = b.build().unwrap();
+    let dense = |n: u128| F::from_repr(0x8123456789abcdeffedcba9876543210u128.wrapping_mul(n));
+    let current: [F; COLUMNS] = core::array::from_fn(|i| dense(i as u128 + 3));
+    let point = dense(53);
+    let alpha = dense(59);
+    let runs = |expected: F| {
+        let mut statement = current.to_vec();
+        statement.extend([point, alpha, expected]);
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&statement)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let descending = current.iter().fold(F::ZERO, |sum, &c| sum * alpha + c);
+    let folder = MultilinearFolder::new(
+        &current,
+        &[F::ZERO; COLUMNS],
+        BoundaryEvals::at(&[point]),
+        &[],
+        alpha,
+    )
+    .eval_air(&air);
+    assert_eq!(descending, folder);
+    assert!(runs(descending));
+    let ascending = current
+        .iter()
+        .rev()
+        .fold(F::ZERO, |sum, &c| sum * alpha + c);
+    let flat = alpha * current.iter().copied().sum::<F>();
+    for wrong in [ascending, flat] {
+        assert_ne!(wrong, descending);
+        assert!(!runs(wrong));
+    }
+}
+
+/// Each assertion after the first adds one expression node to the native fold: a multiply-add of
+/// the running sum, alpha and the assertion, with no separately constrained product.
+#[test]
+fn native_fold_adds_one_node_per_further_assertion() {
+    let nodes = |asserted| {
+        let plan =
+            BinaryAirConstraintPlan::<F, F>::from_air(&ZeroColumnsAir { asserted }, 1).unwrap();
+        let mut b = CircuitBuilder::<F>::new();
+        let current: [_; COLUMNS] = core::array::from_fn(|_| scalar(&mut b));
+        let point = [scalar(&mut b)];
+        let alpha = scalar(&mut b);
+        let before = b.construction_usage().unwrap().expression_nodes;
+        plan.evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+            .unwrap();
+        b.construction_usage().unwrap().expression_nodes - before
+    };
+    assert_eq!(nodes(COLUMNS) - nodes(1), COLUMNS - 1);
+}
+
+/// Binds the native fold of `air` at one point to a public expected value. Public inputs: the
+/// openings, the point, alpha, then the expected fold.
+fn native_fold_circuit<A>(air: &A) -> (BinaryAirConstraintPlan<F, F>, Circuit<F>)
+where
+    A: Air<InteractionSymbolicBuilder<F, F>> + Air<BusSymbolicBuilder<F, F>>,
+{
+    let limits = VerifierLimits {
+        max_metadata_entries: 1 << 20,
+        ..VerifierLimits::default()
+    };
+    let plan = BinaryAirConstraintPlan::<F, F>::with_limits(air, 1, &limits).unwrap();
+    let mut b = CircuitBuilder::<F>::new();
+    let current: Vec<_> = (0..plan.main_width()).map(|_| scalar(&mut b)).collect();
+    let point = [scalar(&mut b)];
+    let alpha = scalar(&mut b);
+    let folded = plan
+        .evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+        .unwrap();
+    let expected = scalar(&mut b);
+    let difference = b.sub(folded.as_expr(), expected.as_expr());
+    b.assert_zero(difference);
+    (plan, b.build().unwrap())
+}
+
+/// Openings, point and alpha drawn from `seed`, then the AIR polynomial's fold there.
+fn dense_fold<A>(air: &A, width: usize, seed: u128) -> (Vec<F>, F, F, F)
+where
+    A: for<'a> Air<MultilinearFolder<'a, F, F, F>>,
+{
+    let dense =
+        |n: u128| F::from_repr(0x8123456789abcdeffedcba9876543210u128.wrapping_mul(seed + 2 * n));
+    let current: Vec<F> = (0..width as u128).map(dense).collect();
+    let point = dense(width as u128);
+    let alpha = dense(width as u128 + 1);
+    let fold = MultilinearFolder::new(
+        &current,
+        &vec![F::ZERO; width],
+        BoundaryEvals::at(&[point]),
+        &[],
+        alpha,
+    )
+    .eval_air(air);
+    (current, point, alpha, fold)
+}
+
+/// Whether `circuit` from [`native_fold_circuit`] accepts `expected` as the fold.
+fn accepts_fold(circuit: &Circuit<F>, current: &[F], point: F, alpha: F, expected: F) -> bool {
+    let mut statement = current.to_vec();
+    statement.extend([point, alpha, expected]);
+    let mut runner = circuit.runner();
+    runner
+        .set_public_inputs(&statement)
+        .and_then(|()| runner.run())
+        .is_ok()
+}
+
+/// The native fold of every sum shape is the AIR polynomial's fold, as the native folder
+/// computes it, and its circuit binds that fold: the fold plus one is refused.
+#[test]
+fn native_fold_of_every_sum_shape_is_the_air_polynomial() {
+    let (_, circuit) = native_fold_circuit(&SumShapesAir);
+    for seed in [5, 89] {
+        let (current, point, alpha, fold) = dense_fold(&SumShapesAir, SUM_SHAPE_COLUMNS, seed);
+        assert!(accepts_fold(&circuit, &current, point, alpha, fold));
+        assert!(!accepts_fold(
+            &circuit,
+            &current,
+            point,
+            alpha,
+            fold + F::ONE
+        ));
+    }
+}
+
+/// The native fold of the BLAKE3 compression AIR is its AIR polynomial's fold. 10,304 of its
+/// constraints are a majority plus a carry.
+#[test]
+fn native_fold_of_the_blake3_air_is_the_air_polynomial() {
+    let air = Blake3BinaryAir::default();
+    let (plan, circuit) = native_fold_circuit(&air);
+    let width = plan.main_width();
+    for seed in [7, 61] {
+        let (current, point, alpha, fold) = dense_fold(&air, width, seed);
+        assert!(accepts_fold(&circuit, &current, point, alpha, fold));
+        assert!(!accepts_fold(
+            &circuit,
+            &current,
+            point,
+            alpha,
+            fold + F::ONE
+        ));
+    }
+}
+
+/// Each further bit of the BLAKE3 carry chain adds five expression nodes to the native fold,
+/// with the majority's product either operand of its sum: two additions for its carry
+/// `sum + x + y`, and three for the previous bit's majority plus that carry. These are the sum
+/// `x + carry`, one multiply-add of it with the factor `y + carry` and the addend `carry`, and
+/// one Horner step that folds the multiply-add and the new carry into the running fold. The
+/// factor `y + carry` is the carry's own partial sum `sum + x`, which takes no node.
+#[test]
+fn native_carry_chain_adds_five_nodes_per_bit() {
+    let nodes = |bits, addend_first| {
+        let air = CarryAir { bits, addend_first };
+        let plan = BinaryAirConstraintPlan::<F, F>::from_air(&air, 1).unwrap();
+        let mut b = CircuitBuilder::<F>::new();
+        let current: Vec<_> = (0..3 * bits).map(|_| scalar(&mut b)).collect();
+        let point = [scalar(&mut b)];
+        let alpha = scalar(&mut b);
+        let before = b.construction_usage().unwrap().expression_nodes;
+        plan.evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+            .unwrap();
+        b.construction_usage().unwrap().expression_nodes - before
+    };
+    for addend_first in [false, true] {
+        assert_eq!(
+            nodes(9, addend_first) - nodes(8, addend_first),
+            5,
+            "addend first: {addend_first}"
+        );
+    }
+}
+
+/// A sum of a product and an addend, `c0 * c1 + c2`, stated once and read by `readers`
+/// constraints, each the product of the sum and a column of its own.
+struct SharedSumAir {
+    readers: usize,
+}
+impl<F> BaseAir<F> for SharedSumAir {
+    fn width(&self) -> usize {
+        3 + self.readers
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![]
+    }
+}
+impl<AB: AirBuilder> Air<AB> for SharedSumAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main();
+        let columns: Vec<AB::Expr> = main.current_slice().iter().map(|&c| c.into()).collect();
+        let sum = columns[0].clone() * columns[1].clone() + columns[2].clone();
+        for column in &columns[3..] {
+            b.assert_zero(sum.clone() * column.clone());
+        }
+    }
+}
+
+/// A sum of a product and an addend that several constraints read is one multiply-add. Each
+/// reader's copy of the sum is a node of its own in the program, and equal nodes evaluate to one
+/// shared expression, so the product is read once. A second reader adds two nodes, its own
+/// product and its fold step.
+#[test]
+fn native_fold_evaluates_a_shared_sum_as_one_multiply_add() {
+    let nodes = |readers| {
+        let plan = BinaryAirConstraintPlan::<F, F>::from_air(&SharedSumAir { readers }, 1).unwrap();
+        let mut b = CircuitBuilder::<F>::new();
+        let current: Vec<_> = (0..3 + readers).map(|_| scalar(&mut b)).collect();
+        let point = [scalar(&mut b)];
+        let alpha = scalar(&mut b);
+        let before = b.construction_usage().unwrap().expression_nodes;
+        plan.evaluate_native(&mut b, &point, &current, &[], &[], &alpha)
+            .unwrap();
+        b.construction_usage().unwrap().expression_nodes - before
+    };
+    assert_eq!(nodes(2) - nodes(1), 2);
 }
 
 struct DenseAir {

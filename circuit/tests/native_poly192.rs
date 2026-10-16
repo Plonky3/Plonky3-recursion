@@ -107,6 +107,46 @@ fn native_cubic_arithmetic_matches_the_released_field() {
 }
 
 #[test]
+fn native_cubic_product_fits_ten_alu_operations() {
+    let mut builder = CircuitBuilder::<Poly64>::new();
+    let a = builder.alloc_public_input_array::<3>("a");
+    let b = builder.alloc_public_input_array::<3>("b");
+    let expected = builder.alloc_public_input_array::<3>("product");
+    let a = builder.native_poly192_from_coefficients(a);
+    let b = builder.native_poly192_from_coefficients(b);
+    let product = builder.native_poly192_mul(&a, &b);
+    for (&actual, &expected) in product.coefficients().iter().zip(&expected) {
+        builder.connect(actual, expected);
+    }
+    let circuit = builder.build().unwrap();
+    let alu_count = circuit
+        .ops
+        .iter()
+        .filter(|op| matches!(op, p3_circuit::Op::Alu { .. }))
+        .count();
+    assert!(
+        alu_count <= 10,
+        "cubic product uses {alu_count} ALU operations"
+    );
+    // y^4 = y^2 + y exercises both reductions of the high product.
+    let public = [0, 0, 1, 0, 0, 1, 0, 1, 1].map(Poly64::new);
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    runner.run().unwrap();
+    for index in 6..9 {
+        let mut wrong = public;
+        wrong[index] += Poly64::ONE;
+        let mut runner = circuit.runner();
+        assert!(
+            runner
+                .set_public_inputs(&wrong)
+                .and_then(|()| runner.run())
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn native_inverse_candidate_and_raw_constants_are_constrained() {
     let mut builder = CircuitBuilder::<Poly64>::new();
     let value = builder.alloc_public_input_array("value");
@@ -152,4 +192,196 @@ fn native_inverse_candidate_and_raw_constants_are_constrained() {
     zero.extend(value.coefficients());
     runner.set_public_inputs(&zero).unwrap();
     assert!(runner.run().is_err());
+}
+
+/// `x^i * x^shift = x^(i + shift)` below degree 64: multiplying a cell of at
+/// most `width` coefficients by `x^shift` only shifts them.
+fn assert_shifts_without_reduction(width: usize, shifts: impl IntoIterator<Item = usize>) {
+    for shift in shifts {
+        for i in 0..width {
+            assert_eq!(
+                Poly64::new(1 << i) * Poly64::new(1 << shift),
+                Poly64::new(1 << (i + shift))
+            );
+        }
+    }
+}
+
+#[test]
+fn unchecked_poly64_words_split_and_bind_the_low_coefficients() {
+    assert_shifts_without_reduction(16, [16, 32, 48]);
+    let value = 0x8912_3456_789a_bcdeu64;
+    for count in 0..=4 {
+        let mut b = CircuitBuilder::<Poly64>::new();
+        let input = b.public_input();
+        let expected = (0..count).map(|_| b.public_input()).collect::<Vec<_>>();
+        let words = b.native_poly64_unchecked_words(input, count).unwrap();
+        assert_eq!(words.len(), count);
+        for (&word, &expected) in words.iter().zip(&expected) {
+            b.connect(word, expected);
+        }
+        let circuit = b.build().unwrap();
+        let runs = |public: &[Poly64]| {
+            let mut runner = circuit.runner();
+            runner
+                .set_public_inputs(public)
+                .and_then(|()| runner.run())
+                .is_ok()
+        };
+        let low = if count == 4 {
+            value
+        } else {
+            value & ((1 << (16 * count)) - 1)
+        };
+        let mut public = vec![Poly64::new(low)];
+        public.extend((0..count).map(|j| Poly64::new(low >> (16 * j) & 0xffff)));
+        assert!(runs(&public), "{count} words");
+        if count > 0 {
+            let mut wrong = public.clone();
+            wrong[count] += Poly64::ONE;
+            assert!(!runs(&wrong), "changed top word of {count}");
+        }
+        if count < 4 {
+            let mut high = public.clone();
+            high[0] += Poly64::new(1 << (16 * count));
+            assert!(!runs(&high), "coefficient above {count} words");
+        }
+    }
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let input = b.public_input();
+    let before = b.construction_usage().unwrap();
+    assert!(b.native_poly64_unchecked_words(input, 5).is_err());
+    assert_eq!(b.construction_usage().unwrap(), before);
+}
+
+/// Eight bytes pack into `Poly64::from_le_bytes`, whose coefficients are
+/// their bits in order. A byte with an eighth coefficient is rejected even
+/// when its neighbour compensates, which leaves the packed cell unchanged.
+#[test]
+fn poly64_bytes_pack_into_their_coefficients_and_reject_wide_bytes() {
+    assert_shifts_without_reduction(8, (1..8).map(|k| 8 * k));
+    let value = 0x8912_3456_789a_bcdeu64;
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let bytes = b.alloc_public_input_array::<8>("bytes");
+    let expected = b.public_input();
+    let packed = b.native_poly64_from_bytes(bytes).unwrap();
+    b.connect(packed, expected);
+    let circuit = b.build().unwrap();
+    let runs = |public: &[Poly64]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let mut public: Vec<Poly64> = value
+        .to_le_bytes()
+        .map(|byte| Poly64::new(byte.into()))
+        .to_vec();
+    public.push(Poly64::from_le_bytes(value.to_le_bytes()));
+    assert!(runs(&public));
+    let mut wrong = public.clone();
+    wrong[8] += Poly64::new(1 << 37);
+    assert!(!runs(&wrong), "changed packed cell");
+    let mut wide = public;
+    wide[2] += Poly64::new(1 << 8);
+    wide[3] += Poly64::ONE;
+    assert_eq!(
+        (0..8)
+            .map(|k| wide[k] * Poly64::new(1 << (8 * k)))
+            .sum::<Poly64>(),
+        wide[8]
+    );
+    assert!(!runs(&wide), "byte with coefficient 8");
+}
+
+/// A packed cell keeps its bytes' coordinates, so a later decomposition adds
+/// nothing, and bytes that are already checked cost one `mul_add` each.
+#[test]
+fn packed_poly64_bytes_record_their_coordinates() {
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let bytes = b.alloc_public_input_array::<8>("bytes");
+    let packed = b.native_poly64_from_bytes(bytes).unwrap();
+    let before = b.construction_usage().unwrap();
+    let bits = b.binary_decompose_coordinates(packed, 64).unwrap();
+    for (k, &byte) in bytes.iter().enumerate() {
+        let byte_bits = b.binary_decompose_coordinates(byte, 8).unwrap();
+        assert_eq!(bits[8 * k..8 * k + 8], byte_bits[..]);
+    }
+    assert_eq!(b.construction_usage().unwrap(), before);
+    let checked: [_; 8] = bits
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|byte| b.binary_recompose_coordinates(byte).unwrap())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let before = b.construction_usage().unwrap().expression_nodes;
+    b.native_poly64_from_bytes(checked).unwrap();
+    assert_eq!(b.construction_usage().unwrap().expression_nodes - before, 7);
+}
+
+/// Unchecked words pack into the cell of their coefficients in order, which is
+/// `Poly64::from_le_bytes` of their little-endian bytes, with three `mul_add`s and no
+/// decomposition hint. The packing alone does not range-check: a word with a sixteenth
+/// coefficient, compensated by its neighbour, packs to the same cell.
+#[test]
+fn unchecked_poly64_words_pack_into_their_coefficients() {
+    assert_shifts_without_reduction(16, (1..4).map(|j| 16 * j));
+    let value = 0x8912_3456_789a_bcdeu64;
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let words = b.alloc_public_input_array::<4>("words");
+    let expected = b.public_input();
+    let before = b.construction_usage().unwrap();
+    let packed = b.native_poly64_from_unchecked_words(words).unwrap();
+    let after = b.construction_usage().unwrap();
+    assert!(after.expression_nodes - before.expression_nodes <= 6);
+    assert_eq!(after.non_primitive_calls, before.non_primitive_calls);
+    b.connect(packed, expected);
+    let circuit = b.build().unwrap();
+    let runs = |public: &[Poly64]| {
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(public)
+            .and_then(|()| runner.run())
+            .is_ok()
+    };
+    let mut public: Vec<Poly64> = (0..4)
+        .map(|j| Poly64::new(value >> (16 * j) & 0xffff))
+        .collect();
+    public.push(Poly64::from_le_bytes(value.to_le_bytes()));
+    assert!(runs(&public));
+    let mut wrong = public.clone();
+    wrong[4] += Poly64::new(1 << 37);
+    assert!(!runs(&wrong), "changed packed cell");
+    let mut wide = public;
+    wide[1] += Poly64::new(1 << 16);
+    wide[2] += Poly64::ONE;
+    assert!(runs(&wide), "an unchecked word may carry coefficient 16");
+}
+
+#[test]
+fn poly64_word_provenance_reuses_splits_without_relaxing_narrowing() {
+    let mut b = CircuitBuilder::<Poly64>::new();
+    let input = b.public_input();
+    let words = b.native_poly64_unchecked_words(input, 4).unwrap();
+    assert_eq!(b.native_poly64_unchecked_words(input, 4).unwrap(), words);
+    for &word in &words {
+        b.binary_decompose_coordinates(word, 16).unwrap();
+    }
+    let packed = b
+        .native_poly64_from_unchecked_words(words.clone().try_into().unwrap())
+        .unwrap();
+    assert_eq!(b.native_poly64_unchecked_words(packed, 4).unwrap(), words);
+    assert_eq!(
+        b.native_poly64_unchecked_words(input, 1).unwrap(),
+        words[..1]
+    );
+    let circuit = b.build().unwrap();
+    for (value, accepted) in [(0xffff, true), (1 << 16, false)] {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&[Poly64::new(value)]).unwrap();
+        assert_eq!(runner.run_witness().is_ok(), accepted);
+    }
 }

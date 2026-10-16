@@ -97,6 +97,28 @@ impl Binary128SumcheckInterpolator {
         values.push(evaluations[0].clone());
         values.push(P::add(b, claim, &evaluations[0]));
         values.extend_from_slice(&evaluations[1..]);
+        if P::SCALAR_INTERPOLATION && self.degree() >= 3 {
+            // A recurrence evaluates every Lagrange product without dividing by
+            // the challenge. Its weight is the basis's leading coefficient.
+            let scale = |b: &mut CircuitBuilder<F>, value, basis: &[u128]| {
+                let weight = P::constant(b, *basis.last().expect("nonempty basis"))?;
+                Ok::<_, VerificationError>(P::mul(b, value, &weight))
+            };
+            let mut result = scale(b, &values[0], &self.coefficients[0])?;
+            let mut product = challenge.clone(); // The first node is zero.
+            for (i, (value, basis)) in values.iter().zip(&self.coefficients).enumerate().skip(1) {
+                let node = P::constant(b, BinaryField128::interpolation_node(i).to_repr())?;
+                let factor = P::add(b, challenge, &node);
+                let scaled = scale(b, value, basis)?;
+                let term = P::mul(b, &scaled, &product);
+                result = P::mul_add(b, &result, &factor, &term);
+                if i != self.degree() {
+                    product = P::mul(b, &product, &factor);
+                }
+                b.check_construction_limits()?;
+            }
+            return Ok(result);
+        }
         let zero = P::constant(b, 0)?;
         let mut polynomial = vec![zero; self.coefficients.len()];
         for (value, basis) in values.iter().zip(&self.coefficients) {
@@ -117,8 +139,7 @@ impl Binary128SumcheckInterpolator {
         let mut iter = polynomial.into_iter().rev();
         let mut result = iter.next().expect("checked positive degree");
         for coefficient in iter {
-            let product = P::mul(b, &result, challenge);
-            result = P::add(b, &product, &coefficient);
+            result = P::mul_add(b, &result, challenge, &coefficient);
             b.check_construction_limits()?;
         }
         Ok(result)

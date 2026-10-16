@@ -3,11 +3,13 @@
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_binary_field::BinaryField128;
 use p3_circuit::ops::ByteHash;
+use p3_circuit::{CircuitBuilderError, NpoTypeId};
 use p3_circuit_prover::direct::DirectCircuitLimits;
 use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
     BinaryNativeWhirPcsParameters,
 };
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer};
 use p3_recursion::verifier::{VerificationError, VerifierLimits};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -39,11 +41,12 @@ const fn protocol() -> ProtocolParameters {
         starting_log_inv_rate: 1,
     }
 }
-fn authority(hash: ByteHash) -> BinaryNativeWhirAuthority<F, ConstantAir> {
+/// A child committed with `pcs` trees whose transcript hashes with `transcript`.
+fn authority(pcs: ByteHash, transcript: ByteHash) -> BinaryNativeWhirAuthority<F, ConstantAir> {
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativeWhirPcsParameters::<F>::new(1, protocol(), hash, 0).unwrap(),
+        main: BinaryNativeWhirPcsParameters::<F>::new(1, protocol(), pcs, 0).unwrap(),
         preprocessed: None,
-        transcript_hash: hash,
+        transcript_hash: transcript,
         initial_bytes: b"native-recursion-limit-test".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
@@ -57,6 +60,7 @@ fn options() -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
         main: protocol(),
         preprocessed: protocol(),
+        arity: MerkleArity::Two,
         cap_height: 0,
         initial_bytes: b"native-output-limit-test".to_vec(),
         sumcheck_pow_bits: 0,
@@ -68,15 +72,32 @@ fn options() -> NativeBinaryRecursionOptions {
 }
 #[test]
 fn native_preparation_checks_host_graph_and_codeword_limits() {
-    assert!(matches!(
-        PreparedNativeBinaryWhirLayer::from_native_authority(
-            &authority(ByteHash::Blake3),
-            options(),
-            &DirectCircuitLimits::default()
+    // The layer enables only the child's transcript hash, so a child whose commitments use
+    // the other hash cannot have its openings verified.
+    for (pcs, transcript, op) in [
+        (
+            ByteHash::Blake3,
+            ByteHash::Keccak256,
+            NpoTypeId::native_blake3_compress(),
         ),
-        Err(VerificationError::CircuitBuilder(_))
-    ));
-    let authority = authority(ByteHash::Keccak256);
+        (
+            ByteHash::Keccak256,
+            ByteHash::Blake3,
+            NpoTypeId::native_keccak_f1600(),
+        ),
+    ] {
+        assert!(matches!(
+            PreparedNativeBinaryWhirLayer::from_native_authority(
+                &authority(pcs, transcript),
+                options(),
+                &DirectCircuitLimits::default()
+            ),
+            Err(VerificationError::CircuitBuilder(
+                CircuitBuilderError::OpNotAllowed { op: refused }
+            )) if refused == op
+        ));
+    }
+    let authority = authority(ByteHash::Keccak256, ByteHash::Keccak256);
     for folding in [
         FoldingFactor::PerRound(vec![]),
         FoldingFactor::Constant(0),
@@ -118,4 +139,56 @@ fn native_preparation_checks_host_graph_and_codeword_limits() {
     assert!(
         matches!(PreparedNativeBinaryWhirLayer::from_native_authority(&authority, options(), &trace_limits), Err(VerificationError::ResourceLimitExceeded { component: "native recursive PCS codeword cells", limit: 0, actual }) if actual > 0)
     );
+}
+
+/// Both layers here need `max_rounds` raised above the default verifier limits. A Keccak layer's
+/// metadata entries fit the default, so it prepares once only `max_rounds` is raised. A BLAKE3
+/// layer's hash table AIR has more metadata entries than the default allows, so it also needs
+/// `max_metadata_entries` raised. The layer keeps the caller's limits rather than raising them:
+/// a BLAKE3 layer is refused under the defaults. Each layer's output transcript uses its
+/// child's hash.
+#[test]
+fn blake3_layer_needs_more_than_the_default_metadata_entries() {
+    let limits = DirectCircuitLimits {
+        max_trace_cells: 1 << 27,
+        ..Default::default()
+    };
+    let prepare = |hash, verifier| {
+        let recursive = ProtocolParameters {
+            security_level: 32,
+            folding_factor: FoldingFactor::Constant(4),
+            ..protocol()
+        };
+        let mut options = options();
+        options.main = recursive.clone();
+        options.preprocessed = recursive;
+        options.max_pcs_codeword_cells = 1 << 27;
+        options.artifact_limits.verifier = verifier;
+        PreparedNativeBinaryWhirLayer::from_native_authority(
+            &authority(hash, hash),
+            options,
+            &limits,
+        )
+    };
+    let default = VerifierLimits::default();
+    assert!(matches!(
+        prepare(ByteHash::Blake3, default),
+        Err(VerificationError::ResourceLimitExceeded {
+            component: "metadata entries",
+            limit,
+            ..
+        }) if limit == default.max_metadata_entries
+    ));
+    let rounds = VerifierLimits {
+        max_rounds: 256,
+        ..default
+    };
+    let keccak = prepare(ByteHash::Keccak256, rounds).unwrap();
+    assert_eq!(keccak.authority().transcript_hash(), ByteHash::Keccak256);
+    let raised = VerifierLimits {
+        max_metadata_entries: 1 << 20,
+        ..rounds
+    };
+    let blake3 = prepare(ByteHash::Blake3, raised).unwrap();
+    assert_eq!(blake3.authority().transcript_hash(), ByteHash::Blake3);
 }

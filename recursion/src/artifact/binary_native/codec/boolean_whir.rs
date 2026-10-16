@@ -1,5 +1,5 @@
 //! Trusted-shape bounded trace and bit-ring WHIR proof bytes.
-use p3_binary_field::BinaryField128;
+use p3_binary_field::{BinaryField128, BitCoordinates};
 use p3_binary_pcs::BooleanTraceCommitmentProof;
 use p3_binary_pcs::whir::BooleanWhirProof;
 
@@ -10,7 +10,9 @@ use super::super::{
 use super::*;
 type E = BinaryField128;
 
-type TraceProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, NativeMmcs<E>>>;
+type WhirTraceProof<F, E> =
+    BooleanTraceCommitmentProof<E, BooleanWhirProof<F, E, NativeWhirMmcs<F>>>;
+type TraceProof = WhirTraceProof<E, E>;
 
 impl<A: VerifierAir<E, E>> BinaryNativeBooleanWhirTraceAuthority<A> {
     pub fn encode_statement(&self, public: &[Vec<E>]) -> Result<Vec<u8>, ArtifactError> {
@@ -66,21 +68,42 @@ impl<A: VerifierAir<E, E>> BinaryNativeBooleanWhirTraceAuthority<A> {
     }
 }
 
-fn write_trace(w: &mut Writer, p: &TraceProof) -> Result<(), ArtifactError> {
-    write_fields(w, &p.values)?;
-    grouped_boolean::write_ring(w, &p.opening.reduction)?;
-    whir::write_whir(w, &p.opening.opening)
+pub(super) fn write_trace(w: &mut Writer, p: &TraceProof) -> Result<(), ArtifactError> {
+    write_trace_with::<E, E>(w, p)
 }
-fn read_trace(
+pub(super) fn read_trace(
     r: &mut Reader<'_>,
     s: &BooleanTraceDecode<WhirDecode>,
     total: &mut usize,
 ) -> Result<TraceProof, ArtifactError> {
+    read_trace_with::<E, E>(r, s, total)
+}
+pub(super) fn write_trace_with<F, E>(
+    w: &mut Writer,
+    p: &WhirTraceProof<F, E>,
+) -> Result<(), ArtifactError>
+where
+    F: ScalarWire + BitCoordinates + PackedValue<Value = F>,
+    E: ScalarWire + BitCoordinates + ExtensionField<F>,
+{
+    write_fields(w, &p.values)?;
+    grouped_boolean::write_ring_with(w, &p.opening.reduction)?;
+    whir::write_whir_with(w, &p.opening.opening)
+}
+pub(super) fn read_trace_with<F, E>(
+    r: &mut Reader<'_>,
+    s: &BooleanTraceDecode<WhirDecode>,
+    total: &mut usize,
+) -> Result<WhirTraceProof<F, E>, ArtifactError>
+where
+    F: ScalarWire + BitCoordinates + PackedValue<Value = F>,
+    E: ScalarWire + BitCoordinates + ExtensionField<F>,
+{
     Ok(BooleanTraceCommitmentProof {
         values: read_fields(r, s.value_count)?,
         opening: BooleanWhirProof {
-            reduction: grouped_boolean::read_ring(r, &s.ring)?,
-            opening: whir::read_whir(r, &s.packed, total)?,
+            reduction: grouped_boolean::read_ring_with(r, &s.ring)?,
+            opening: whir::read_whir_with(r, &s.packed, total)?,
         },
     })
 }

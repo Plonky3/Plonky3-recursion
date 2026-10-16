@@ -186,7 +186,6 @@ mod shared_materialization_tests {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: BabyBear::ZERO,
             input_values: {
                 let mut values = BabyBear::zero_vec(config.width());
                 values[0] = value;
@@ -196,8 +195,8 @@ mod shared_materialization_tests {
             input_indices: vec![0; config.width_ext()].into(),
             out_ctl: vec![false; config.rate_ext()].into(),
             output_indices: vec![0; config.rate_ext()].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         }
     }
@@ -1627,8 +1626,8 @@ impl Poseidon2Prover {
                 if source_trace.operations.is_empty() {
                     continue;
                 }
-                // Each independently generated stream must begin a chain. This is also the
-                // condition that keeps MMCS terminal multiplicities unchanged at the merge seam.
+                // Each independently generated stream must begin a chain, so no chain
+                // constraint spans the merge seam.
                 debug_assert!(source_trace.operations[0].new_start);
                 let challenger = source.is_challenger();
                 operations.extend(source_trace.operations.iter().cloned().map(|mut row| {
@@ -1684,14 +1683,13 @@ impl Poseidon2Prover {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::<SC>::ZERO,
             input_values: Val::<SC>::zero_vec(width).into(),
             in_ctl: vec![false; width_ext].into(),
             input_indices: vec![0; width_ext].into(),
             out_ctl: vec![false; rate_ext].into(),
             output_indices: vec![0; rate_ext].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
         let mut padded_ops = operations;
@@ -2320,7 +2318,7 @@ where
 
 /// Shared helper implementing Poseidon2-specific preprocessing on generic preprocessed columns.
 fn poseidon2_preprocess_for_prover<F, ExtF, const D: usize>(
-    preprocessed: &mut PreprocessedColumns<ExtF, D>,
+    preprocessed: &PreprocessedColumns<ExtF, D>,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,
@@ -2899,7 +2897,7 @@ mod shared_preprocessing_tests {
     }
 
     #[test]
-    fn shared_preprocessing_counts_boundary_wrap_and_padding_reads_per_source() {
+    fn shared_preprocessing_sets_output_multiplicities_per_source() {
         type Ext = BinomialExtensionField<BabyBear, 4>;
         let config = Poseidon2Config::BABY_BEAR_D4_W16.for_shared_challenger_table();
         let challenger = config.source_configs()[0];
@@ -2914,8 +2912,6 @@ mod shared_preprocessing_tests {
             let mut rows = vec![Ext::ZERO; row_width * new_starts.len()];
             for (row_idx, new_start) in new_starts.iter().copied().enumerate() {
                 let row = &mut rows[row_idx * row_width..(row_idx + 1) * row_width];
-                row[tail] = Ext::ZERO;
-                row[tail + 1] = Ext::ONE;
                 row[tail + 2] = Ext::from(BabyBear::from_bool(new_start));
                 row[config.width_ext() * 4 + 1] = Ext::ONE;
             }
@@ -2924,16 +2920,15 @@ mod shared_preprocessing_tests {
         let mut columns = PreprocessedColumns::<Ext, 4>::new();
         columns.non_primitive.insert(
             NpoTypeId::poseidon2_perm(challenger),
-            // The first two starts exercise an in-table chain boundary; the final row's
-            // terminal read is against the first padded row.
             source_rows(&[true, true, false]),
         );
         columns.non_primitive.insert(
             NpoTypeId::poseidon2_perm(ordinary),
-            // A power-of-two source has no padding, so its final terminal read wraps to
-            // the first row's chain start.
             source_rows(&[true, true, false, false]),
         );
+        // Every row exposes its first output to witness 0, which four consumers read; the
+        // ordinary source's copy of that witness is a deduplicated creator.
+        columns.ext_reads = vec![4];
         columns
             .dup_npo_outputs
             .insert(NpoTypeId::poseidon2_perm(ordinary), vec![true]);
@@ -3000,7 +2995,6 @@ mod committed_materialization_tests {
                             merkle_path: true,
                             mmcs_bit: row % 2 == 1,
                             mmcs_bit2: row % 3 == 1,
-                            mmcs_index_sum: Val::<SC>::from_usize(stream + 3),
                             input_values: (0..config.width())
                                 .map(|column| {
                                     Val::<SC>::from_usize(1 + stream * 100 + row * 10 + column)
@@ -3017,8 +3011,8 @@ mod committed_materialization_tests {
                                 .map(|i| (i + 20) as u32)
                                 .collect::<Vec<_>>()
                                 .into(),
-                            mmcs_index_sum_idx: 37,
-                            mmcs_ctl_enabled: true,
+                            mmcs_bit_idx: 37,
+                            mmcs_bit2_idx: 0,
                             absorb_len: config.rate_ext(),
                         })
                         .collect();

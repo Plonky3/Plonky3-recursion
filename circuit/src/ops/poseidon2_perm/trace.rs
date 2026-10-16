@@ -1,7 +1,6 @@
 //! Poseidon2 trace types and trace generation.
 
 use alloc::boxed::Box;
-use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::any::Any;
 
@@ -14,7 +13,6 @@ use crate::ops::poseidon_perm::PoseidonRowValues;
 use crate::ops::poseidon2_perm::config::Poseidon2Config;
 use crate::ops::poseidon2_perm::state::Poseidon2ExecutionState;
 use crate::tables::NonPrimitiveTrace;
-use crate::types::NonPrimitiveOpId;
 
 /// Trait to provide Poseidon2 configuration parameters for a field type.
 ///
@@ -90,7 +88,7 @@ impl Poseidon2Params for GoldilocksD2Width8 {
 /// - Standard chaining (Challenger-style sponge use)
 /// - Merkle-path chaining (MMCS directional hashing)
 /// - Selective limb exposure to the witness via CTL
-/// - Optional MMCS index accumulator
+/// - Direction-bit lookups at the bits' source witnesses
 #[derive(Debug, Clone)]
 pub struct Poseidon2CircuitRow<F> {
     /// Host-only source role used when same-shape challenger and MMCS rows share a table.
@@ -109,8 +107,6 @@ pub struct Poseidon2CircuitRow<F> {
     /// Control: High direction bit for arity-4 Merkle compression (only meaningful when
     /// `merkle_path = 1` on an arity-4 permutation shape). Must be `false` for arity-2 shapes.
     pub mmcs_bit2: bool,
-    /// Value: Optional MMCS accumulator (base field, encodes a u32-like integer).
-    pub mmcs_index_sum: F,
     /// Inputs to the Poseidon2 permutation (flattened state).
     /// For execution rows: 4 extension limbs. For trace rows: WIDTH base field elements.
     pub input_values: PoseidonRowValues<F>,
@@ -122,10 +118,11 @@ pub struct Poseidon2CircuitRow<F> {
     pub out_ctl: PoseidonRowValues<bool>,
     /// Output exposure indices: index into the witness table for rate limbs.
     pub output_indices: PoseidonRowValues<u32>,
-    /// MMCS index exposure: index for CTL exposure of mmcs_index_sum.
-    pub mmcs_index_sum_idx: u32,
-    /// Whether mmcs_index_sum CTL is enabled. When false, the mmcs_index_sum lookup is disabled.
-    pub mmcs_ctl_enabled: bool,
+    /// Witness index of the direction bit's source on a Merkle row (zero otherwise).
+    pub mmcs_bit_idx: u32,
+    /// Witness index of the high direction bit's source on an arity-4 Merkle row (zero
+    /// otherwise).
+    pub mmcs_bit2_idx: u32,
     /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
     ///
     /// The permutation input already carries the tag in its first capacity element; the AIR
@@ -223,8 +220,7 @@ fn generate_poseidon2_trace_for<
     let operations: Vec<Poseidon2CircuitRow<Config::BaseField>> = state
         .rows
         .par_iter()
-        .enumerate()
-        .map(|(row_index, row)| -> Result<_, CircuitError> {
+        .map(|row| {
             let limb_count = Config::WIDTH / d;
             // Flatten extension limbs to WIDTH base field elements.
             assert_eq!(
@@ -250,33 +246,23 @@ fn generate_poseidon2_trace_for<
                 }
             }
 
-            let mmcs_index_sum = row.mmcs_index_sum.as_base().ok_or_else(|| {
-                CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                    op: op_type.clone(),
-                    operation_index: NonPrimitiveOpId(row_index as u32),
-                    expected: "base field mmcs_index_sum".to_string(),
-                    got: "extension value".to_string(),
-                }
-            })?;
-
-            Ok(Poseidon2CircuitRow {
+            Poseidon2CircuitRow {
                 challenger: op_type.as_str().ends_with("_challenger"),
                 new_start: row.new_start,
                 merkle_path: row.merkle_path,
                 mmcs_bit: row.mmcs_bit,
                 mmcs_bit2: row.mmcs_bit2,
-                mmcs_index_sum,
                 input_values,
                 in_ctl: row.in_ctl.clone(),
                 input_indices: row.input_indices.clone(),
                 out_ctl: row.out_ctl.clone(),
                 output_indices: row.output_indices.clone(),
-                mmcs_index_sum_idx: row.mmcs_index_sum_idx,
-                mmcs_ctl_enabled: row.mmcs_ctl_enabled,
+                mmcs_bit_idx: row.mmcs_bit_idx,
+                mmcs_bit2_idx: row.mmcs_bit2_idx,
                 absorb_len: row.absorb_len,
-            })
+            }
         })
-        .collect::<Result<Vec<_>, CircuitError>>()?;
+        .collect();
 
     Ok(Some(Box::new(Poseidon2Trace {
         op_type,

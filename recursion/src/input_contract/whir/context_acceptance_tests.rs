@@ -363,6 +363,11 @@ fn n10_n15_final_phase_binds_field_queries_width_polynomial_and_required_sumchec
         proof.rounds[0].whir.final_sumcheck = Some(sumcheck(rounds, 0));
         fixture.assert_rejected(&proof, &fixture.caps, "final sumcheck");
     }
+    for rounds in [0, 1] {
+        let mut proof = fixture.proof.clone();
+        proof.rounds[1].whir.final_sumcheck = Some(sumcheck(rounds, 0));
+        fixture.assert_rejected(&proof, &fixture.caps, "final sumcheck");
+    }
 }
 
 #[test]
@@ -499,13 +504,13 @@ fn consumed_pow_companion_requires_one_witness_per_consumed_sumcheck_round() {
         .round_params::<EF, DummyChallenger<F>>(15)
         .expect("N=15 companion parameters derive");
 
-    assert_eq!(n10.starting_folding_pow_bits(), 18);
-    assert_eq!(n15.starting_folding_pow_bits(), 23);
+    assert_eq!(n10.starting_folding_pow_bits(), 19);
+    assert_eq!(n15.starting_folding_pow_bits(), 24);
     assert_eq!(n15.round_params()[0].pow_bits(), 24);
-    assert_eq!(n15.round_params()[0].folding_pow_bits(), 22);
+    assert_eq!(n15.round_params()[0].folding_pow_bits(), 23);
     assert_eq!(n10.final_pow_bits(), 24);
-    assert_eq!(n10.final_folding_pow_bits(), 1);
-    assert_eq!(n15.final_folding_pow_bits(), 1);
+    assert_eq!(n10.final_folding_pow_bits(), 2);
+    assert_eq!(n15.final_folding_pow_bits(), 2);
 
     for (label, rounds, pow_bits) in [
         ("N=10 initial", 8, n10.starting_folding_pow_bits()),

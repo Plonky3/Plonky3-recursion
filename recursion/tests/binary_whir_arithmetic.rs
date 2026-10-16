@@ -6,17 +6,19 @@
 #[allow(dead_code)]
 mod rejection_oracle;
 
+use core::hash::Hash;
+
 use p3_baby_bear::BabyBear;
-use p3_binary_field::{BinaryField32, BinaryField128, TowerLevel};
+use p3_binary_field::{BinaryField32, BinaryField128, Poly64, TowerLevel};
 use p3_binary_pcs::whir::BinaryWhirDomain;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::BinaryTower128Target;
-use p3_field::PrimeCharacteristicRing;
+use p3_circuit::{CircuitBuilder, ExprId};
+use p3_field::{ExtensionField, Field, PrimeCharacteristicRing};
 use p3_multilinear_util::point::Point;
 use p3_multilinear_util::poly::Poly;
 use p3_recursion::pcs::binary::{
     binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,
-    binary128_select_eval,
+    binary128_select_eval, native_poly64_whir_query_point, native_tower128_whir_query_point,
 };
 use p3_sumcheck::constraints::statement::SelectStatement;
 use p3_whir::{WhirDomain, WhirQueryPoint};
@@ -160,6 +162,81 @@ macro_rules! query_points {
 fn shifted_cantor_coordinates_match_both_released_tower_domains() {
     query_points!(BinaryField128, 40);
     query_points!(BinaryField32, 31);
+}
+
+/// Native query points bind each coordinate to the released domain's
+/// `[W_(n-1)(x), ..., W_0(x)]` at the queried point `x`, highest first, where
+/// `W_(s+1)(x) = W_s(x)^2 + W_s(x)`. Flipping the lowest index bit moves `W_0`,
+/// so a nonempty point must refuse it.
+fn native_query_points<A, EF, C, T>(
+    width: usize,
+    query_point: impl Fn(&mut CircuitBuilder<C>, &[ExprId], usize) -> Vec<T>,
+    coordinate: impl Fn(&T) -> ExprId,
+    embed: impl Fn(A) -> C,
+) where
+    A: Field,
+    EF: ExtensionField<A>,
+    BinaryWhirDomain<A>: WhirDomain<A, EF> + Default,
+    C: Field + Eq + Hash,
+{
+    let domain = BinaryWhirDomain::<A>::default();
+    for index in [0usize, 1, 2, 7, (1usize << width) - 13] {
+        for n in [0, 1, 4, width] {
+            let WhirQueryPoint::Multilinear(point) =
+                <BinaryWhirDomain<A> as WhirDomain<A, EF>>::query_point(&domain, width, n, index)
+            else {
+                panic!("binary domain must return direct coordinates");
+            };
+            let mut b = CircuitBuilder::<C>::new();
+            let bits = (0..width)
+                .map(|_| b.alloc_private_input("native WHIR query bit"))
+                .collect::<Vec<_>>();
+            let actual = query_point(&mut b, &bits, n);
+            assert_eq!(actual.len(), n);
+            for (a, &e) in actual.iter().zip(point.iter()) {
+                let expected = b.define_const(embed(e));
+                b.connect(coordinate(a), expected);
+            }
+            let circuit = b.build().unwrap();
+            let run = |index: usize| {
+                let bits = (0..width)
+                    .map(|i| C::from_bool((index >> i) & 1 != 0))
+                    .collect::<Vec<_>>();
+                let mut runner = circuit.runner();
+                runner
+                    .set_private_inputs(&bits)
+                    .and_then(|()| runner.run().map(|_| ()))
+                    .is_ok()
+            };
+            assert!(run(index), "index {index}, {n} coordinates");
+            assert_eq!(run(index ^ 1), n == 0, "index {index}, {n} coordinates");
+        }
+    }
+}
+
+#[test]
+fn native_query_points_match_every_released_domain() {
+    native_query_points::<BinaryField128, BinaryField128, _, _>(
+        40,
+        |b, bits, n| native_tower128_whir_query_point::<BinaryField128>(b, bits, n).unwrap(),
+        |x| x.as_expr(),
+        |e| e,
+    );
+    native_query_points::<BinaryField32, BinaryField128, _, _>(
+        31,
+        |b, bits, n| native_tower128_whir_query_point::<BinaryField32>(b, bits, n).unwrap(),
+        |x| x.as_expr(),
+        |e| BinaryField128::from_repr(e.to_repr() as u128),
+    );
+    native_query_points::<Poly64, Poly64, _, _>(
+        40,
+        |b, bits, n| native_poly64_whir_query_point(b, bits, n).unwrap(),
+        |x| {
+            assert_eq!(x.coefficients()[1..], [ExprId::ZERO; 2]);
+            x.coefficients()[0]
+        },
+        |e| e,
+    );
 }
 
 #[test]

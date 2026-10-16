@@ -1,8 +1,12 @@
 //! Native cubic challenge arithmetic over `Poly64` circuit cells.
 
+use alloc::vec;
+use alloc::vec::Vec;
+
 use p3_binary_field::Poly64;
 use p3_field::PrimeCharacteristicRing;
 
+use super::binary_native::WordSplitHint;
 use crate::{CircuitBuilder, CircuitBuilderError, ExprId};
 
 /// `a0 + a1*y + a2*y²`, with native Poly64 coefficients and `y³ = y + 1`.
@@ -46,6 +50,111 @@ impl CircuitBuilder<Poly64> {
         Ok(bits)
     }
 
+    /// Splits a Poly64 cell into `count` low-first sixteen-coefficient words
+    /// without range-checking them.
+    ///
+    /// The hinted words satisfy `value = sum_j words[j] * x^(16j)`. A word of
+    /// degree below sixteen times `x^(16j)` has degree below `16 * (j + 1)`,
+    /// at most 63 for `j < 4`, so the product needs no reduction modulo the
+    /// field polynomial and only shifts the word's coefficients up by
+    /// `16 * j`. Once every word is constrained to sixteen coordinates, the
+    /// words are therefore the unique split of `value`'s coefficients, and
+    /// `value` has no coefficient at or above `16 * count`. The caller must
+    /// establish that range, for example by absorbing every word through
+    /// [`Self::native_keccak256_words`], whose AIR range-checks absorbed
+    /// words. A zero count constrains `value` to zero. IDs must belong to this
+    /// builder's graph.
+    pub fn native_poly64_unchecked_words(
+        &mut self,
+        value: ExprId,
+        count: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        if count > 4 {
+            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: 64,
+                n_bits: count.saturating_mul(16),
+            });
+        }
+        self.check_construction_limits()?;
+        if let Some(words) = self.cached_native_words(value, count)? {
+            return Ok(words);
+        }
+        let words = if count == 0 {
+            Vec::new()
+        } else {
+            self.push_unconstrained_op(
+                vec![vec![value]],
+                count,
+                WordSplitHint,
+                "native_poly64_unchecked_words",
+            )
+            .2
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(CircuitBuilderError::MissingOutput)?
+        };
+        let mut sum = words.first().copied().unwrap_or(ExprId::ZERO);
+        for (j, &word) in words.iter().enumerate().skip(1) {
+            let shift = self.define_const(Poly64::new(1 << (16 * j)));
+            sum = self.mul_add(word, shift, sum);
+        }
+        self.connect(value, sum);
+        self.check_construction_limits()?;
+        self.record_native_words(value, &words);
+        Ok(words)
+    }
+
+    /// Packs four low-first words into the cell `sum_j words[j] * x^(16j)`,
+    /// which is `Poly64::from_le_bytes` of their little-endian bytes, with
+    /// three fused multiply-adds and no decomposition.
+    ///
+    /// A word of degree below sixteen times `x^(16j)` has degree below 64, so
+    /// the product only shifts its coefficients up by `16 * j` once every word
+    /// has at most sixteen coefficients. The caller must establish that range,
+    /// for example by reading the words from native Keccak-f or Blake3
+    /// outputs, which the native hash AIR derives from Boolean bits. Word
+    /// provenance is retained; it does not establish checked Boolean coordinates. IDs must belong to this builder's graph.
+    pub fn native_poly64_from_unchecked_words(
+        &mut self,
+        words: [ExprId; 4],
+    ) -> Result<ExprId, CircuitBuilderError> {
+        let mut sum = words[0];
+        for (j, &word) in words.iter().enumerate().skip(1) {
+            let shift = self.define_const(Poly64::new(1 << (16 * j)));
+            sum = self.mul_add(word, shift, sum);
+        }
+        self.check_construction_limits()?;
+        self.record_native_words(sum, &words);
+        Ok(sum)
+    }
+
+    /// Packs eight low-first bytes into the cell `sum_k bytes[k] * x^(8k)`,
+    /// which is `Poly64::from_le_bytes` of the bytes.
+    ///
+    /// Every byte is constrained to eight coordinates, which costs nothing
+    /// when its coordinates are already known. A byte of degree below eight
+    /// times `x^(8k)` has degree below 64, so the product only shifts its
+    /// coefficients up by `8 * k`, and the packed cell's coordinates are the
+    /// bytes' bits in order; they are recorded for later decompositions. IDs
+    /// must belong to this builder's graph.
+    pub fn native_poly64_from_bytes(
+        &mut self,
+        bytes: [ExprId; 8],
+    ) -> Result<ExprId, CircuitBuilderError> {
+        let mut bits = Vec::with_capacity(64);
+        for &byte in &bytes {
+            bits.extend(self.binary_decompose_coordinates(byte, 8)?);
+        }
+        let mut sum = bytes[0];
+        for (k, &byte) in bytes.iter().enumerate().skip(1) {
+            let shift = self.define_const(Poly64::new(1 << (8 * k)));
+            sum = self.mul_add(byte, shift, sum);
+        }
+        self.check_construction_limits()?;
+        self.record_native_coordinates(sum, &bits);
+        Ok(sum)
+    }
+
     pub const fn native_poly192_from_coefficients(
         &self,
         coefficients: [ExprId; 3],
@@ -75,18 +184,20 @@ impl CircuitBuilder<Poly64> {
         a: &NativePoly192Target,
         b: &NativePoly192Target,
     ) -> NativePoly192Target {
-        let products: [[ExprId; 3]; 3] = core::array::from_fn(|i| {
-            core::array::from_fn(|j| self.mul(a.coefficients[i], b.coefficients[j]))
-        });
-        let z1 = self.add(products[0][1], products[1][0]);
-        let z2_cross = self.add(products[0][2], products[2][0]);
-        let z2 = self.add(z2_cross, products[1][1]);
-        let z3 = self.add(products[1][2], products[2][1]);
-        // y³ = y + 1 and y⁴ = y² + y.
-        let out0 = self.add(products[0][0], z3);
-        let out1_cross = self.add(z1, z3);
-        let out1 = self.add(out1_cross, products[2][2]);
-        let out2 = self.add(z2, products[2][2]);
+        let [a0, a1, a2] = a.coefficients;
+        let [b0, b1, b2] = b.coefficients;
+        let cross = self.mul(a1, b2);
+        let cross = self.mul_add(a2, b1, cross);
+        let high = self.mul(a2, b2);
+        // y³ = y + 1 and y⁴ = y² + y. Share their contributions and
+        // accumulate the remaining products with one ALU operation each.
+        let out0 = self.mul_add(a0, b0, cross);
+        let out1 = self.add(cross, high);
+        let out1 = self.mul_add(a0, b1, out1);
+        let out1 = self.mul_add(a1, b0, out1);
+        let out2 = self.mul_add(a0, b2, high);
+        let out2 = self.mul_add(a1, b1, out2);
+        let out2 = self.mul_add(a2, b0, out2);
         NativePoly192Target {
             coefficients: [out0, out1, out2],
         }

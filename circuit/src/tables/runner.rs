@@ -227,57 +227,14 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
     }
 
     fn run_inner<const DIAGNOSTICS: bool>(&mut self) -> Result<Traces<F>, CircuitError> {
-        let alu_trace = self.execute_all_inner::<DIAGNOSTICS>()?;
+        let alu_trace = self.execute_all_inner::<DIAGNOSTICS, true>()?;
 
         #[cfg(feature = "debugging")]
         if DIAGNOSTICS {
             self.diagnostic_phase = DiagnosticPhase::WitnessAliases;
         }
 
-        if let Some(rewrite) = self.witness_rewrite.take() {
-            let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::with_capacity(rewrite.len());
-            let mut root = |canon: WitnessId| {
-                *resolved.entry(canon).or_insert_with(|| {
-                    let mut cur = canon;
-                    while let Some(&next) = rewrite.get(&cur) {
-                        cur = next;
-                    }
-                    cur
-                })
-            };
-            let mut replay = |dup: WitnessId, canon: WitnessId| -> Result<(), CircuitError> {
-                let r = root(canon);
-                if let Some(ref val) = self.witness[r.0 as usize] {
-                    self.set_witness(dup, *val)?;
-                }
-                Ok(())
-            };
-            if DIAGNOSTICS {
-                let mut entries: Vec<_> = rewrite.iter().collect();
-                entries.sort_unstable_by_key(|(dup, _)| **dup);
-                for (dup, canon) in entries {
-                    replay(*dup, *canon)?;
-                }
-            } else {
-                for (dup, canon) in &rewrite {
-                    replay(*dup, *canon)?;
-                }
-            }
-        }
-
-        #[cfg(feature = "debugging")]
-        if DIAGNOSTICS {
-            self.diagnostic_phase = DiagnosticPhase::WitnessTrace;
-        }
-        // Build witness trace directly from the populated witness table.
-        let mut witness_values = Vec::with_capacity(self.witness.len());
-        for (i, value) in self.witness.iter().enumerate() {
-            let Some(value) = *value else {
-                return Err(CircuitError::WitnessNotSetForIndex { index: i });
-            };
-            witness_values.push(value);
-        }
-        let witness_trace = WitnessTrace::new(witness_values);
+        let witness_trace = self.finish_witness::<DIAGNOSTICS>()?;
 
         #[cfg(feature = "debugging")]
         if DIAGNOSTICS {
@@ -346,21 +303,83 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         })
     }
 
+    /// Executes the circuit and returns only its canonical witness values.
+    ///
+    /// Native proving backends construct their own tables from these values. This keeps
+    /// execution checks and alias replay while skipping generic trace generation.
+    #[instrument(skip_all)]
+    pub fn run_witness(mut self) -> Result<WitnessTrace<F>, CircuitError> {
+        self.execute_all_inner::<false, false>()?;
+        self.finish_witness::<false>()
+    }
+
+    fn finish_witness<const DIAGNOSTICS: bool>(&mut self) -> Result<WitnessTrace<F>, CircuitError> {
+        if let Some(rewrite) = self.witness_rewrite.take() {
+            let mut resolved: HashMap<WitnessId, WitnessId> = HashMap::with_capacity(rewrite.len());
+            let mut root = |canon: WitnessId| {
+                *resolved.entry(canon).or_insert_with(|| {
+                    let mut cur = canon;
+                    while let Some(&next) = rewrite.get(&cur) {
+                        cur = next;
+                    }
+                    cur
+                })
+            };
+            let mut replay = |dup: WitnessId, canon: WitnessId| -> Result<(), CircuitError> {
+                let r = root(canon);
+                if let Some(ref val) = self.witness[r.0 as usize] {
+                    self.set_witness(dup, *val)?;
+                }
+                Ok(())
+            };
+            if DIAGNOSTICS {
+                let mut entries: Vec<_> = rewrite.iter().collect();
+                entries.sort_unstable_by_key(|(dup, _)| **dup);
+                for (dup, canon) in entries {
+                    replay(*dup, *canon)?;
+                }
+            } else {
+                for (dup, canon) in &rewrite {
+                    replay(*dup, *canon)?;
+                }
+            }
+        }
+
+        #[cfg(feature = "debugging")]
+        if DIAGNOSTICS {
+            self.diagnostic_phase = DiagnosticPhase::WitnessTrace;
+        }
+        // Build witness trace directly from the populated witness table.
+        let mut witness_values = Vec::with_capacity(self.witness.len());
+        for (i, value) in self.witness.iter().enumerate() {
+            let Some(value) = *value else {
+                return Err(CircuitError::WitnessNotSetForIndex { index: i });
+            };
+            witness_values.push(value);
+        }
+        let witness_trace = WitnessTrace::new(witness_values);
+
+        Ok(witness_trace)
+    }
+
     /// Executes the full circuit operation list to populate witness table.
     ///
     /// The circuit is already lowered into a valid execution order, so this function
     /// can blindly execute from index 0 to end.
     pub fn execute_all(&mut self) -> Result<AluTrace<F>, CircuitError> {
-        self.execute_all_inner::<false>()
+        self.execute_all_inner::<false, true>()
     }
 
     #[instrument(name = "execute_all", skip_all, level = "debug")]
-    fn execute_all_inner<const DIAGNOSTICS: bool>(&mut self) -> Result<AluTrace<F>, CircuitError> {
+    fn execute_all_inner<const DIAGNOSTICS: bool, const TRACE: bool>(
+        &mut self,
+    ) -> Result<AluTrace<F>, CircuitError> {
         // Written directly from each AluOpRecord as it's produced, instead of collecting into
         // an intermediate Vec<AluOpRecord> and re-scattering it into these columns afterward.
-        let mut op_kind = Vec::with_capacity(self.circuit.ops.len());
-        let mut values = Vec::with_capacity(self.circuit.ops.len());
-        let mut indices = Vec::with_capacity(self.circuit.ops.len());
+        let capacity = if TRACE { self.circuit.ops.len() } else { 0 };
+        let mut op_kind = Vec::with_capacity(capacity);
+        let mut values = Vec::with_capacity(capacity);
+        let mut indices = Vec::with_capacity(capacity);
 
         #[cfg(feature = "debugging")]
         let mut compiled_op_index = 0usize;
@@ -388,14 +407,16 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
                     intermediate_out,
                 } => {
                     let record = self.execute_alu_op(*kind, *a, *b, *c, *out, *intermediate_out)?;
-                    op_kind.push(record.kind);
-                    values.push([record.a_val, record.b_val, record.c_val, record.out_val]);
-                    indices.push([
-                        record.a_index,
-                        record.b_index,
-                        record.c_index,
-                        record.out_index,
-                    ]);
+                    if TRACE {
+                        op_kind.push(record.kind);
+                        values.push([record.a_val, record.b_val, record.c_val, record.out_val]);
+                        indices.push([
+                            record.a_index,
+                            record.b_index,
+                            record.c_index,
+                            record.out_index,
+                        ]);
+                    }
                 }
                 Op::Hint {
                     inputs,
@@ -429,7 +450,7 @@ impl<'a, F: Field> CircuitRunner<'a, F> {
         }
 
         // If the trace is empty, add a dummy row: 0 + 0 = 0.
-        if op_kind.is_empty() {
+        if TRACE && op_kind.is_empty() {
             op_kind.push(AluOpKind::Add);
             values.push([F::ZERO, F::ZERO, F::ZERO, F::ZERO]);
             indices.push([WitnessId(0), WitnessId(0), WitnessId(0), WitnessId(0)]);

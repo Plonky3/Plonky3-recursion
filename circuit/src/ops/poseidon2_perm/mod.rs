@@ -12,9 +12,8 @@
 //! - **Chaining**: Can start a new hash or continue from the previous row's output
 //!   (controlled by `new_start`).
 //! - **Merkle Path Verification**: When `merkle_path` is enabled, conditionally arranges
-//!   inputs (sibling vs. computed hash) based on a direction bit (`mmcs_bit`).
-//! - **Index Accumulation**: Accumulates path indices (`mmcs_index_sum`) to verify the
-//!   leaf's position in the tree.
+//!   inputs (sibling vs. computed hash) based on a direction bit (`mmcs_bit`), looked up at
+//!   the bit's source witness.
 //!
 //! [`CircuitBuilder::add_poseidon2_perm`]: crate::builder::CircuitBuilder::add_poseidon2_perm
 

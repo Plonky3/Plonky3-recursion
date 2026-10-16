@@ -5,7 +5,10 @@ mod binary;
 pub(crate) mod input;
 mod layer;
 mod native_binary;
+mod native_binary_folding;
+mod native_binary_mixed;
 mod native_poly;
+mod native_poly_mixed;
 pub(crate) mod prover;
 mod trusted;
 
@@ -20,15 +23,28 @@ pub use binary::{
     BinaryPolyStatementLayout, BinaryStatementLayout, PreparedBinaryBooleanTraceMultiStarkLayer,
     PreparedBinaryBooleanWhirTraceMultiStarkLayer,
     PreparedBinaryGroupedBooleanTraceMultiStarkLayer, PreparedBinaryGroupedMultiStarkLayer,
-    PreparedBinaryMultiStarkLayer, PreparedBinaryPolyWhirMultiStarkLayer,
-    PreparedBinaryWhirMultiStarkLayer,
+    PreparedBinaryMixedWhirMultiStarkLayer, PreparedBinaryMultiStarkLayer,
+    PreparedBinaryPolyWhirMultiStarkLayer, PreparedBinaryWhirMultiStarkLayer,
 };
 pub use input::{NativeCommitment, PreparedInput, PreparedSource};
 pub use layer::PreparedLayer;
 pub use native_binary::{
-    NativeBinaryRecursionOptions, NativeBinaryRecursiveProof, PreparedNativeBinaryWhirLayer,
+    NativeBinaryProverBackend, NativeBinaryRecursionOptions, NativeBinaryRecursiveProof,
+    PreparedNativeBinaryWhirLayer,
+};
+pub use native_binary_folding::{
+    NativeBinaryFoldingRecursionOptions, NativeBinaryFoldingRecursiveProof,
+    NativeBinaryGroupedFoldingRecursiveProof, PreparedNativeBinaryGroupedLayer,
+    PreparedNativeBinaryLayer,
+};
+pub use native_binary_mixed::{
+    NativeBinaryMixedRecursionOptions, NativeBinaryMixedRecursiveProof,
+    PreparedNativeBinaryMixedWhirLayer,
 };
 pub use native_poly::{NativeBinaryPolyRecursiveProof, PreparedNativeBinaryPolyWhirLayer};
+pub use native_poly_mixed::{
+    NativeBinaryPolyMixedRecursiveProof, PreparedNativeBinaryPolyMixedWhirLayer,
+};
 pub use p3_circuit::VerifiedStatementTargets;
 use p3_circuit::{
     CircuitBuilder, CircuitRunner, NonPrimitiveOpId, StatementField, StatementSchema,

@@ -36,15 +36,23 @@ pub use binary_poly_product::{
 mod binary_poly_whir_multi_stark;
 mod binary_whir_multi_stark;
 pub use binary_poly_whir_multi_stark::{
+    BinaryPolyMixedWhirMultiStarkInputShape, BinaryPolyMixedWhirMultiStarkPreprocessing,
+    BinaryPolyMixedWhirMultiStarkProofTargets, BinaryPolyMixedWhirMultiStarkVerifier,
     BinaryPolyWhirMultiStarkInputShape, BinaryPolyWhirMultiStarkPreprocessing,
     BinaryPolyWhirMultiStarkProofTargets, BinaryPolyWhirMultiStarkVerifier,
-    NativeBinaryPolyWhirMultiStarkInput,
+    NativeBinaryPolyMixedWhirMultiStarkInput, NativeBinaryPolyWhirMultiStarkInput,
 };
 mod binary_boolean_whir_multi_stark;
+mod binary_mixed_whir_multi_stark;
 pub use binary_boolean_whir_multi_stark::{
     BinaryBooleanWhirTraceMultiStarkInputShape, BinaryBooleanWhirTraceMultiStarkPreprocessing,
     BinaryBooleanWhirTraceMultiStarkProofTargets, BinaryBooleanWhirTraceMultiStarkVerifier,
     NativeBinaryBooleanWhirTraceMultiStarkInput,
+};
+pub use binary_mixed_whir_multi_stark::{
+    BinaryMixedWhirMultiStarkInputShape, BinaryMixedWhirMultiStarkPreprocessing,
+    BinaryMixedWhirMultiStarkProofTargets, BinaryMixedWhirMultiStarkVerifier,
+    NativeBinaryMixedWhirMultiStarkInput,
 };
 mod errors;
 mod limits;

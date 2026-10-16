@@ -6,8 +6,10 @@ use core::hash::Hash;
 
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::BinaryPcsShape;
+use p3_circuit::ops::binary_encoding::PrimeBinaryEncoding;
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::{CircuitBuilder, CircuitBuilderError, ExprId};
-use p3_field::{ExtensionField, PrimeField64};
+use p3_field::{ExtensionField, Field, PrimeField64};
 
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
 
@@ -32,23 +34,21 @@ type ByteMerkleBooleanTraceProof<E, H0, C0, H1, C1> =
     p3_binary_pcs::BooleanTraceCommitmentProof<E, ByteMerkleBooleanProof<E, H0, C0, H1, C1>>;
 type GroupedByteMerkleBooleanTraceProof<E, H0, C0, H1, C1> =
     p3_binary_pcs::BooleanTraceCommitmentProof<E, GroupedByteMerkleBooleanProof<E, H0, C0, H1, C1>>;
-type ByteMerkleBooleanWhirTraceProof<E, H, C> = p3_binary_pcs::BooleanTraceCommitmentProof<
-    E,
-    p3_binary_pcs::whir::BooleanWhirProof<E, ByteMerkleMmcs<E, H, C>>,
->;
+type ByteMerkleBooleanWhirTraceProof<E, M> =
+    p3_binary_pcs::BooleanTraceCommitmentProof<E, p3_binary_pcs::whir::BooleanWhirProof<E, E, M>>;
 pub(crate) type ByteMerkleMmcsPair<'base, 'round, F, E, H0, C0, H1, C1> = (
     &'base ByteMerkleMmcs<F, H0, C0>,
     &'round ByteMerkleMmcs<E, H1, C1>,
 );
-pub(crate) type ByteMerkleWhirParameters<'config, 'mmcs, F, E, Ch, H, C> = (
-    &'config p3_whir::WhirConfig<E, F, Ch>,
-    &'mmcs ByteMerkleMmcs<F, H, C>,
-);
+pub(crate) type ByteMerkleWhirParameters<'config, 'mmcs, F, E, Ch, M> =
+    (&'config p3_whir::WhirConfig<E, F, Ch>, &'mmcs M);
 type OracleOpeningTargets<Row> = (Vec<Row>, Vec<Vec<Vec<ExprId>>>);
 type WhirVerificationOutput<T> = (Vec<p3_sumcheck::OpeningBatch<T>>, BinaryTower128Challenger);
 
 mod boolean;
 mod boolean_whir;
+mod boolean_whir_poly;
+mod byte_mmcs;
 mod fields;
 mod gadgets;
 mod generic_sumcheck;
@@ -59,12 +59,15 @@ mod grouped_oracle;
 mod grouped_pcs;
 mod grouped_trace;
 mod input;
+mod merkle_arity;
 mod nonzero;
 mod poly_generic_sumcheck;
 mod poly_interpolation;
 mod poly_nonzero;
 pub(crate) use poly_interpolation::Poly192SumcheckInterpolator;
+pub(crate) use poly_nonzero::{sample_nonzero_bits, sample_nonzero_cells};
 mod poly_whir_gadgets;
+pub use poly_whir_gadgets::native_poly64_whir_query_point;
 pub(crate) use poly_whir_gadgets::poly_whir_query_point;
 mod poly_whir_input;
 mod poly_whir_verifier;
@@ -75,12 +78,17 @@ pub(crate) use poly_whir_gadgets::{
 };
 mod ring;
 mod ring_input;
+mod ring_native;
+mod ring_native_poly;
 mod tensor;
+mod tensor_native;
+mod tensor_native_poly;
 mod trace;
 mod trace_native;
 mod trace_plan;
 mod trace_routing;
 mod trace_whir;
+mod trace_whir_poly;
 mod verifier;
 mod whir_gadgets;
 mod whir_input;
@@ -94,8 +102,13 @@ pub use boolean::{
 };
 pub use boolean_whir::{
     BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
-    NativeBinaryBooleanWhirInput,
+    NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
 };
+pub use boolean_whir_poly::{
+    BinaryPolyBooleanWhirInputShape, BinaryPolyBooleanWhirVerifier,
+    NativeBinaryPolyBooleanWhirInput, NativePolyBooleanWhirProofTargets,
+};
+pub use byte_mmcs::ByteDigestMmcs;
 pub use fields::{
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField, RecursiveBinaryWhirTowerField,
 };
@@ -123,6 +136,7 @@ pub use grouped_trace::{
     BinaryGroupedBooleanTraceVerifier, NativeBinaryGroupedBooleanTraceInput,
 };
 pub use input::{BinaryPcsInputShape, NativeBinaryPcsInput};
+pub use merkle_arity::MerkleArity;
 pub use nonzero::{
     BinaryNonzeroChallengeOutput, BinaryNonzeroChallengePlan, BinaryNonzeroChallengeTailOutput,
     BinaryNonzeroChallengeTailPlan,
@@ -146,7 +160,19 @@ pub use ring::{
     BinaryRingProofTargets,
 };
 pub use ring_input::{BinaryRingInputShape, NativeBinaryRingInput};
+pub use ring_native::{
+    NativeBitRingClaimTargets, NativeBitRingOutput, NativeBitRingProofTargets, NativeBitRingReading,
+};
+pub use ring_native_poly::{
+    BinaryPolyBitRingVerifier, BinaryPolyRingInputShape, NativeBinaryPolyRingInput,
+    NativePolyBitRingClaimTargets, NativePolyBitRingOutput, NativePolyBitRingProofTargets,
+    NativePolyBitRingReading,
+};
 pub use tensor::{BinaryTowerTensorTarget, binary_tensor_closing_weight};
+pub use tensor_native::{NativeBitTensorTarget, binary128_trace_dual_basis, closing_weight_native};
+pub use tensor_native_poly::{
+    NativePolyBitTensorTarget, closing_weight_native_poly, poly64_trace_dual_basis,
+};
 pub use trace::{
     BinaryBooleanTraceInputShape, BinaryBooleanTraceProofTargets, BinaryBooleanTraceVerifier,
     NativeBinaryBooleanTraceInput,
@@ -154,17 +180,22 @@ pub use trace::{
 pub use trace_whir::{
     BinaryBooleanWhirTraceInputShape, BinaryBooleanWhirTraceProofTargets,
     BinaryBooleanWhirTraceVerifier, NativeBinaryBooleanWhirTraceInput,
+    NativeBooleanWhirTraceProofTargets,
+};
+pub use trace_whir_poly::{
+    BinaryPolyBooleanWhirTraceInputShape, BinaryPolyBooleanWhirTraceVerifier,
+    NativeBinaryPolyBooleanWhirTraceInput, NativePolyBooleanWhirTraceProofTargets,
 };
 pub use verifier::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcs128Verifier, BinaryPcsVerifier,
 };
 pub(crate) use verifier::{
     assert_equal, observe_cap_with_host, observe_seed, observe_seed_with_host, observe_values,
-    observe_values_with_host, seed_bytes_with_host,
+    observe_values_with_host, seed_bytes_with_host, tower_bytes_with_host,
 };
 pub use whir_gadgets::{
     binary_whir_query_point, binary128_eval_coefficients, binary128_eval_multilinear,
-    binary128_select_eval,
+    binary128_select_eval, native_tower128_whir_query_point,
 };
 pub use whir_input::{
     BinaryWhirInputShape, BinaryWhirProofTargets, BinaryWhirRoundTargets,
@@ -217,6 +248,27 @@ where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
 {
+    verify_binary_pcs_query_indices_with_host::<PrimeBinaryEncoding<BF>, EF>(
+        circuit,
+        challenger,
+        config,
+        sorted_indices,
+        max_draws,
+    )
+}
+
+/// Same relation under an explicit circuit host.
+pub(crate) fn verify_binary_pcs_query_indices_with_host<H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: BinaryTower128Challenger,
+    config: &BinaryPcsConfig,
+    sorted_indices: &[Vec<ExprId>],
+    max_draws: usize,
+) -> Result<BinaryQueryContinuation, CircuitBuilderError>
+where
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
+{
     let shape = BinaryPcsShape::new(config);
     if sorted_indices.len() != shape.num_pairs {
         return Err(CircuitBuilderError::NonPrimitiveOpArity {
@@ -225,7 +277,7 @@ where
             got: sorted_indices.len(),
         });
     }
-    verify_binary_query_indices_with_continuation::<BF, EF>(
+    verify_binary_query_indices_with_host::<H, EF>(
         circuit,
         challenger,
         shape.pair_bits,
@@ -280,7 +332,7 @@ where
 /// Shape checks and errors match [`verify_binary_query_indices`].
 pub fn verify_binary_query_indices_with_continuation<BF, EF>(
     circuit: &mut CircuitBuilder<EF>,
-    mut challenger: BinaryTower128Challenger,
+    challenger: BinaryTower128Challenger,
     bits: usize,
     sorted_indices: &[Vec<ExprId>],
     max_draws: usize,
@@ -288,6 +340,27 @@ pub fn verify_binary_query_indices_with_continuation<BF, EF>(
 where
     BF: PrimeField64,
     EF: ExtensionField<BF> + Eq + Hash,
+{
+    verify_binary_query_indices_with_host::<PrimeBinaryEncoding<BF>, EF>(
+        circuit,
+        challenger,
+        bits,
+        sorted_indices,
+        max_draws,
+    )
+}
+
+/// Same relation under an explicit circuit host.
+pub(crate) fn verify_binary_query_indices_with_host<H, EF>(
+    circuit: &mut CircuitBuilder<EF>,
+    mut challenger: BinaryTower128Challenger,
+    bits: usize,
+    sorted_indices: &[Vec<ExprId>],
+    max_draws: usize,
+) -> Result<BinaryQueryContinuation, CircuitBuilderError>
+where
+    H: BinaryCircuitHost<EF>,
+    EF: Field + Eq + Hash,
 {
     if bits >= usize::BITS as usize {
         return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
@@ -334,22 +407,37 @@ where
         }
         circuit.connect(below, one);
     }
+    // On Boolean bits in characteristic 2, `1 - (a - b)^2 = a + (1 + b)`, so
+    // complementing each index bit once leaves one addition per comparison.
+    let complements: Option<Vec<Vec<ExprId>>> = (EF::TWO == EF::ZERO).then(|| {
+        sorted_indices
+            .iter()
+            .map(|index| index.iter().map(|&bit| circuit.add(bit, one)).collect())
+            .collect()
+    });
 
     let mut seen = alloc::vec![zero; count];
-    let mut retained = [zero; 32];
+    let mut retained = None;
     let mut stop_total = zero;
     for _ in 0..max_draws {
         // Native uniform-bit sampling consumes eight bytes even for bits=0.
-        let candidate = challenger.sample_bits::<BF, EF>(circuit, bits)?;
+        let candidate = challenger.sample_bits_with_host::<H, EF>(circuit, bits)?;
         let complete = circuit.mul_many(&seen);
         let active = circuit.sub(one, complete);
         let mut membership = zero;
-        for (index, already_seen) in sorted_indices.iter().zip(&mut seen) {
-            let factors: Vec<_> = candidate
-                .iter()
-                .zip(index)
-                .map(|(&a, &b)| equal_bit(circuit, a, b, one))
-                .collect();
+        for (j, (index, already_seen)) in sorted_indices.iter().zip(&mut seen).enumerate() {
+            let factors: Vec<_> = match &complements {
+                Some(complements) => candidate
+                    .iter()
+                    .zip(&complements[j])
+                    .map(|(&a, &b)| circuit.add(a, b))
+                    .collect(),
+                None => candidate
+                    .iter()
+                    .zip(index)
+                    .map(|(&a, &b)| equal_bit(circuit, a, b, one))
+                    .collect(),
+            };
             let equal = circuit.mul_many(&factors);
             membership = circuit.add(membership, equal);
             let unseen = circuit.sub(one, *already_seen);
@@ -361,19 +449,23 @@ where
         let invalid = circuit.mul(active, outside);
         circuit.assert_zero(invalid);
         let complete_after = circuit.mul_many(&seen);
+        // `seen` updates are monotone, so `complete` never returns to zero and
+        // `stop` marks the first completing draw; in characteristic 2 `-1 = 1`,
+        // so `assert_bool(stop)` alone would not exclude such a return.
         let stop = circuit.sub(complete_after, complete);
         circuit.assert_bool(stop);
         stop_total = circuit.add(stop_total, stop);
         let (_, digest) = challenger.retained_query_digest()?;
-        for (selected, byte) in retained.iter_mut().zip(digest) {
-            *selected = circuit.mul_add(stop, byte, *selected);
-        }
+        let selected = retained.unwrap_or_else(|| digest.zeroed(zero));
+        retained = Some(digest.mul_add(circuit, stop, &selected)?);
+        circuit.check_construction_limits()?;
     }
     for present in seen {
         circuit.connect(present, one);
     }
     circuit.connect(stop_total, one);
     let (hash, _) = challenger.retained_query_digest()?;
+    let retained = retained.expect("at least one candidate draw");
     Ok(BinaryQueryContinuation::from_digest(hash, retained))
 }
 
@@ -386,4 +478,174 @@ fn equal_bit<EF: p3_field::Field + Eq + Hash>(
     let difference = circuit.sub(a, b);
     let different = circuit.mul(difference, difference);
     circuit.sub(one, different)
+}
+
+#[cfg(test)]
+mod native_query_tests {
+    use alloc::vec::Vec;
+
+    use p3_binary_field::{BinaryChallenger, BinaryField128};
+    use p3_challenger::CanSampleBits;
+    use p3_circuit::Circuit;
+    use p3_circuit::ops::ByteHash;
+    use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+    use p3_field::PrimeCharacteristicRing;
+    use p3_keccak::Keccak256Hash;
+
+    use super::*;
+
+    type F = BinaryField128;
+    type H = NativeBinaryEncoding;
+    const SEED_BYTES: usize = 7;
+
+    /// Every native uniform-bit draw from the seeded transcript.
+    fn native_draws(seed: &[u8], bits: usize, draws: usize) -> Vec<usize> {
+        let mut challenger = BinaryChallenger::<F, _>::from_hasher(seed.to_vec(), Keccak256Hash);
+        (0..draws).map(|_| challenger.sample_bits(bits)).collect()
+    }
+
+    /// The sorted first `count` distinct draws and the draws they consume.
+    fn first_distinct(draws: &[usize], count: usize) -> (Vec<usize>, usize) {
+        let mut set = Vec::new();
+        for (i, &draw) in draws.iter().enumerate() {
+            if !set.contains(&draw) {
+                set.push(draw);
+            }
+            if set.len() == count {
+                set.sort_unstable();
+                return (set, i + 1);
+            }
+        }
+        panic!(
+            "{count} distinct draws need more than {} draws",
+            draws.len()
+        );
+    }
+
+    fn relation_circuit(bits: usize, count: usize, max_draws: usize) -> Circuit<F> {
+        let mut b = CircuitBuilder::<F>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let initial: Vec<_> = (0..SEED_BYTES).map(|_| b.public_input()).collect();
+        let queries: Vec<Vec<_>> = (0..count)
+            .map(|_| (0..bits).map(|_| b.public_input()).collect())
+            .collect();
+        let challenger = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
+            &mut b,
+            ByteHash::Keccak256,
+            &initial,
+        )
+        .unwrap();
+        verify_binary_query_indices_with_host::<H, F>(
+            &mut b, challenger, bits, &queries, max_draws,
+        )
+        .unwrap();
+        b.build().unwrap()
+    }
+
+    fn accepts(circuit: &Circuit<F>, seed: &[u8], bits: usize, queries: &[usize]) -> bool {
+        let values: Vec<F> = seed
+            .iter()
+            .map(|&byte| H::encode_u16(u16::from(byte)).unwrap())
+            .chain(
+                queries
+                    .iter()
+                    .flat_map(|&q| (0..bits).map(move |bit| F::from_bool(q >> bit & 1 == 1))),
+            )
+            .collect();
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&values).is_ok() && runner.run().is_ok()
+    }
+
+    #[test]
+    fn native_relation_accepts_every_completion_point_and_rejects_reordering() {
+        let (bits, count, budget) = (3, 5, 48);
+        let circuit = relation_circuit(bits, count, budget);
+        let mut completions = Vec::new();
+        for value in 0..12 {
+            let seed = [value; SEED_BYTES];
+            let (queries, used) = first_distinct(&native_draws(&seed, bits, budget), count);
+            completions.push(used);
+            assert!(accepts(&circuit, &seed, bits, &queries), "seed {value}");
+            let mut wrong = queries.clone();
+            wrong.swap(0, 1);
+            assert!(
+                !accepts(&circuit, &seed, bits, &wrong),
+                "unsorted, seed {value}"
+            );
+            wrong[1] = wrong[0];
+            assert!(
+                !accepts(&circuit, &seed, bits, &wrong),
+                "duplicate, seed {value}"
+            );
+        }
+        completions.sort_unstable();
+        completions.dedup();
+        assert!(
+            completions.len() > 1,
+            "one circuit serves several completion draws"
+        );
+    }
+
+    #[test]
+    fn native_membership_rejects_a_set_that_skips_an_earlier_candidate() {
+        let (bits, count, budget) = (3, 3, 24);
+        let circuit = relation_circuit(bits, count, budget);
+        let mut checked = 0;
+        for value in 0..16 {
+            let seed = [value; SEED_BYTES];
+            let draws = native_draws(&seed, bits, budget);
+            let (honest, used) = first_distinct(&draws, count);
+            // A later candidate replaces the first draw. The forged set is
+            // strictly sorted and completes within the budget, so every check
+            // but membership of that first, still-active draw holds.
+            let Some(&late) = draws[used..].iter().find(|draw| !honest.contains(draw)) else {
+                continue;
+            };
+            let mut forged: Vec<_> = honest.iter().copied().filter(|&q| q != draws[0]).collect();
+            forged.push(late);
+            forged.sort_unstable();
+            assert!(forged.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(accepts(&circuit, &seed, bits, &honest), "seed {value}");
+            assert!(!accepts(&circuit, &seed, bits, &forged), "seed {value}");
+            checked += 1;
+        }
+        assert!(checked > 0);
+    }
+
+    #[test]
+    fn native_strict_ordering_blocks_an_odd_multiplicity_membership_forgery() {
+        let (bits, count, budget) = (3, 3, 24);
+        let seed = [5; SEED_BYTES];
+        let draws = native_draws(&seed, bits, budget);
+        let circuit = relation_circuit(bits, count, budget);
+        let (honest, _) = first_distinct(&draws, count);
+        assert!(accepts(&circuit, &seed, bits, &honest));
+        // In characteristic 2 the first draw's three equal events sum to one,
+        // so membership, `seen` and completion all hold at that draw; only
+        // strict ordering rejects the repeated index.
+        assert!(!accepts(&circuit, &seed, bits, &[draws[0]; 3]));
+    }
+
+    #[test]
+    fn native_completion_must_fall_within_the_draw_budget() {
+        let (bits, count) = (3, 6);
+        let seed = [17; SEED_BYTES];
+        let (queries, used) = first_distinct(&native_draws(&seed, bits, 64), count);
+        assert!(
+            used > count,
+            "the seed repeats a candidate before completion"
+        );
+        assert!(accepts(
+            &relation_circuit(bits, count, used),
+            &seed,
+            bits,
+            &queries
+        ));
+        assert!(!accepts(
+            &relation_circuit(bits, count, used - 1),
+            &seed,
+            bits,
+            &queries
+        ));
+    }
 }

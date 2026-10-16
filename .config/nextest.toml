@@ -9,3 +9,11 @@ test-threads = 4
 [[profile.ci.overrides]]
 filter = "package(=p3-recursion) & binary(/^(binary_(components|boolean|stark|poly)|native_recursion)$/)"
 threads-required = "num-test-threads"
+
+# The mixed dense and packed-bit verifier's two smallest prime-field circuits, library unit
+# tests, peak at about 6.5 GB each in a debug build with `parallel`; neither was measured in
+# the serial pass. Only the minimal one was measured with the circuit diagnostics of the
+# all-features pass, at about 11 GB. Run them alone for the same reason.
+[[profile.ci.overrides]]
+filter = "package(=p3-recursion) & test(/^verifier::binary_mixed_whir_multi_stark::tests::small::(minimal|preprocessing)_/)"
+threads-required = "num-test-threads"

@@ -79,7 +79,6 @@ fn build_legacy_fixture(include_ordinary: bool) -> LegacyFixture {
                 inputs: ordinary_inputs.into_iter().map(Some).collect(),
                 out_ctl: vec![true; CFG.rate_ext()],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
                 absorb_len: 0,
             })
             .expect("ordinary same-shape permutation operation is enabled");

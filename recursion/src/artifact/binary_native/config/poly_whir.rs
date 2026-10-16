@@ -6,6 +6,7 @@ use p3_whir::pcs::WhirProverData;
 use p3_whir::{ProtocolParameters, WhirConfig, WhirProver};
 
 use super::*;
+use crate::pcs::binary::MerkleArity;
 use crate::verifier::VerifierLimits;
 
 mod sealed {
@@ -30,9 +31,11 @@ pub struct BinaryNativePolyWhirPcsParameters {
     pub(in crate::artifact::binary_native) config:
         WhirConfig<Poly192, Poly64, BinaryNativeChallenger<Poly64>>,
     pub(in crate::artifact::binary_native) hash: ByteHash,
+    pub(in crate::artifact::binary_native) arity: MerkleArity,
     pub(in crate::artifact::binary_native) cap_height: usize,
 }
 impl BinaryNativePolyWhirPcsParameters {
+    /// [`Self::with_limits`] for pairwise trees under the default limits.
     pub fn new(
         num_variables: usize,
         parameters: ProtocolParameters,
@@ -43,20 +46,25 @@ impl BinaryNativePolyWhirPcsParameters {
             num_variables,
             parameters,
             hash,
+            MerkleArity::Two,
             cap_height,
             &VerifierLimits::default(),
         )
     }
+    /// The commitment's trees compress `arity` digests per node, and their
+    /// caps replace the top `cap_height` levels.
     pub fn with_limits(
         num_variables: usize,
         parameters: ProtocolParameters,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
         let grind_limit = super::whir::validate_parameters(
             num_variables,
             &parameters,
+            arity,
             cap_height,
             64,
             192,
@@ -80,6 +88,7 @@ impl BinaryNativePolyWhirPcsParameters {
         Ok(Self {
             config,
             hash,
+            arity,
             cap_height,
         })
     }
@@ -91,6 +100,9 @@ impl BinaryNativePolyWhirPcsParameters {
     pub const fn hash(&self) -> ByteHash {
         self.hash
     }
+    pub const fn arity(&self) -> MerkleArity {
+        self.arity
+    }
     pub const fn cap_height(&self) -> usize {
         self.cap_height
     }
@@ -99,7 +111,7 @@ pub(in crate::artifact::binary_native) type NativePolyWhirPcs<L> = WhirProver<
     Poly192,
     Poly64,
     BinaryWhirDomain<Poly64>,
-    NativeMmcs<Poly64>,
+    NativeWhirMmcs<Poly64>,
     BinaryNativeChallenger<Poly64>,
     L,
 >;
@@ -132,7 +144,7 @@ impl<L: BinaryNativePolyWhirLayout> MultiStarkConfig for BinaryNativePolyWhirCon
     }
     fn committed_table<'a>(
         &self,
-        data: &'a WhirProverData<Poly64, Poly192, NativeMmcs<Poly64>, L>,
+        data: &'a WhirProverData<Poly64, Poly192, NativeWhirMmcs<Poly64>, L>,
         index: usize,
     ) -> &'a Table<Poly64> {
         data.table(index)

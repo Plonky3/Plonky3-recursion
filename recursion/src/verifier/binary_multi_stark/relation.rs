@@ -97,7 +97,36 @@ where
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
-        if airs.is_empty() || airs.len() != heights.len() || heights.contains(&0) {
+        Self::build_with_bit_tables(
+            airs,
+            heights,
+            &vec![false; airs.len()],
+            pow_bits,
+            max_tau_draws,
+            has_preprocessing,
+            limits,
+        )
+    }
+
+    /// As [`Self::build`], where `bits_committed[i]` states that the main commitment stores
+    /// AIR `i`'s trace as bits. Only such an AIR may declare bit columns.
+    pub(in crate::verifier) fn build_with_bit_tables<A>(
+        airs: &[&A],
+        heights: &[usize],
+        bits_committed: &[bool],
+        pow_bits: usize,
+        max_tau_draws: usize,
+        has_preprocessing: bool,
+        limits: &VerifierLimits,
+    ) -> Result<(Self, OpeningProtocol, Option<OpeningProtocol>), VerificationError>
+    where
+        A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
+    {
+        if airs.is_empty()
+            || airs.len() != heights.len()
+            || airs.len() != bits_committed.len()
+            || heights.contains(&0)
+        {
             return Err(invalid("binary MultiStark trusted instance shape mismatch"));
         }
         // TableShape stores its height as usize and shifts by this exponent.
@@ -117,9 +146,10 @@ where
         usage.add_instances(limits, airs.len())?;
         let mut plans = Vec::with_capacity(airs.len());
         let mut bus_declarations = Vec::with_capacity(airs.len());
-        for (&air, &height) in airs.iter().zip(heights) {
-            let (plan, declarations) =
-                BinaryAirConstraintPlan::<F, E>::with_interaction_limits(air, height, limits)?;
+        for ((&air, &height), &bits) in airs.iter().zip(heights).zip(bits_committed) {
+            let (plan, declarations) = BinaryAirConstraintPlan::<F, E>::with_interaction_limits(
+                air, height, limits, bits,
+            )?;
             if plan.preprocessed_width() != 0 && !has_preprocessing {
                 return Err(invalid(
                     "binary MultiStark preprocessing requires a trusted commitment plan",
@@ -202,6 +232,7 @@ where
                     num_public_values: air.public_value_count(),
                     main_next_row_columns: air.next_columns().to_vec(),
                     preprocessed_next_row_columns: air.preprocessed_next_columns().to_vec(),
+                    periodic_statement: air.periodic_statement().to_vec(),
                 })
                 .collect(),
             pow_bits,
@@ -310,6 +341,24 @@ where
         schedule.zero_points(&heights, zero)
     }
 
+    /// Sets the main and preprocessing PCS points of a reduction whose
+    /// relation has no indexed reads.
+    pub(in crate::verifier) fn set_unindexed_points<T: Clone>(
+        &self,
+        reduction: &mut BinaryMultiStarkReduction<T>,
+    ) {
+        let heights: Vec<_> = self.input.airs.iter().map(|air| air.log_height()).collect();
+        reduction.main_points = self
+            .input
+            .main_schedule
+            .points(&heights, &reduction.point, None);
+        reduction.preprocessed_points = self
+            .input
+            .preprocessed_schedule
+            .as_ref()
+            .map(|schedule| schedule.points(&heights, &reduction.point, None));
+    }
+
     pub(in crate::verifier) fn reduce<BF, EF>(
         &self,
         b: &mut CircuitBuilder<EF>,
@@ -411,24 +460,22 @@ where
         } else {
             zero
         };
-        let output = self.tau.sample_with_host::<H, CF>(b, ch)?;
+        let output = P::sample_nonzero::<H>(b, &self.tau, ch)?;
         let reduction = self.sumcheck.verify_after_queries_using::<P, H, CF>(
             b,
             output.continuation,
             &initial,
             proof.sumcheck,
         )?;
-        let tau = output
-            .values
-            .iter()
-            .map(|value| P::from_checked_bits(b, value))
-            .collect::<Result<_, _>>()?;
+        for value in &output.values {
+            P::constrain_challenge(b, value);
+        }
         Ok(BinaryMultiStarkReduction {
             alpha,
             beta,
             lambda,
             bus_claims,
-            tau,
+            tau: output.values,
             point: reduction.point,
             claim: reduction.claim,
             indexed: None,
@@ -504,8 +551,7 @@ where
                 &public[i],
                 &reduction.alpha,
             )?;
-            let term = P::mul(b, &weight, &evaluation.folded);
-            folded = P::add(b, &folded, &term);
+            folded = P::mul_add(b, &weight, &evaluation.folded, &folded);
             weight = P::mul(b, &weight, &reduction.beta);
             air_evaluations.push(evaluation);
         }

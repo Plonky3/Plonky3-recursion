@@ -1065,14 +1065,12 @@ impl Poseidon1Prover {
             new_start: true,
             merkle_path: false,
             mmcs_bit: false,
-            mmcs_index_sum: Val::<SC>::ZERO,
             input_values: Val::<SC>::zero_vec(width),
             in_ctl: vec![false; width_ext],
             input_indices: vec![0; width_ext],
             out_ctl: vec![false; rate_ext],
             output_indices: vec![0; rate_ext],
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
             absorb_len: 0,
         };
         let mut padded_ops = t.operations.clone();
@@ -1513,7 +1511,7 @@ where
 
 /// Shared helper implementing Poseidon1-specific preprocessing on generic preprocessed columns.
 fn poseidon1_preprocess_for_prover<F, ExtF, const D: usize>(
-    preprocessed: &mut PreprocessedColumns<ExtF, D>,
+    preprocessed: &PreprocessedColumns<ExtF, D>,
 ) -> Result<NonPrimitivePreprocessedMap<F>, CircuitError>
 where
     F: StarkField + PrimeField64,

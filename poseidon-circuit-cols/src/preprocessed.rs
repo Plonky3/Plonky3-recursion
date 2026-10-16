@@ -181,32 +181,22 @@ pub struct PoseidonPreprocessedRow<const INPUT_LIMBS: usize, const OUTPUT_LIMBS:
     /// Per-limb preprocessed output columns for rate outputs under CTL.
     pub output_limbs: [PoseidonPrepOutputLimb<T>; OUTPUT_LIMBS],
 
-    /// Witness index for the MMCS accumulator column.
+    /// Witness index of the direction bit's source on a Merkle row.
     ///
-    /// Used in the cross-table lookup that exposes the accumulator
-    /// to the Witness table at the end of a Merkle chain.
-    pub mmcs_index_sum_ctl_idx: T,
+    /// Every Merkle row looks up its direction bit in the Witness table at
+    /// this index. Arity-4 rows use it for the low direction bit.
+    pub mmcs_bit_idx: T,
 
-    /// Precomputed product of the MMCS-enabled flag and the Merkle-path
-    /// flag.
+    /// Arity-4 rows: witness index of the high direction bit's source.
     ///
-    /// This is the row-local part of the multiplicity expression for the
-    /// accumulator lookup.
-    ///
-    /// The full multiplicity also involves the next row's chain-start
-    /// flag, so the lookup fires on the last Merkle row before a chain
-    /// boundary.
-    ///
-    /// Precomputing this product keeps the overall multiplicity at
-    /// degree two.
-    pub mmcs_merkle_flag: T,
+    /// Arity-2 rows leave this column unused.
+    pub mmcs_bit2_idx: T,
 
     /// Chain boundary flag.
     ///
     /// Set on the first row of a new sponge or Merkle chain.
     ///
-    /// When set, all chaining constraints and the MMCS accumulator
-    /// update are disabled.
+    /// When set, all chaining constraints are disabled.
     pub new_start: T,
 
     /// Merkle-path flag.
@@ -224,8 +214,8 @@ impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy + Default> Def
         Self {
             input_limbs: [PoseidonPrepInputLimb::default(); INPUT_LIMBS],
             output_limbs: [PoseidonPrepOutputLimb::default(); OUTPUT_LIMBS],
-            mmcs_index_sum_ctl_idx: T::default(),
-            mmcs_merkle_flag: T::default(),
+            mmcs_bit_idx: T::default(),
+            mmcs_bit2_idx: T::default(),
             new_start: T::default(),
             merkle_path: T::default(),
         }

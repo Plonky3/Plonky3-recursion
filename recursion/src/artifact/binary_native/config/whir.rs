@@ -6,7 +6,7 @@ use p3_whir::pcs::WhirProverData;
 use p3_whir::{FoldingFactor, ProtocolParameters, WhirConfig, WhirDomain, WhirProver};
 
 use super::*;
-use crate::pcs::binary::RecursiveBinaryWhirTowerField;
+use crate::pcs::binary::{MerkleArity, RecursiveBinaryWhirTowerField};
 use crate::verifier::{InputResourceUsage, VerifierLimits};
 
 mod sealed {
@@ -51,6 +51,7 @@ where
     pub(in crate::artifact::binary_native) config:
         WhirConfig<BinaryField128, F, BinaryNativeChallenger<F>>,
     pub(in crate::artifact::binary_native) hash: ByteHash,
+    pub(in crate::artifact::binary_native) arity: MerkleArity,
     pub(in crate::artifact::binary_native) cap_height: usize,
 }
 impl<F> BinaryNativeWhirPcsParameters<F>
@@ -59,6 +60,7 @@ where
     BinaryField128: ExtensionField<F>,
     BinaryWhirDomain<F>: WhirDomain<F, BinaryField128>,
 {
+    /// [`Self::with_limits`] for pairwise trees under the default limits.
     pub fn new(
         num_variables: usize,
         parameters: ProtocolParameters,
@@ -69,22 +71,27 @@ where
             num_variables,
             parameters,
             hash,
+            MerkleArity::Two,
             cap_height,
             &VerifierLimits::default(),
         )
     }
     /// Bounds schedule work before invoking the released constructor, then
     /// checks the actual required grinding rather than its nominal ceiling.
+    /// The commitment's trees compress `arity` digests per node, and their
+    /// caps replace the top `cap_height` levels.
     pub fn with_limits(
         num_variables: usize,
         parameters: ProtocolParameters,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError> {
         let grind_limit = validate_parameters(
             num_variables,
             &parameters,
+            arity,
             cap_height,
             F::RAW_BITS,
             128,
@@ -106,6 +113,7 @@ where
         Ok(Self {
             config,
             hash,
+            arity,
             cap_height,
         })
     }
@@ -115,13 +123,22 @@ where
     pub const fn hash(&self) -> ByteHash {
         self.hash
     }
+    pub const fn arity(&self) -> MerkleArity {
+        self.arity
+    }
     pub const fn cap_height(&self) -> usize {
         self.cap_height
     }
 }
 
-pub(in crate::artifact::binary_native) type NativeWhirPcs<F, L> =
-    WhirProver<BinaryField128, F, BinaryWhirDomain<F>, NativeMmcs<F>, BinaryNativeChallenger<F>, L>;
+pub(in crate::artifact::binary_native) type NativeWhirPcs<F, L> = WhirProver<
+    BinaryField128,
+    F,
+    BinaryWhirDomain<F>,
+    NativeWhirMmcs<F>,
+    BinaryNativeChallenger<F>,
+    L,
+>;
 /// Complete native WHIR configuration, constructed only by its checked owner.
 pub struct BinaryNativeWhirConfig<F: p3_field::Field, L = SuffixProver<F, BinaryField128>>
 where
@@ -164,7 +181,7 @@ where
     }
     fn committed_table<'a>(
         &self,
-        data: &'a WhirProverData<F, BinaryField128, NativeMmcs<F>, L>,
+        data: &'a WhirProverData<F, BinaryField128, NativeWhirMmcs<F>, L>,
         index: usize,
     ) -> &'a Table<F> {
         data.table(index)
@@ -174,6 +191,7 @@ where
 pub(super) fn validate_parameters(
     num_variables: usize,
     parameters: &ProtocolParameters,
+    arity: MerkleArity,
     cap_height: usize,
     base_bits: usize,
     challenge_bits: usize,
@@ -231,9 +249,10 @@ pub(super) fn validate_parameters(
             "binary native WHIR security parameters exceed the supported challenge and grinding budget",
         ));
     }
-    if cap_height >= usize::BITS as usize || cap_height > domain_bits {
-        return Err(invalid("binary native WHIR cap height exceeds its domain"));
-    }
-    usage.add_cap_roots(limits, 1usize << cap_height)?;
+    let cap_roots = arity
+        .cap_roots(cap_height)
+        .filter(|_| cap_height <= arity.levels(domain_bits))
+        .ok_or_else(|| invalid("binary native WHIR cap height exceeds its domain"))?;
+    usage.add_cap_roots(limits, cap_roots)?;
     Ok(grind_limit)
 }

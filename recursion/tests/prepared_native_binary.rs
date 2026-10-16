@@ -11,7 +11,7 @@ use p3_recursion::artifact::{
     ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
     BinaryNativeWhirPcsParameters,
 };
-use p3_recursion::pcs::binary::RecursiveBinaryWhirTowerField;
+use p3_recursion::pcs::binary::{MerkleArity, RecursiveBinaryWhirTowerField};
 use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer};
 use p3_recursion::verifier::VerifierLimits;
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -34,10 +34,12 @@ fn recursive_protocol() -> ProtocolParameters {
         ..protocol()
     }
 }
-fn options() -> NativeBinaryRecursionOptions {
+/// Output commitments of `arity` trees.
+fn options(arity: MerkleArity) -> NativeBinaryRecursionOptions {
     NativeBinaryRecursionOptions {
         main: recursive_protocol(),
         preprocessed: recursive_protocol(),
+        arity,
         cap_height: 0,
         initial_bytes: b"native-recursion-layer-v1".to_vec(),
         sumcheck_pow_bits: 0,
@@ -58,16 +60,34 @@ fn options() -> NativeBinaryRecursionOptions {
 #[test]
 #[ignore = "proves a full native binary verifier; run explicitly"]
 fn native_layer_proves_and_binds_the_original_statement() {
-    prove_native_layer::<F>();
+    prove_native_layer::<F>(MerkleArity::Two, ByteHash::Keccak256);
 }
 
 #[test]
 #[ignore = "proves a complete Tower32 child verifier over Tower128; run explicitly"]
 fn tower32_child_is_proved_over_tower128() {
-    prove_native_layer::<BinaryField32>();
+    prove_native_layer::<BinaryField32>(MerkleArity::Two, ByteHash::Keccak256);
 }
 
-fn prove_native_layer<B>()
+/// The child and the layer's outputs commit with four-digest trees; the layer verifies the
+/// child's openings at that arity and its own output is a native input at that arity.
+#[test]
+#[ignore = "proves a full native binary verifier; run explicitly"]
+fn four_digest_trees_carry_through_a_native_layer() {
+    prove_native_layer::<F>(MerkleArity::Four, ByteHash::Keccak256);
+}
+
+/// A BLAKE3 child's verifier hashes with native BLAKE3, opening four-digest trees whose nodes
+/// are two compressions each, and the layer's output commits and hashes its transcript with
+/// BLAKE3.
+#[test]
+#[ignore = "proves a full native binary verifier; run explicitly"]
+fn blake3_native_layer_proves_and_binds_the_original_statement() {
+    prove_native_layer::<F>(MerkleArity::Four, ByteHash::Blake3);
+}
+
+/// The child and the layer's outputs commit with `arity` trees of `hash`.
+fn prove_native_layer<B>(arity: MerkleArity, hash: ByteHash)
 where
     B: RecursiveBinaryWhirTowerField
         + BinaryCoordinateField
@@ -91,15 +111,17 @@ where
     let air = DirectCircuitAir::new(&circuit).unwrap();
     let variables = 1 + air.width().next_power_of_two().ilog2() as usize;
     let spec = BinaryNativeVerifierSpec {
-        main: BinaryNativeWhirPcsParameters::<B>::new(
+        main: BinaryNativeWhirPcsParameters::<B>::with_limits(
             variables,
             protocol(),
-            ByteHash::Keccak256,
+            hash,
+            arity,
             0,
+            &VerifierLimits::default(),
         )
         .unwrap(),
         preprocessed: None,
-        transcript_hash: ByteHash::Keccak256,
+        transcript_hash: hash,
         initial_bytes: b"native-recursion-child-v1".to_vec(),
         sumcheck_pow_bits: 0,
         max_tau_draws: 8,
@@ -138,7 +160,7 @@ where
     };
     let layer = PreparedNativeBinaryWhirLayer::from_native_authority_with_construction_limits(
         &authority,
-        options(),
+        options(arity),
         &limits,
         &CircuitConstructionLimits {
             max_expression_nodes: 1 << 22,
@@ -152,6 +174,7 @@ where
         layer.prove_verified(&foreign),
         Err(p3_recursion::verifier::VerificationError::PreparedInputMismatch { .. })
     ));
+    assert_eq!(layer.authority().transcript_hash(), hash);
     eprintln!(
         "native layer: {} witnesses, {} operations",
         layer.circuit().witness_count,

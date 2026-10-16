@@ -18,10 +18,10 @@ The [executable BabyBear example](src/lib.rs) shows statement export, preparatio
 proving, and trusted verification together.
 
 With `parallel` enabled, hiding batch proofs run in a private one-worker Rayon
-pool. This contains a deadlock in the pinned `p3-fri 0.8.0`, which holds its
-hiding RNG lock across nested parallel FFT work. Hidden proofs therefore lose
-native batch parallelism until an upstream guard-scope fix is adopted;
-non-hiding proofs retain the usual parallel path. If another dependency enables
+pool, so they lose native batch parallelism; non-hiding proofs retain the usual
+parallel path. The pinned Plonky3 revision draws hiding randomness outside its
+parallel work (Plonky3#2368), so the pool is a conservative guard until hiding
+batch proving is re-validated under Rayon. If another dependency enables
 `p3-maybe-rayon/parallel` while this crate's `parallel` feature is off, hiding
 proving returns an early error asking for `p3-circuit-prover/parallel`.
 Custom configurations used with `parallel` must be `Sync`, and their batch

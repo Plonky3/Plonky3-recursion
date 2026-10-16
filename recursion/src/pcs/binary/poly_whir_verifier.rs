@@ -14,9 +14,9 @@ use p3_sumcheck::strategy::VariableOrder;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol};
 use p3_whir::WhirConfig;
 
-use super::BinaryPolyWhirProofTargets;
 use super::verifier::observe_cap_with_host;
 use super::whir_plan::WhirPlan;
+use super::{BinaryPolyWhirProofTargets, MerkleArity};
 use crate::BinaryTower128Challenger;
 use crate::verifier::binary_field_policy::{
     BinaryWhirPolicy, NativePoly64Relation, Poly64Relation, poly_observe_seed_with_host,
@@ -25,7 +25,7 @@ use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 
 /// Verifier-owned native domain, schedule, separators and finite input bounds.
 /// Supports the released Poly64→Poly192 polynomial-basis additive family
-/// with ordinary binary-arity byte Merkle trees. The caller binds
+/// with byte Merkle trees whose nodes compress two or four digests. The caller binds
 /// the commitment and prescribed opening points to its statement.
 #[derive(Clone, Debug)]
 pub struct BinaryPolyWhirVerifier {
@@ -46,6 +46,11 @@ impl BinaryPolyWhirVerifier {
     pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.plan.usage
     }
+    /// The roots of every commitment's cap.
+    pub(crate) const fn cap_roots(&self) -> usize {
+        self.plan.cap_roots
+    }
+    /// [`Self::with_limits`] for pairwise trees under the default limits.
     pub fn new<Ch>(
         config: &WhirConfig<Poly192, Poly64, Ch>,
         protocol: OpeningProtocol,
@@ -61,16 +66,20 @@ impl BinaryPolyWhirVerifier {
             protocol,
             order,
             hash,
+            MerkleArity::Two,
             cap_height,
             &VerifierLimits::default(),
         )
     }
 
+    /// Plans the openings of trees whose nodes compress `arity` digests and
+    /// whose caps replace their top `cap_height` levels.
     pub fn with_limits<Ch>(
         config: &WhirConfig<Poly192, Poly64, Ch>,
         protocol: OpeningProtocol,
         order: VariableOrder,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError>
@@ -78,7 +87,7 @@ impl BinaryPolyWhirVerifier {
         Ch: FieldChallenger<Poly64> + GrindingChallenger<Witness = Poly64>,
     {
         Ok(Self {
-            plan: WhirPlan::new(config, protocol, order, hash, cap_height, limits)?,
+            plan: WhirPlan::new(config, protocol, order, hash, arity, cap_height, limits)?,
         })
     }
 
@@ -152,7 +161,7 @@ impl BinaryPolyWhirVerifier {
         super::whir_kernel::verify_using::<P, H, CF>(&self.plan, b, ch, cap, points, proof)
     }
     fn check_cap(&self, cap: &[Vec<ExprId>]) -> Result<(), VerificationError> {
-        super::whir_kernel::check_cap(self.plan.cap_height, cap)
+        super::whir_kernel::check_cap(self.plan.cap_roots, cap)
     }
     pub(crate) fn check_targets<T, B>(
         &self,

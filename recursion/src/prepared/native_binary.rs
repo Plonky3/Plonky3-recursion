@@ -7,12 +7,13 @@ use p3_binary_dft::EncodableLevel;
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::whir::BinaryWhirDomain;
 use p3_binary_pcs::{ChallengeField, FoldAlphabet};
-use p3_circuit::ops::ByteHash;
 use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
 use p3_circuit::ops::binary_host::BinaryCircuitHost;
-use p3_circuit::{Circuit, CircuitBuilder, CircuitConstructionLimits};
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::{ByteHash, NativeTower128Target};
+use p3_circuit::{Circuit, CircuitBuilder, CircuitBuilderError, CircuitConstructionLimits};
 use p3_circuit_prover::direct::DirectCircuitLimits;
-use p3_circuit_prover::native_bus::{NativeBusCircuit, NativeBusCircuitAir};
+use p3_circuit_prover::native_bus::{KeccakCommitment, NativeBusCircuit, NativeBusCircuitAir};
 use p3_field::{ExtensionField, PackedValue};
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::folder::VerifierAir;
@@ -24,8 +25,10 @@ use crate::artifact::{
     BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters, BinaryNativeWhirProver,
     VerifiedBinaryNativeWhirProof,
 };
-use crate::pcs::binary::RecursiveBinaryWhirTowerField;
-use crate::verifier::{BinaryWhirMultiStarkInputShape, VerificationError};
+use crate::pcs::binary::{MerkleArity, RecursiveBinaryWhirTowerField};
+use crate::verifier::{
+    BinaryWhirMultiStarkInputShape, BinaryWhirMultiStarkProofTargets, VerificationError,
+};
 
 type F = BinaryField128;
 type H = NativeBinaryEncoding;
@@ -33,12 +36,25 @@ type OutputAir = NativeBusCircuitAir<F>;
 /// A complete native recursive proof; no prime-field output layer is involved.
 pub type NativeBinaryRecursiveProof = MultiStarkProof<BinaryNativeWhirConfig<F>>;
 
+/// Zerocheck implementation for native Tower128 output proofs.
+/// Backend selection preserves the protocol, security checks and proof format.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NativeBinaryProverBackend {
+    #[default]
+    Generic,
+    Repr,
+    ReprLate,
+}
+
 /// Caller-selected native output protocol and transcript. Security and grinding
 /// settings are validated by the same checked authority used for ordinary proofs.
 /// These proofs do not hide the witness.
 pub struct NativeBinaryRecursionOptions {
     pub main: ProtocolParameters,
     pub preprocessed: ProtocolParameters,
+    /// The digests one node of the output commitments' Merkle trees compresses.
+    pub arity: MerkleArity,
+    /// The top tree levels each output commitment's cap replaces.
     pub cap_height: usize,
     pub initial_bytes: Vec<u8>,
     pub sumcheck_pow_bits: usize,
@@ -65,6 +81,7 @@ where
     prover: BinaryNativeWhirProver<F, OutputAir>,
     authority: BinaryNativeWhirAuthority<F, OutputAir>,
     initial_codeword_cells: usize,
+    prover_backend: NativeBinaryProverBackend,
 }
 
 impl<Base: RecursiveBinaryWhirTowerField> PreparedNativeBinaryWhirLayer<Base>
@@ -73,8 +90,9 @@ where
 {
     /// Builds a full binary verifier and its native output authority. All child
     /// plans and preprocessing come from `authority`, independently of any proof.
-    /// Native Keccak is required; indexed child relations are rejected before
-    /// graph allocation. Limits cover the graph and trace preparation; native
+    /// The child's transcript hash, Keccak-256 or BLAKE3, must also be its
+    /// commitments' hash, and is the output's; indexed child relations are rejected
+    /// before graph allocation. Limits cover the graph and trace preparation; native
     /// PCS codewords and proving workspaces require additional memory.
     pub fn from_native_authority<A, L>(
         authority: &BinaryNativeWhirAuthority<Base, A, L>,
@@ -115,6 +133,33 @@ where
         )
     }
 
+    /// Builds the child verifier circuit and its product-bus relation as
+    /// preparation does, under the same limits and nonzero draw budget, and
+    /// stops before the output codeword budget and key generation.
+    /// `None` places no construction checkpoints, as in
+    /// [`Self::from_native_authority`].
+    pub fn verifier_circuit<A, L>(
+        authority: &BinaryNativeWhirAuthority<Base, A, L>,
+        options: &NativeBinaryRecursionOptions,
+        circuit_limits: &DirectCircuitLimits,
+        construction_limits: Option<&CircuitConstructionLimits>,
+    ) -> Result<(Circuit<F>, NativeBusCircuit<F>), VerificationError>
+    where
+        Base: EncodableLevel + FoldAlphabet<F> + PackedValue<Value = Base> + Ord,
+        F: ChallengeField<Base>,
+        BinaryWhirDomain<Base>: WhirDomain<Base, F>,
+        A: VerifierAir<Base, F>,
+        L: BinaryNativeWhirLayout<Base>,
+    {
+        native_verifier_circuit(
+            authority,
+            options,
+            circuit_limits,
+            construction_limits,
+            KeccakCommitment::Dense,
+        )
+    }
+
     fn prepare<A, L>(
         authority: &BinaryNativeWhirAuthority<Base, A, L>,
         options: NativeBinaryRecursionOptions,
@@ -128,66 +173,14 @@ where
         A: VerifierAir<Base, F>,
         L: BinaryNativeWhirLayout<Base>,
     {
-        let minimum_log_height = first_fold(&options.main)?;
-        if first_fold(&options.preprocessed)? != minimum_log_height {
-            return Err(VerificationError::InvalidProofShape(
-                "native recursive main and preprocessing initial folds differ".into(),
-            ));
-        }
-        let verifier = authority.recursive_verifier();
-        <H as BinaryCircuitHost<F>>::check_hash(authority.transcript_hash())?;
-        verifier.check_native_circuit_support()?;
-        let input_shape = verifier.input_shape();
+        let (circuit, bus) = Self::verifier_circuit(
+            authority,
+            &options,
+            circuit_limits,
+            construction_limits.as_ref(),
+        )?;
+        let input_shape = authority.recursive_verifier().input_shape();
         let public_counts: Vec<_> = input_shape.public_value_counts().collect();
-        let mut builder = match construction_limits {
-            Some(limits) => CircuitBuilder::<F>::with_construction_limits(limits)?,
-            None => CircuitBuilder::<F>::new(),
-        };
-        builder.enable_native_keccak_f1600()?;
-        let public: Vec<Vec<_>> = public_counts
-            .iter()
-            .map(|&count| {
-                (0..count)
-                    .map(|_| {
-                        let value = builder.public_input();
-                        builder.check_construction_limits()?;
-                        Ok(builder.native_tower128_from_expr(value))
-                    })
-                    .collect::<Result<_, VerificationError>>()
-            })
-            .collect::<Result<_, VerificationError>>()?;
-        let proof = input_shape.allocate_native_targets(&mut builder)?;
-        let initial: Vec<_> = authority
-            .initial_bytes()
-            .iter()
-            .map(|&byte| {
-                let value = builder.define_const(H::encode_u16(u16::from(byte))?);
-                builder.check_construction_limits()?;
-                Ok::<_, VerificationError>(value)
-            })
-            .collect::<Result<_, _>>()?;
-        let challenger = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
-            &mut builder,
-            authority.transcript_hash(),
-            &initial,
-        )?;
-        verifier.verify_native(&mut builder, challenger, &public, &proof)?;
-        builder.check_construction_limits()?;
-        let circuit = builder.build()?;
-        let bus = NativeBusCircuit::with_min_log_height_and_limits(
-            &circuit,
-            "recursion",
-            minimum_log_height,
-            *circuit_limits,
-        )?;
-        let required_draws = bus.log_heights().iter().copied().max().unwrap_or(0);
-        if options.max_tau_draws < required_draws {
-            return Err(VerificationError::InvalidProofShape(alloc::format!(
-                "native recursive nonzero draw budget {} is below the required {}",
-                options.max_tau_draws,
-                required_draws,
-            )));
-        }
         let main_cells = codeword_cells(bus.main_variables(), options.main.starting_log_inv_rate)?;
         let pp_cells = bus
             .preprocessed_variables()
@@ -207,10 +200,12 @@ where
             });
         }
         let limits = &options.artifact_limits;
+        let hash = authority.transcript_hash();
         let main = BinaryNativeWhirPcsParameters::<F>::with_limits(
             bus.main_variables(),
             options.main,
-            ByteHash::Keccak256,
+            hash,
+            options.arity,
             options.cap_height,
             &limits.verifier,
         )?;
@@ -220,7 +215,8 @@ where
                 BinaryNativeWhirPcsParameters::<F>::with_limits(
                     variables,
                     options.preprocessed,
-                    ByteHash::Keccak256,
+                    hash,
+                    options.arity,
                     options.cap_height,
                     &limits.verifier,
                 )
@@ -229,7 +225,7 @@ where
         let spec = BinaryNativeVerifierSpec {
             main,
             preprocessed,
-            transcript_hash: ByteHash::Keccak256,
+            transcript_hash: hash,
             initial_bytes: options.initial_bytes,
             sumcheck_pow_bits: options.sumcheck_pow_bits,
             max_tau_draws: options.max_tau_draws,
@@ -251,7 +247,21 @@ where
             prover,
             authority: output_authority,
             initial_codeword_cells,
+            prover_backend: NativeBinaryProverBackend::default(),
         })
+    }
+
+    /// Selects the proving implementation without rebuilding the verifier or keys.
+    pub const fn with_prover_backend(mut self, backend: NativeBinaryProverBackend) -> Self {
+        self.prover_backend = backend;
+        self
+    }
+
+    /// Reuses this layer's graph and keys after checking a new composed security
+    /// target. Retained clones of the output authority must be dropped first.
+    pub fn with_security_bits(mut self, bits: usize) -> Result<Self, VerificationError> {
+        (self.prover, self.authority) = self.prover.with_security_bits(self.authority, bits)?;
+        Ok(self)
     }
 
     pub const fn circuit(&self) -> &Circuit<F> {
@@ -319,9 +329,32 @@ where
         let mut runner = self.circuit.runner();
         runner.set_public_inputs(&public)?;
         runner.set_private_inputs(&private)?;
-        let trace = runner.run()?.witness_trace;
+        drop(private);
+        let trace = runner.run_witness()?;
         let output_public = self.bus.public_values(&public)?;
-        self.prover.prove(&output_public, self.bus.traces(&trace)?)
+        let tables = self.bus.column_major_tables(&trace)?;
+        drop(trace);
+        match self.prover_backend {
+            NativeBinaryProverBackend::Generic => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::GenericBackend>(
+                    &output_public,
+                    tables,
+                ),
+            NativeBinaryProverBackend::Repr => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                >>(&output_public, tables),
+            NativeBinaryProverBackend::ReprLate => self
+                .prover
+                .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                    p3_binary_field::BinaryField2,
+                    p3_binary_field::Ghash128,
+                    true,
+                >>(&output_public, tables),
+        }
     }
 
     /// Verifies against the caller's original child statement. Expected values
@@ -333,6 +366,164 @@ where
     ) -> Result<VerifiedBinaryNativeWhirProof<F>, VerificationError> {
         self.authority
             .verify_native(proof, &self.output_public_values(expected)?)
+    }
+}
+
+/// Native WHIR child authorities whose complete verifier a native layer runs in circuit.
+pub(super) trait NativeWhirChild {
+    type Shape;
+    type Targets;
+
+    fn identity(&self) -> Arc<[u8]>;
+    fn transcript(&self) -> (ByteHash, &[u8]);
+    /// Refuses a child the native carrier cannot verify, before graph allocation.
+    fn check_support(&self) -> Result<(), VerificationError>;
+    fn shape(&self) -> Self::Shape;
+    fn public_counts(shape: &Self::Shape) -> Vec<usize>;
+    fn allocate(
+        shape: &Self::Shape,
+        builder: &mut CircuitBuilder<F>,
+    ) -> Result<Self::Targets, VerificationError>;
+    fn verify(
+        &self,
+        builder: &mut CircuitBuilder<F>,
+        challenger: BinaryTower128Challenger,
+        public: &[Vec<NativeTower128Target>],
+        proof: &Self::Targets,
+    ) -> Result<BinaryTower128Challenger, VerificationError>;
+}
+
+impl<Base, A, L> NativeWhirChild for BinaryNativeWhirAuthority<Base, A, L>
+where
+    Base: RecursiveBinaryWhirTowerField
+        + EncodableLevel
+        + FoldAlphabet<F>
+        + PackedValue<Value = Base>
+        + Ord,
+    F: ExtensionField<Base> + ChallengeField<Base>,
+    BinaryWhirDomain<Base>: WhirDomain<Base, F>,
+    A: VerifierAir<Base, F>,
+    L: BinaryNativeWhirLayout<Base>,
+{
+    type Shape = BinaryWhirMultiStarkInputShape<Base>;
+    type Targets = BinaryWhirMultiStarkProofTargets<NativeTower128Target>;
+
+    fn identity(&self) -> Arc<[u8]> {
+        self.shared_identity()
+    }
+    fn transcript(&self) -> (ByteHash, &[u8]) {
+        (self.transcript_hash(), self.initial_bytes())
+    }
+    fn check_support(&self) -> Result<(), VerificationError> {
+        self.recursive_verifier().check_native_circuit_support()
+    }
+    fn shape(&self) -> Self::Shape {
+        self.recursive_verifier().input_shape()
+    }
+    fn public_counts(shape: &Self::Shape) -> Vec<usize> {
+        shape.public_value_counts().collect()
+    }
+    fn allocate(
+        shape: &Self::Shape,
+        builder: &mut CircuitBuilder<F>,
+    ) -> Result<Self::Targets, VerificationError> {
+        shape.allocate_native_targets(builder)
+    }
+    fn verify(
+        &self,
+        builder: &mut CircuitBuilder<F>,
+        challenger: BinaryTower128Challenger,
+        public: &[Vec<NativeTower128Target>],
+        proof: &Self::Targets,
+    ) -> Result<BinaryTower128Challenger, VerificationError> {
+        self.recursive_verifier()
+            .verify_native(builder, challenger, public, proof)
+    }
+}
+
+/// Builds the child's complete native verifier circuit and its product-bus relation, with
+/// the output hash table committed as `keccak`, under `circuit_limits` and the options'
+/// nonzero draw budget. `None` places no construction checkpoints.
+pub(super) fn native_verifier_circuit<C: NativeWhirChild>(
+    child: &C,
+    options: &NativeBinaryRecursionOptions,
+    circuit_limits: &DirectCircuitLimits,
+    construction_limits: Option<&CircuitConstructionLimits>,
+    keccak: KeccakCommitment,
+) -> Result<(Circuit<F>, NativeBusCircuit<F>), VerificationError> {
+    let minimum_log_height = first_fold(&options.main)?;
+    if first_fold(&options.preprocessed)? != minimum_log_height {
+        return Err(VerificationError::InvalidProofShape(
+            "native recursive main and preprocessing initial folds differ".into(),
+        ));
+    }
+    let (transcript_hash, initial_bytes) = child.transcript();
+    <H as BinaryCircuitHost<F>>::check_hash(transcript_hash)?;
+    child.check_support()?;
+    let input_shape = child.shape();
+    let public_counts = C::public_counts(&input_shape);
+    let mut builder = match construction_limits {
+        Some(limits) => CircuitBuilder::<F>::with_construction_limits(*limits)?,
+        None => CircuitBuilder::<F>::new(),
+    };
+    enable_native_hash(&mut builder, transcript_hash)?;
+    let public: Vec<Vec<_>> = public_counts
+        .iter()
+        .map(|&count| {
+            (0..count)
+                .map(|_| {
+                    let value = builder.public_input();
+                    builder.check_construction_limits()?;
+                    Ok(builder.native_tower128_from_expr(value))
+                })
+                .collect::<Result<_, VerificationError>>()
+        })
+        .collect::<Result<_, VerificationError>>()?;
+    let proof = C::allocate(&input_shape, &mut builder)?;
+    let initial: Vec<_> = initial_bytes
+        .iter()
+        .map(|&byte| {
+            let value = builder.define_const(H::encode_u16(u16::from(byte))?);
+            builder.check_construction_limits()?;
+            Ok::<_, VerificationError>(value)
+        })
+        .collect::<Result<_, _>>()?;
+    let challenger = BinaryTower128Challenger::with_initial_bytes_with_host::<H, F>(
+        &mut builder,
+        transcript_hash,
+        &initial,
+    )?;
+    child.verify(&mut builder, challenger, &public, &proof)?;
+    builder.check_construction_limits()?;
+    let circuit = builder.build()?;
+    let bus = NativeBusCircuit::with_compact_options(
+        &circuit,
+        "recursion",
+        minimum_log_height,
+        *circuit_limits,
+        keccak,
+    )?;
+    let required_draws = bus.log_heights().iter().copied().max().unwrap_or(0);
+    if options.max_tau_draws < required_draws {
+        return Err(VerificationError::InvalidProofShape(alloc::format!(
+            "native recursive nonzero draw budget {} is below the required {}",
+            options.max_tau_draws,
+            required_draws,
+        )));
+    }
+    Ok((circuit, bus))
+}
+
+/// Enables the native operation `hash` runs on: Keccak-f for Keccak-256, the BLAKE3
+/// compression for BLAKE3. A layer enables only its child's transcript hash, so the verifier
+/// of a child whose commitments use another hash fails to build with `OpNotAllowed`.
+pub(super) fn enable_native_hash<CF: BinaryCoordinateField>(
+    builder: &mut CircuitBuilder<CF>,
+    hash: ByteHash,
+) -> Result<(), CircuitBuilderError> {
+    match hash {
+        ByteHash::Keccak256 => builder.enable_native_keccak_f1600(),
+        ByteHash::Blake3 => builder.enable_native_blake3_compress(),
     }
 }
 

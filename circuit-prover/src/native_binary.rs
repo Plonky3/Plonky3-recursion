@@ -12,14 +12,16 @@ use alloc::vec::Vec;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_circuit::Circuit;
 use p3_circuit::ops::binary_native::BinaryCoordinateField;
-use p3_circuit::ops::keccak_perm::{KECCAK_STATE_LIMBS, keccak_limbs_to_state};
+use p3_circuit::ops::keccak_perm::{
+    KECCAK_STATE_LIMBS, KECCAK256_DIGEST_LIMBS, keccak_limbs_to_state,
+};
 use p3_circuit::ops::{NpoTypeId, Op};
 use p3_circuit::tables::WitnessTrace;
 use p3_circuit::types::WitnessId;
 use p3_field::Field;
 use p3_keccak_air::{
     KECCAK_BINARY_ROWS_PER_PERM, KeccakBinaryAir, NUM_KECCAK_BINARY_COLS,
-    generate_binary_trace_rows,
+    generate_binary_trace_packed, generate_binary_trace_rows,
 };
 use p3_lookup::{IndexedLookupBuilder, TraceWindow};
 use p3_matrix::dense::RowMajorMatrix;
@@ -44,7 +46,9 @@ pub enum NativeBinaryCircuitError {
     Indexed(#[from] IndexedCircuitError),
     #[error("native Keccak requires 16 coordinates, got {bits}")]
     CoordinateWidth { bits: usize },
-    #[error("native Keccak operation {operation} requires one input and output group of 100 limbs")]
+    #[error(
+        "native Keccak operation {operation} requires one input group of 100 limbs and a supported output group"
+    )]
     KeccakLayout { operation: usize },
     #[error("native Keccak witness {witness} is outside the 16-coordinate limb span")]
     InvalidLimb { witness: usize },
@@ -71,7 +75,9 @@ pub struct NativeBinaryCircuitAir<F> {
 #[derive(Clone, Debug)]
 pub(crate) struct KeccakCall {
     pub(crate) input: [usize; KECCAK_STATE_LIMBS],
-    pub(crate) output: [usize; KECCAK_STATE_LIMBS],
+    pub(crate) output: Vec<usize>,
+    /// Outputs holding the first digest limbs with their two bytes swapped.
+    pub(crate) swapped: Option<[usize; KECCAK256_DIGEST_LIMBS]>,
 }
 
 /// Compact native primitives and supported binary hash tables.
@@ -101,7 +107,7 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
             limits,
             &[NpoTypeId::native_keccak_f1600()],
         )?;
-        let calls = keccak_calls(circuit)?;
+        let calls = keccak_calls(circuit, false)?;
         let mut airs: Vec<_> = primitive
             .airs()
             .iter()
@@ -173,7 +179,10 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
                 row[HASH_POSITION] = position::<F>(real_hash_rows);
             }
             for (i, call) in calls.iter().enumerate() {
-                for (boundary, witnesses) in [&call.input, &call.output].into_iter().enumerate() {
+                for (boundary, witnesses) in [call.input.as_slice(), call.output.as_slice()]
+                    .into_iter()
+                    .enumerate()
+                {
                     let row = &mut positions
                         [(2 * i + boundary) * PAYLOAD..(2 * i + boundary + 1) * PAYLOAD];
                     for (slot, &w) in witnesses.iter().enumerate() {
@@ -255,9 +264,9 @@ impl<F: BinaryCoordinateField> NativeBinaryCircuit<F> {
             output[..PAYLOAD].copy_from_slice(prep);
             if let Some(call) = self.calls.get(row / 2) {
                 let ids = if row % 2 == 0 {
-                    &call.input
+                    call.input.as_slice()
                 } else {
-                    &call.output
+                    call.output.as_slice()
                 };
                 for i in 0..KECCAK_STATE_LIMBS {
                     output[PAYLOAD + i] = read(ids[i]);
@@ -346,40 +355,59 @@ where
     }
 }
 
-/// Called only after the primitive plan has validated operation identities and IDs.
+/// Called only after the primitive plan has validated operation identities and IDs. Calls
+/// that also output swapped digest limbs are accepted only when `swapped_digest` is set.
 pub(crate) fn keccak_calls<F: Field>(
     circuit: &Circuit<F>,
+    swapped_digest: bool,
 ) -> Result<Vec<KeccakCall>, NativeBinaryCircuitError> {
     let mut calls = Vec::new();
     for (operation, op) in circuit.ops.iter().enumerate() {
         if let Op::NonPrimitiveOpWithExecutor {
-            inputs, outputs, ..
+            inputs,
+            outputs,
+            executor,
+            ..
         } = op
+            && executor.op_type() == &NpoTypeId::native_keccak_f1600()
         {
             // The primitive plan has already rejected unrecognized identities
             // and validated all witness IDs. Validate the supported shape too.
+            let swapped_outputs = if swapped_digest {
+                KECCAK_STATE_LIMBS + KECCAK256_DIGEST_LIMBS
+            } else {
+                KECCAK_STATE_LIMBS
+            };
             if inputs.len() != 1
                 || outputs.len() != 1
                 || inputs[0].len() != KECCAK_STATE_LIMBS
-                || outputs[0].len() != KECCAK_STATE_LIMBS
+                || (!([KECCAK_STATE_LIMBS, swapped_outputs].contains(&outputs[0].len()))
+                    && !(swapped_digest && outputs[0].len() == 2 * KECCAK256_DIGEST_LIMBS))
             {
                 return Err(NativeBinaryCircuitError::KeccakLayout { operation });
             }
+            let id = |i: usize| outputs[0][i].0 as usize;
+            let count = if outputs[0].len() == 2 * KECCAK256_DIGEST_LIMBS {
+                KECCAK256_DIGEST_LIMBS
+            } else {
+                KECCAK_STATE_LIMBS
+            };
             calls.push(KeccakCall {
                 input: core::array::from_fn(|i| inputs[0][i].0 as usize),
-                output: core::array::from_fn(|i| outputs[0][i].0 as usize),
+                output: (0..count).map(id).collect(),
+                swapped: (outputs[0].len() > count)
+                    .then(|| core::array::from_fn(|m| id(count + m))),
             });
         }
     }
     Ok(calls)
 }
 
-/// Callers validate witness IDs and bound the planned trace geometry first.
-pub(crate) fn keccak_bit_trace<F: BinaryCoordinateField>(
+/// Input states of the calls, after checking every input and output limb spans 16 bits.
+fn keccak_inputs<F: BinaryCoordinateField>(
     calls: &[KeccakCall],
     witness: &WitnessTrace<F>,
-    target_height: usize,
-) -> Result<RowMajorMatrix<F>, NativeBinaryCircuitError> {
+) -> Result<Vec<[u64; 25]>, NativeBinaryCircuitError> {
     let read = |w: usize| {
         *witness
             .get_value(WitnessId(w as u32))
@@ -398,6 +426,16 @@ pub(crate) fn keccak_bit_trace<F: BinaryCoordinateField>(
         }
         inputs.push(keccak_limbs_to_state(&limbs));
     }
+    Ok(inputs)
+}
+
+/// Callers validate witness IDs and bound the planned trace geometry first.
+pub(crate) fn keccak_bit_trace<F: BinaryCoordinateField>(
+    calls: &[KeccakCall],
+    witness: &WitnessTrace<F>,
+    target_height: usize,
+) -> Result<RowMajorMatrix<F>, NativeBinaryCircuitError> {
+    let inputs = keccak_inputs(calls, witness)?;
     let hash = generate_binary_trace_rows::<F>(inputs, 0);
     let height = hash.values.len() / NUM_KECCAK_BINARY_COLS;
     if !target_height.is_power_of_two() || target_height < height {
@@ -419,6 +457,39 @@ pub(crate) fn keccak_bit_trace<F: BinaryCoordinateField>(
         }
     }
     Ok(RowMajorMatrix::new(values, NUM_KECCAK_BINARY_COLS))
+}
+
+/// The bit trace of [`keccak_bit_trace`] as one word per 64 rows and column, in the layout of
+/// `Table::from_packed_bits`: block `b` holds rows `64 * b..64 * b + 64`, bit zero first.
+///
+/// Rows past the calls are output rows with a zero state, whose only set cell is the output
+/// flag. Bits past `target_height` in the last block are zero. Callers validate witness IDs
+/// and bound the planned trace geometry first.
+pub(crate) fn keccak_packed_words<F: BinaryCoordinateField>(
+    calls: &[KeccakCall],
+    witness: &WitnessTrace<F>,
+    target_height: usize,
+) -> Result<RowMajorMatrix<u64>, NativeBinaryCircuitError> {
+    const BITS: usize = u64::BITS as usize;
+    let inputs = keccak_inputs(calls, witness)?;
+    let permutation_rows = cells(inputs.len(), KECCAK_BINARY_ROWS_PER_PERM)?;
+    if !target_height.is_power_of_two() || target_height < permutation_rows.next_power_of_two() {
+        return Err(IndexedCircuitError::AllocationOverflow.into());
+    }
+    let blocks = target_height.div_ceil(BITS);
+    let mut words = if inputs.is_empty() {
+        Vec::new()
+    } else {
+        generate_binary_trace_packed::<F>(inputs).values
+    };
+    words.resize(cells(blocks, NUM_KECCAK_BINARY_COLS)?, 0);
+    for block in permutation_rows / BITS..blocks {
+        let start = (block * BITS).max(permutation_rows);
+        let end = ((block + 1) * BITS).min(target_height);
+        let mask = (u64::MAX >> (BITS - (end - start))) << (start - block * BITS);
+        words[block * NUM_KECCAK_BINARY_COLS + KECCAK_BINARY_ROWS_PER_PERM - 1] |= mask;
+    }
+    Ok(RowMajorMatrix::new(words, NUM_KECCAK_BINARY_COLS))
 }
 
 /// Indexed hash tables retain explicit limbs as their lookup payload columns.
@@ -453,13 +524,20 @@ pub(crate) fn keccak_trace<F: BinaryCoordinateField>(
     Ok(RowMajorMatrix::new(values, HASH_WIDTH))
 }
 
-pub(crate) fn eval_keccak_bits<AB: AirBuilder>(builder: &mut AB)
+/// `assume_boolean` drops the booleanity constraints, which is sound only when the table is
+/// committed as bits.
+pub(crate) fn eval_keccak_bits<AB: AirBuilder>(builder: &mut AB, assume_boolean: bool)
 where
     AB::F: Field,
 {
+    let air = if assume_boolean {
+        KeccakBinaryAir::assuming_boolean_trace()
+    } else {
+        KeccakBinaryAir::default()
+    };
     let mut sub =
         SubAirBuilder::<AB, KeccakBinaryAir, AB::Var>::new(builder, 0..NUM_KECCAK_BINARY_COLS);
-    KeccakBinaryAir::default().eval(&mut sub);
+    air.eval(&mut sub);
     let main = builder.main();
     builder.assert_eq(
         main.current_slice()[0],
@@ -484,7 +562,7 @@ pub(crate) fn eval_keccak<AB: AirBuilder>(builder: &mut AB, weights: &[AB::F; 16
 where
     AB::F: Field,
 {
-    eval_keccak_bits(builder);
+    eval_keccak_bits(builder, false);
     let main = builder.main();
     let row = main.current_slice();
     for limb in 0..KECCAK_STATE_LIMBS {
@@ -492,5 +570,45 @@ where
             row[NUM_KECCAK_BINARY_COLS + limb],
             keccak_limb_expression::<AB>(row, weights, limb),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use p3_keccak_air::NUM_ROUNDS;
+    use p3_test_utils::binary_field_params::BinaryField128;
+
+    use super::*;
+
+    /// Without calls every row is a padding output row, whose only set cell is the output-row
+    /// flag after the round flags; no bit is set at or past the height.
+    #[test]
+    fn packed_words_without_calls_are_padding_rows() {
+        const BITS: usize = u64::BITS as usize;
+        let witness = WitnessTrace::<BinaryField128>::new(vec![]);
+        for height in [32, 64, 128] {
+            let words = keccak_packed_words(&[], &witness, height).unwrap();
+            assert_eq!(words.width, NUM_KECCAK_BINARY_COLS);
+            assert_eq!(
+                words.values.len(),
+                NUM_KECCAK_BINARY_COLS * height.div_ceil(BITS)
+            );
+            for (index, &word) in words.values.iter().enumerate() {
+                let (block, column) = (
+                    index / NUM_KECCAK_BINARY_COLS,
+                    index % NUM_KECCAK_BINARY_COLS,
+                );
+                let rows = (height - BITS * block).min(BITS);
+                let expected = if column == NUM_ROUNDS {
+                    u64::MAX >> (BITS - rows)
+                } else {
+                    0
+                };
+                assert_eq!(
+                    word, expected,
+                    "height {height}, block {block}, column {column}"
+                );
+            }
+        }
     }
 }

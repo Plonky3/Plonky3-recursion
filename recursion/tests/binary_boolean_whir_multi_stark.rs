@@ -21,7 +21,7 @@ use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, prove, setup, verify,
 };
 use p3_recursion::BinaryTower128Challenger;
-use p3_recursion::pcs::binary::RecursiveBinaryTowerField;
+use p3_recursion::pcs::binary::{MerkleArity, RecursiveBinaryTowerField};
 use p3_recursion::verifier::{
     BinaryBooleanWhirTraceMultiStarkPreprocessing, BinaryBooleanWhirTraceMultiStarkVerifier,
     NativeBinaryBooleanWhirTraceMultiStarkInput, VerificationError, VerifierLimits,
@@ -34,9 +34,9 @@ use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig,
 type E = BinaryField128;
 type Tree = keccak::LevelMmcs<E>;
 type M = Tree;
-type Inner = BooleanWhirPcs<E, BinaryWhirDomain<E>, M, Ch>;
+type Inner = BooleanWhirPcs<E, E, BinaryWhirDomain<E>, M, Ch>;
 type Pcs = BooleanTraceCommitment<E, Inner>;
-type TraceProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, M>>;
+type TraceProof = BooleanTraceCommitmentProof<E, BooleanWhirProof<E, E, M>>;
 type Ch = keccak::LevelChallenger<E>;
 
 struct Config {
@@ -65,7 +65,7 @@ impl MultiStarkConfig for Config {
     }
     fn committed_table<'a>(
         &self,
-        data: &'a BooleanTraceCommitmentData<E, BooleanWhirData<E, M>>,
+        data: &'a BooleanTraceCommitmentData<E, BooleanWhirData<E, E, M>>,
         i: usize,
     ) -> &'a Table<E> {
         data.table(i)
@@ -214,12 +214,14 @@ fn check(
             &[height],
             &main_cfg,
             ByteHash::Keccak256,
+            MerkleArity::Two,
             0,
             0,
             8,
             BinaryBooleanWhirTraceMultiStarkPreprocessing {
                 config: pp_cfg.clone(),
                 hash: ByteHash::Keccak256,
+                arity: MerkleArity::Two,
                 cap_height: 1,
                 commitment: pp_cap.clone(),
             },
@@ -246,6 +248,7 @@ fn check(
                     vec![OpeningBatch::new((0..width).collect(), next)],
                 )]),
                 ByteHash::Keccak256,
+                MerkleArity::Two,
                 cap,
                 &limits,
             )
@@ -315,7 +318,7 @@ fn check(
     ));
     let mut imported_ch = make();
     let input = recursive
-        .import_native_with_preprocessing::<Config, _, _, _>(
+        .import_native_with_preprocessing::<Config, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),
@@ -392,7 +395,7 @@ fn check(
     let mut before = unchanged.clone();
     assert!(
         recursive
-            .import_native_with_preprocessing::<Config, _, _, _>(
+            .import_native_with_preprocessing::<Config, _, _>(
                 &main_cfg,
                 &main_tree,
                 Some((&pp_cfg, &pp_tree)),
@@ -421,7 +424,7 @@ fn check(
     let mut unchanged = make();
     let mut before = unchanged.clone();
     assert!(
-        matches!(recursive.import_native_with_preprocessing::<Config, _, _, _>(
+        matches!(recursive.import_native_with_preprocessing::<Config, _, _>(
         &main_cfg, &main_tree, Some((&pp_cfg, &pp_tree)), &public, &proof, &mut unchanged,
     ), Err(VerificationError::InvalidProofShape(message))
         if message == "binary ring-switch native round count mismatch")
@@ -458,7 +461,7 @@ fn check(
     let mut unchanged = make();
     let mut before = unchanged.clone();
     assert!(
-        matches!(recursive.import_native_with_preprocessing::<Config,_,_,_>(
+        matches!(recursive.import_native_with_preprocessing::<Config, _, _>(
         &main_cfg, &main_tree, Some((&pp_cfg, &pp_tree)), &public, &proof, &mut unchanged),
         Err(VerificationError::InvalidProofShape(message)) if message == "binary WHIR native path restoration failed")
     );

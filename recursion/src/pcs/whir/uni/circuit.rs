@@ -344,7 +344,11 @@ fn validate_target_round_shape(
         )?;
     }
     match (&round.whir.final_sumcheck, vp.final_sumcheck_rounds) {
-        (Some(_), 0) => {}
+        (Some(_), 0) => {
+            return Err(VerificationError::InvalidProofShape(
+                "WHIR zero-round final sumcheck must be absent".into(),
+            ));
+        }
         (Some(sumcheck), rounds) => validate_target_sumcheck(
             rounds,
             vp.final_folding_pow_bits,

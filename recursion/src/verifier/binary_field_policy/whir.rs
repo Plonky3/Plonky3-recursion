@@ -2,7 +2,6 @@
 
 use alloc::vec::Vec;
 
-use p3_binary_field::TowerLevel;
 use p3_circuit::ops::NativePoly192Target;
 
 use super::*;
@@ -25,6 +24,19 @@ pub(crate) trait BinaryWhirPolicy<CF: Field + Eq + Hash>: BinaryProtocolPolicy<C
         value: &Self::ChallengeTarget,
         mode: BinaryOracleWord,
     ) -> Result<Vec<ExprId>, VerificationError>;
+    /// Low-first sixteen-bit words of the bytes [`Self::oracle_bytes`]
+    /// returns, bound to `value` but range-checked only by the hash that
+    /// absorbs them (a leaf hash, or the transcript refill of the next draw).
+    /// Once range-checked, the words also constrain Base membership. `None`
+    /// keeps the value on [`Self::oracle_bytes`], before any constraint is
+    /// added.
+    fn oracle_words(
+        _b: &mut CircuitBuilder<CF>,
+        _value: &Self::ChallengeTarget,
+        _mode: BinaryOracleWord,
+    ) -> Result<Option<Vec<ExprId>>, VerificationError> {
+        Ok(None)
+    }
     fn query_point(
         b: &mut CircuitBuilder<CF>,
         index_bits: &[ExprId],
@@ -89,6 +101,20 @@ where
             BinaryOracleWord::Challenge => 128,
         };
         <Self as BinaryTowerPolicy<BinaryField128>>::word_bytes::<H>(b, value, width)
+    }
+    fn oracle_words(
+        b: &mut CircuitBuilder<BinaryField128>,
+        value: &NativeTower128Target,
+        mode: BinaryOracleWord,
+    ) -> Result<Option<Vec<ExprId>>, VerificationError> {
+        let width = match mode {
+            BinaryOracleWord::Base => F::RAW_BITS,
+            BinaryOracleWord::Challenge => 128,
+        };
+        if !width.is_multiple_of(16) {
+            return Ok(None);
+        }
+        Ok(Some(b.native_tower128_unchecked_words(value, width / 16)?))
     }
     fn query_point(
         b: &mut CircuitBuilder<BinaryField128>,
@@ -181,35 +207,33 @@ impl BinaryWhirPolicy<Poly64> for NativePoly64Relation {
             }
         }
     }
+    fn oracle_words(
+        b: &mut CircuitBuilder<Poly64>,
+        value: &NativePoly192Target,
+        mode: BinaryOracleWord,
+    ) -> Result<Option<Vec<ExprId>>, VerificationError> {
+        let coefficients = match mode {
+            BinaryOracleWord::Base => {
+                // Allocation embeds base rows, but callers may supply other targets.
+                for &coefficient in &value.coefficients()[1..] {
+                    b.assert_zero(coefficient);
+                }
+                &value.coefficients()[..1]
+            }
+            BinaryOracleWord::Challenge => &value.coefficients()[..],
+        };
+        let mut words = Vec::with_capacity(4 * coefficients.len());
+        for &coefficient in coefficients {
+            words.extend(b.native_poly64_unchecked_words(coefficient, 4)?);
+        }
+        Ok(Some(words))
+    }
     fn query_point(
         b: &mut CircuitBuilder<Poly64>,
         index_bits: &[ExprId],
         num_variables: usize,
     ) -> Result<Vec<NativePoly192Target>, CircuitBuilderError> {
-        if index_bits.len() > 64 || num_variables > 64 {
-            return Err(CircuitBuilderError::NonPrimitiveOpArity {
-                op: "BinaryWhirQueryPoint",
-                expected: alloc::format!("at most {} alphabet coordinates", 64),
-                got: index_bits.len().max(num_variables),
-            });
-        }
-        for &bit in index_bits {
-            b.assert_bool(bit);
-        }
-        b.check_construction_limits()?;
-        (0..num_variables)
-            .rev()
-            .map(|shift| {
-                let mut value = ExprId::ZERO;
-                for (i, &bit) in index_bits.iter().skip(shift).enumerate() {
-                    let basis = b.define_const(Poly64::cantor_basis(i));
-                    let term = b.mul(bit, basis);
-                    value = b.add(value, term);
-                }
-                b.check_construction_limits()?;
-                Ok(b.native_poly192_from_coefficients([value, ExprId::ZERO, ExprId::ZERO]))
-            })
-            .collect()
+        crate::pcs::binary::native_poly64_whir_query_point(b, index_bits, num_variables)
     }
     fn square(b: &mut CircuitBuilder<Poly64>, value: &NativePoly192Target) -> NativePoly192Target {
         b.native_poly192_square(value)
@@ -285,6 +309,52 @@ mod tests {
         for upper in [Poly64::ONE, Poly64::new(1 << 63)] {
             assert!(!run(&[Poly64::new(raw), upper, Poly64::ZERO]));
             assert!(!run(&[Poly64::new(raw), Poly64::ZERO, upper]));
+        }
+    }
+
+    /// Leaf words are the low-first sixteen-bit words of the bytes
+    /// `oracle_bytes` serializes: the four words of the base coefficient,
+    /// whose upper coefficients must be zero, or the twelve words of all
+    /// three coefficients in ascending order.
+    #[test]
+    fn native_poly_oracle_words_split_the_oracle_bytes() {
+        let raw = [
+            0x8123456789abcdefu64,
+            0x0fedcba987654321,
+            0xdeadbeef01234567,
+        ];
+        let bytes: Vec<u8> = raw.iter().flat_map(|value| value.to_le_bytes()).collect();
+        for (mode, honest, count) in [
+            (BinaryOracleWord::Base, [raw[0], 0, 0], 4),
+            (BinaryOracleWord::Challenge, raw, 12),
+        ] {
+            let mut b = CircuitBuilder::<Poly64>::new();
+            let coefficients = b.alloc_private_input_array::<3>("manual oracle value");
+            let value = b.native_poly192_from_coefficients(coefficients);
+            let words = NativePoly64Relation::oracle_words(&mut b, &value, mode)
+                .unwrap()
+                .unwrap();
+            assert_eq!(words.len(), count);
+            for (word, pair) in words.into_iter().zip(bytes.as_chunks::<2>().0) {
+                let expected = b.define_const(Poly64::new(u16::from_le_bytes(*pair).into()));
+                b.connect(word, expected);
+            }
+            let circuit = b.build().unwrap();
+            let run = |values: [u64; 3]| {
+                let mut runner = circuit.runner();
+                runner
+                    .set_private_inputs(&values.map(Poly64::new))
+                    .and_then(|()| runner.run().map(|_| ()))
+                    .is_ok()
+            };
+            assert!(run(honest));
+            for coefficient in 0..3 {
+                for bit in [0, 63] {
+                    let mut wrong = honest;
+                    wrong[coefficient] ^= 1 << bit;
+                    assert!(!run(wrong), "coefficient {coefficient}, bit {bit}");
+                }
+            }
         }
     }
 

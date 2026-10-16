@@ -134,6 +134,11 @@ where
     pub fn artifact_limits(&self) -> &ArtifactLimits {
         &self.state.limits
     }
+    /// Every assessed security term of the trusted statement, as setup checked it against the
+    /// spec's `security_bits`.
+    pub fn security_report(&self) -> &MultiStarkSecurityReport {
+        &self.state.security
+    }
     pub fn recursive_verifier(&self) -> &BinaryWhirMultiStarkVerifier<F> {
         &self.state.binary
     }
@@ -171,6 +176,18 @@ where
     <BinaryField128 as ExtensionField<F>>::ExtensionPacking:
         From<BinaryField128> + From<F::Packing>,
 {
+    pub(crate) fn with_security_bits(
+        mut self,
+        authority: BinaryNativeWhirAuthority<F, A, L>,
+        bits: usize,
+    ) -> Result<(Self, BinaryNativeWhirAuthority<F, A, L>), VerificationError> {
+        self.state = State::with_security_bits(self.state, authority.state, bits)?;
+        let authority = BinaryNativeWhirAuthority {
+            state: self.state.clone(),
+        };
+        Ok((self, authority))
+    }
+
     /// Ordinary row-major AIR traces. Trusted shapes are checked before
     /// commitment or any native transcript mutation.
     pub fn prove(
@@ -179,5 +196,19 @@ where
         traces: Vec<RowMajorMatrix<F>>,
     ) -> Result<MultiStarkProof<BinaryNativeWhirConfig<F, L>>, VerificationError> {
         self.state.prove(&self.key, public, traces)
+    }
+
+    /// Proves column-major tables with a selected zerocheck backend, retaining
+    /// the ordinary statement shape and composed security checks.
+    pub fn prove_tables_with_backend<B>(
+        &self,
+        public: &[Vec<F>],
+        tables: Vec<p3_sumcheck::layout::Table<F>>,
+    ) -> Result<MultiStarkProof<BinaryNativeWhirConfig<F, L>>, VerificationError>
+    where
+        B: p3_multi_stark::ZerocheckBackend<F, BinaryField128, A>,
+    {
+        self.state
+            .prove_tables_with_backend::<B>(&self.key, public, tables)
     }
 }

@@ -20,7 +20,7 @@ use p3_sumcheck::generic_degree::GenericDegreeProof;
 use p3_sumcheck::{OpeningBatch, SumcheckData};
 use scalar::ScalarWire;
 
-use super::config::NativeMmcs;
+use super::config::{NativeMmcs, NativeWhirMmcs};
 use super::{BinaryNativeAuthority, BinaryNativeConfig, VerifiedBinaryNativeProof};
 use crate::artifact::wire::{Reader, Writer, checked_product, decode_framed, encode_framed};
 use crate::artifact::{ArtifactError, ArtifactKind, ArtifactLimits, ExpectedVerifierArtifact};
@@ -141,12 +141,19 @@ pub(crate) struct WhirDecode {
     pub sites: Vec<WhirSiteDecode>,
     pub final_poly_len: usize,
 }
+/// The dense WHIR opening, then the packed-bit opening when the commitment has a packed table.
+pub(crate) struct MixedWhirDecode {
+    pub dense: WhirDecode,
+    pub packed: Option<BooleanTraceDecode<WhirDecode>>,
+}
 
 mod boolean;
 mod boolean_whir;
 mod grouped;
 mod grouped_boolean;
 mod grouped_shell;
+mod mixed_whir;
+mod poly_mixed_whir;
 mod poly_whir;
 mod whir;
 

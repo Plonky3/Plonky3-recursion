@@ -1,6 +1,7 @@
 //! Poseidon1 configuration types and execution closures.
 
 use alloc::format;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -242,12 +243,31 @@ impl Poseidon1Config {
         self.rate_ext() + self.capacity_ext()
     }
 
+    /// Reject a binary Merkle row on a shape whose state does not split into two equal halves.
+    pub(crate) fn validate_merkle_geometry(
+        self,
+        merkle_path: bool,
+    ) -> Result<(), CircuitBuilderError> {
+        if merkle_path && self.rate_ext() != self.capacity_ext() {
+            return Err(CircuitBuilderError::Poseidon1ConfigMismatch {
+                expected: "binary Merkle shape with equal rate_ext and capacity_ext".to_string(),
+                got: format!(
+                    "{} has rate_ext={} and capacity_ext={}",
+                    self.variant_name(),
+                    self.rate_ext(),
+                    self.capacity_ext()
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Check that input and output counts match this config's expected layout.
     ///
-    /// - For D=1: `add_poseidon1_perm` always supplies `width_ext + 2` input slots (MMCS slots may
+    /// - For D=1: `add_poseidon1_perm` always supplies `width_ext + 1` input slots (the MMCS slot may
     ///   be empty when `merkle_path` is false). `add_poseidon1_perm_base` uses exactly `width` inputs.
-    /// - For D=1 with Merkle (`merkle_path`): inputs must be `width_ext + 2`.
-    /// - For D>1: expects `width_ext + 2` inputs and `rate_ext` or `width_ext` outputs.
+    /// - For D=1 with Merkle (`merkle_path`): inputs must be `width_ext + 1`.
+    /// - For D>1: expects `width_ext + 1` inputs and `rate_ext` or `width_ext` outputs.
     ///
     /// # Errors
     ///
@@ -258,29 +278,30 @@ impl Poseidon1Config {
         output_count: usize,
         merkle_path: bool,
     ) -> Result<(), CircuitBuilderError> {
+        self.validate_merkle_geometry(merkle_path)?;
         let is_d1 = self.d() == 1;
         let inputs_ok = if is_d1 {
             if merkle_path {
-                input_count == self.width_ext() + 2
+                input_count == self.width_ext() + 1
             } else {
-                input_count == self.width() || input_count == self.width_ext() + 2
+                input_count == self.width() || input_count == self.width_ext() + 1
             }
         } else {
-            input_count == self.width_ext() + 2
+            input_count == self.width_ext() + 1
         };
         if !inputs_ok {
             let expected = if is_d1 {
                 if merkle_path {
-                    format!("{} inputs", self.width_ext() + 2)
+                    format!("{} inputs", self.width_ext() + 1)
                 } else {
                     format!(
                         "{} or {} inputs for D=1 mode",
                         self.width(),
-                        self.width_ext() + 2
+                        self.width_ext() + 1
                     )
                 }
             } else {
-                format!("{} inputs", self.width_ext() + 2)
+                format!("{} inputs", self.width_ext() + 1)
             };
             return Err(CircuitBuilderError::NonPrimitiveOpArity {
                 op: "Poseidon1Perm",
@@ -316,7 +337,7 @@ impl Poseidon1Config {
     /// Convert input expressions to witness indices according to this config's layout.
     ///
     /// - D=1 with `width` inputs (`add_poseidon1_perm_base`): flat slots.
-    /// - Otherwise: `width_ext` limb slots, then MMCS index accumulator and direction bit.
+    /// - Otherwise: `width_ext` limb slots, then the direction bit.
     pub fn lower_inputs<F: Field>(
         self,
         input_exprs: &[Vec<ExprId>],
@@ -331,19 +352,9 @@ impl Poseidon1Config {
         let mut widx =
             ctx.lower_expr_slots(&input_exprs[..width_ext], "Poseidon1Perm", "input limb")?;
 
-        let [mmcs_sum] = ctx
-            .lower_expr_slots(
-                &input_exprs[width_ext..=width_ext],
-                "Poseidon1Perm",
-                "mmcs_index_sum",
-            )?
-            .try_into()
-            .expect("single-element slice must yield single-element vec");
-        widx.push(mmcs_sum);
-
         let [mmcs_bit] = ctx
             .lower_expr_slots(
-                &input_exprs[width_ext + 1..=width_ext + 1],
+                &input_exprs[width_ext..=width_ext],
                 "Poseidon1Perm",
                 "mmcs_bit",
             )?
@@ -447,8 +458,28 @@ mod tests {
     fn validate_io_counts_d4_w16_ok() {
         let cfg = Poseidon1Config::BABY_BEAR_D4_W16;
         // width_ext=4, rate_ext=2
-        assert!(cfg.validate_io_counts(4 + 2, 2, false).is_ok()); // inputs=6, outputs=rate
-        assert!(cfg.validate_io_counts(6, 4, true).is_ok()); // outputs=width
+        assert!(cfg.validate_io_counts(4 + 1, 2, false).is_ok()); // inputs=5, outputs=rate
+        assert!(cfg.validate_io_counts(5, 4, true).is_ok()); // outputs=width
+    }
+
+    #[test]
+    fn validate_io_counts_w24_accepts_sponge_and_rejects_binary_merkle() {
+        for cfg in [
+            Poseidon1Config::BABY_BEAR_D4_W24,
+            Poseidon1Config::BABY_BEAR_D4_W24.for_challenger(),
+            Poseidon1Config::KOALA_BEAR_D4_W24,
+            Poseidon1Config::KOALA_BEAR_D4_W24.for_challenger(),
+        ] {
+            assert!(
+                cfg.validate_io_counts(cfg.width_ext() + 1, cfg.rate_ext(), false)
+                    .is_ok()
+            );
+            let Err(CircuitBuilderError::Poseidon1ConfigMismatch { .. }) =
+                cfg.validate_io_counts(cfg.width_ext() + 1, cfg.rate_ext(), true)
+            else {
+                panic!("W24 binary Merkle mode must be rejected");
+            };
+        }
     }
 
     #[test]
@@ -456,15 +487,15 @@ mod tests {
         let cfg = Poseidon1Config::BABY_BEAR_D1_W16;
         assert!(cfg.validate_io_counts(16, 8, false).is_ok());
         assert!(cfg.validate_io_counts(16, 16, false).is_ok());
-        assert!(cfg.validate_io_counts(18, 8, false).is_ok());
-        assert!(cfg.validate_io_counts(18, 16, false).is_ok());
+        assert!(cfg.validate_io_counts(17, 8, false).is_ok());
+        assert!(cfg.validate_io_counts(17, 16, false).is_ok());
     }
 
     #[test]
     fn validate_io_counts_d1_w16_merkle_ok() {
         let cfg = Poseidon1Config::BABY_BEAR_D1_W16;
-        assert!(cfg.validate_io_counts(18, 8, true).is_ok());
-        assert!(cfg.validate_io_counts(18, 16, true).is_ok());
+        assert!(cfg.validate_io_counts(17, 8, true).is_ok());
+        assert!(cfg.validate_io_counts(17, 16, true).is_ok());
     }
 
     #[test]
@@ -475,7 +506,7 @@ mod tests {
         else {
             panic!("expected NonPrimitiveOpArity");
         };
-        assert_eq!(expected, "18 inputs");
+        assert_eq!(expected, "17 inputs");
         assert_eq!(got, 16);
     }
 
@@ -488,7 +519,7 @@ mod tests {
             panic!("expected NonPrimitiveOpArity");
         };
         assert_eq!(op, "Poseidon1Perm");
-        assert_eq!(expected, "6 inputs");
+        assert_eq!(expected, "5 inputs");
         assert_eq!(got, 3);
     }
 
@@ -496,7 +527,7 @@ mod tests {
     fn validate_io_counts_wrong_outputs_errors() {
         let cfg = Poseidon1Config::BABY_BEAR_D4_W16;
         let Err(CircuitBuilderError::NonPrimitiveOpArity { op, expected, got }) =
-            cfg.validate_io_counts(6, 3, false)
+            cfg.validate_io_counts(5, 3, false)
         else {
             panic!("expected NonPrimitiveOpArity");
         };
@@ -523,7 +554,7 @@ mod tests {
         let cfg = Poseidon1Config::BABY_BEAR_D4_W16;
 
         let mut map = HashMap::new();
-        for i in 0u32..6 {
+        for i in 0u32..5 {
             map.insert(ExprId(i), WitnessId(100 + i));
         }
         let mut counter = 200u32;
@@ -534,10 +565,10 @@ mod tests {
         };
         let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
 
-        let input_exprs: Vec<Vec<ExprId>> = (0u32..6).map(|i| vec![ExprId(i)]).collect();
+        let input_exprs: Vec<Vec<ExprId>> = (0u32..5).map(|i| vec![ExprId(i)]).collect();
         let result = cfg.lower_inputs(&input_exprs, &ctx, false).unwrap();
 
-        let expected: Vec<Vec<WitnessId>> = (0u32..6).map(|i| vec![WitnessId(100 + i)]).collect();
+        let expected: Vec<Vec<WitnessId>> = (0u32..5).map(|i| vec![WitnessId(100 + i)]).collect();
         assert_eq!(result, expected);
     }
 
@@ -568,7 +599,7 @@ mod tests {
     fn lower_inputs_d1_merkle_matches_ext_layout() {
         let cfg = Poseidon1Config::BABY_BEAR_D1_W16;
         let mut map = HashMap::new();
-        for i in 0u32..18 {
+        for i in 0u32..17 {
             map.insert(ExprId(i), WitnessId(100 + i));
         }
         let mut counter = 300u32;
@@ -579,18 +610,18 @@ mod tests {
         };
         let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
 
-        let input_exprs: Vec<Vec<ExprId>> = (0u32..18).map(|i| vec![ExprId(i)]).collect();
+        let input_exprs: Vec<Vec<ExprId>> = (0u32..17).map(|i| vec![ExprId(i)]).collect();
         let result = cfg.lower_inputs(&input_exprs, &ctx, true).unwrap();
 
-        let expected: Vec<Vec<WitnessId>> = (0u32..18).map(|i| vec![WitnessId(100 + i)]).collect();
+        let expected: Vec<Vec<WitnessId>> = (0u32..17).map(|i| vec![WitnessId(100 + i)]).collect();
         assert_eq!(result, expected);
     }
 
     #[test]
-    fn lower_inputs_d1_non_merkle_18_slot_layout() {
+    fn lower_inputs_d1_non_merkle_17_slot_layout() {
         let cfg = Poseidon1Config::BABY_BEAR_D1_W16;
         let mut map = HashMap::new();
-        for i in 0u32..18 {
+        for i in 0u32..17 {
             map.insert(ExprId(i), WitnessId(200 + i));
         }
         let mut counter = 400u32;
@@ -601,10 +632,10 @@ mod tests {
         };
         let ctx = NpoLoweringContext::<F>::new(&mut map, &mut alloc);
 
-        let input_exprs: Vec<Vec<ExprId>> = (0u32..18).map(|i| vec![ExprId(i)]).collect();
+        let input_exprs: Vec<Vec<ExprId>> = (0u32..17).map(|i| vec![ExprId(i)]).collect();
         let result = cfg.lower_inputs(&input_exprs, &ctx, false).unwrap();
 
-        let expected: Vec<Vec<WitnessId>> = (0u32..18).map(|i| vec![WitnessId(200 + i)]).collect();
+        let expected: Vec<Vec<WitnessId>> = (0u32..17).map(|i| vec![WitnessId(200 + i)]).collect();
         assert_eq!(result, expected);
     }
 
@@ -614,7 +645,6 @@ mod tests {
 
         let mut map = HashMap::new();
         map.insert(ExprId(10), WitnessId(50));
-        map.insert(ExprId(11), WitnessId(51));
         let mut counter = 200u32;
         let mut alloc = |_: usize| {
             let id = WitnessId(counter);
@@ -625,20 +655,12 @@ mod tests {
 
         let mut input_exprs: Vec<Vec<ExprId>> = vec![vec![]; cfg.width_ext()];
         input_exprs.push(vec![ExprId(10)]);
-        input_exprs.push(vec![ExprId(11)]);
 
         let result = cfg.lower_inputs(&input_exprs, &ctx, false).unwrap();
 
         assert_eq!(
             result,
-            vec![
-                vec![],
-                vec![],
-                vec![],
-                vec![],
-                vec![WitnessId(50)],
-                vec![WitnessId(51)],
-            ]
+            vec![vec![], vec![], vec![], vec![], vec![WitnessId(50)],]
         );
     }
 

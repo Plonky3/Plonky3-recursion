@@ -11,7 +11,8 @@ use p3_field::PrimeCharacteristicRing;
 use p3_multilinear_util::point::Point;
 use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::pcs::binary::{
-    BinaryBooleanWhirVerifier, BinaryRingClaimSpec, verify_binary_query_indices_with_continuation,
+    BinaryBooleanWhirVerifier, BinaryRingClaimSpec, MerkleArity,
+    verify_binary_query_indices_with_continuation,
 };
 use p3_sumcheck::layout::SuffixProver;
 use p3_test_utils::binary_field_params::{blake3, keccak};
@@ -302,6 +303,170 @@ fn preceding_bounded_queries_resume_through_the_ring_seed_once() {
     fixture!(keccak, ByteHash::Keccak256, specs, 1, 5, true);
 }
 
+/// The surviving value of the ring switch is constrained equal to the packed opening's
+/// evaluation, the one link from the readings to the commitment. A ring switch run on another
+/// packing, closed at its own surviving value, followed by the committed packing's opening at
+/// that surviving point, passes every other check: each part imports on its own, the whole
+/// proof does not, and the prime-field circuit refuses it.
+#[test]
+fn prime_circuit_binds_the_surviving_value_to_the_packed_evaluation() {
+    use p3_binary_pcs::whir::BooleanWhirProof;
+    use p3_commit::MultilinearPcs;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_multilinear_util::poly::Poly;
+    use p3_recursion::pcs::binary::{BinaryBitRingVerifier, BinaryWhirVerifier};
+    use p3_sumcheck::layout::{Layout, Table};
+    use p3_sumcheck::ring_switch::bits::{BitPacking, BitRingSwitch, BitRingSwitchClaims};
+    use p3_sumcheck::strategy::VariableOrder;
+    use p3_sumcheck::{OpeningBatch, OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
+    type E = BinaryField128;
+    type Ch = keccak::LevelChallenger<E>;
+    let packed = 2;
+    let variables = 7 + packed;
+    let domain = BinaryWhirDomain::<E>::default();
+    let config = WhirConfig::<E, E, Ch>::new_with_domain(
+        packed,
+        ProtocolParameters {
+            security_level: 8,
+            pow_bits: 0,
+            round_log_inv_rates: vec![],
+            folding_factor: FoldingFactor::Constant(1),
+            soundness_type: SecurityAssumption::JohnsonBound,
+            starting_log_inv_rate: 1,
+        },
+        &domain,
+    )
+    .unwrap();
+    let mmcs = keccak::LevelMmcs::<E>::new(
+        keccak::FieldHash::new(keccak::byte_hash()),
+        keccak::Compress::new(keccak::byte_hash()),
+        0,
+    );
+    let inner =
+        WhirProver::<E, E, _, _, Ch, SuffixProver<E, E>>::new(config.clone(), domain, mmcs.clone());
+    let make = || Ch::from_hasher(vec![9; 3], keccak::byte_hash());
+    let specs = vec![BinaryRingClaimSpec {
+        current: true,
+        next_rows: None,
+    }];
+    let verifier =
+        BinaryBooleanWhirVerifier::new(&config, specs.clone(), ByteHash::Keccak256, 0).unwrap();
+    let ring = BinaryBitRingVerifier::<E>::new(variables, specs).unwrap();
+    let protocol = OpeningProtocol::new(vec![TableSpec::new(
+        TableShape::new(packed, 1),
+        vec![OpeningBatch::new(vec![0], vec![])],
+    )]);
+    let whir = BinaryWhirVerifier::<E>::new(
+        &config,
+        protocol.clone(),
+        VariableOrder::Suffix,
+        ByteHash::Keccak256,
+        0,
+    )
+    .unwrap();
+
+    let shape = verifier.input_shape();
+    let mut b = CircuitBuilder::<BabyBear>::new();
+    b.enable_keccak_f1600::<BabyBear>();
+    let cap_target = vec![
+        b.alloc_private_input_array::<16>("Boolean WHIR cap")
+            .to_vec(),
+    ];
+    let targets = shape
+        .allocate_targets::<BabyBear, BabyBear>(&mut b)
+        .unwrap();
+    let initial = (0..3)
+        .map(|_| b.define_const(BabyBear::from_u8(9)))
+        .collect::<Vec<_>>();
+    let mut ch = BinaryTower128Challenger::with_initial_bytes::<BabyBear, BabyBear>(
+        &mut b,
+        ByteHash::Keccak256,
+        &initial,
+    )
+    .unwrap();
+    verifier
+        .observe_commitment::<BabyBear, BabyBear>(&mut b, &mut ch, &cap_target)
+        .unwrap();
+    verifier
+        .verify_readings::<BabyBear, BabyBear>(&mut b, ch, &cap_target, &targets)
+        .unwrap();
+    let circuit = b.build().unwrap();
+
+    let field =
+        |i: usize| E::from_repr(0x1428961abcc37f2a5df697141047def3u128.wrapping_mul(1 + i as u128));
+    let point = Point::new((0..variables).map(field).collect());
+    let committed = (0..1 << packed)
+        .map(|i| field(variables + i))
+        .collect::<Vec<_>>();
+    let mut other = committed.clone();
+    other[0] += E::ONE;
+    for (switched, honest) in [(&committed, true), (&other, false)] {
+        let mut prover = make();
+        let table = Table::new(RowMajorMatrix::new(committed.clone(), committed.len()));
+        let witness =
+            SuffixProver::<E, E>::new_witness(vec![table], config.round_folding_factor(0));
+        let (cap, data) = inner.commit(witness, &mut prover).unwrap();
+        let mut entry = prover.clone();
+        let claims = BitRingSwitchClaims::new(vec![BitRingSwitch::new(&point).unwrap()]).unwrap();
+        let packing = BitPacking::from_packed(Poly::new(switched.clone())).unwrap();
+        let (reduction, survivor, value) = claims.prove::<E, _, _>(&packing, &mut prover);
+        let current = claims.reductions()[0].incoming_claim(&reduction.claims[0].tensor);
+        let opening = inner
+            .open_at(
+                data,
+                &protocol,
+                core::slice::from_ref(&survivor),
+                &mut prover,
+            )
+            .unwrap();
+        assert_eq!(opening.evals[0].current()[0] == value, honest);
+
+        let readings = [(Some(current), None)];
+        let (ring_input, imported, mut rest) = ring
+            .import_native(
+                core::slice::from_ref(&point),
+                &readings,
+                &reduction,
+                entry.clone(),
+            )
+            .unwrap();
+        assert_eq!(imported, survivor);
+        let whir_input = whir
+            .import_native(&config, &mmcs, &cap, &[survivor], &opening, &mut rest)
+            .unwrap();
+        let mut private = ring_input
+            .private_values::<BabyBear>(&ring.input_shape())
+            .unwrap();
+        private.extend(
+            whir_input
+                .private_values::<BabyBear>(&whir.input_shape())
+                .unwrap(),
+        );
+        let whole = verifier.import_native(
+            &config,
+            &mmcs,
+            &cap,
+            core::slice::from_ref(&point),
+            &readings,
+            &BooleanWhirProof { reduction, opening },
+            &mut entry,
+        );
+        if honest {
+            let whole = whole.unwrap().private_values::<BabyBear>(&shape).unwrap();
+            assert_eq!(whole, private);
+        } else {
+            assert!(whole.is_err());
+        }
+
+        let mut values = bytes_to_limbs(&cap.roots()[0])
+            .into_iter()
+            .map(BabyBear::from_u16)
+            .collect::<Vec<_>>();
+        values.extend(private);
+        assert_eq!(run(&circuit, &values), honest);
+    }
+}
+
 #[test]
 fn combined_resource_limit_accounts_for_both_the_ring_and_whir() {
     use p3_recursion::pcs::binary::{BinaryBitRingVerifier, BinaryWhirVerifier};
@@ -343,12 +508,20 @@ fn combined_resource_limit_accounts_for_both_the_ring_and_whir() {
         protocol,
         VariableOrder::Suffix,
         ByteHash::Keccak256,
+        MerkleArity::Two,
         0,
         &limits,
     )
     .unwrap();
     assert!(matches!(
-        BinaryBooleanWhirVerifier::with_limits(&config, specs, ByteHash::Keccak256, 0, &limits),
+        BinaryBooleanWhirVerifier::with_limits(
+            &config,
+            specs,
+            ByteHash::Keccak256,
+            MerkleArity::Two,
+            0,
+            &limits
+        ),
         Err(VerificationError::ResourceLimitExceeded {
             component: "scalar elements",
             ..

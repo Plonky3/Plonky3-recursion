@@ -25,7 +25,7 @@ use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_32};
 use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_merkle_tree::MerkleTreeMmcs;
+use p3_merkle_tree::{MerkleTreeError, MerkleTreeMmcs};
 use p3_poseidon2_circuit_air::KoalaBearD4Width32;
 use p3_recursion::Target;
 use p3_recursion::pcs::verify_batch_circuit_arity4;
@@ -112,13 +112,20 @@ fn prove_verify_arity4(
     } else {
         commit
     };
-    mmcs.verify_batch(
+    let native = mmcs.verify_batch(
         &verification_commit,
         &dimensions,
         index,
         BatchOpeningRef::new(&batch_opening.opened_values, &batch_opening.opening_proof),
-    )
-    .expect("native arity-4 opening must verify against the selected cap root");
+    );
+    if append_surplus_roots {
+        assert!(
+            matches!(native, Err(MerkleTreeError::WrongCapSize { .. })),
+            "native arity-4 verification must refuse surplus cap roots, got {native:?}"
+        );
+        return;
+    }
+    native.expect("native arity-4 opening must verify against the selected cap root");
 
     let mut builder = CircuitBuilder::<CF>::new();
     let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W32;
@@ -291,7 +298,8 @@ fn arity4_bus_balance_injection_only() {
 
 /// Small native/target geometry controls for the shared scalar walk.  The
 /// mixed-height pair exercises the step-2 bridge and the cap-height-1 prefix;
-/// the short single matrix exercises native padding to four roots.
+/// the short single matrix exercises native padding to four roots, and a cap
+/// with surplus roots beyond those four is refused natively.
 #[test]
 fn arity4_shared_geometry_matches_native_controls() {
     let tall = RowMajorMatrix::new((0..16u64).map(F::from_u64).collect(), 1);

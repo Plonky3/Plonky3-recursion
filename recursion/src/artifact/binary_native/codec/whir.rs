@@ -75,7 +75,7 @@ where
     }
 }
 
-type NativeWhirProof<F, E = BinaryField128> = PcsProof<F, E, NativeMmcs<F>>;
+type NativeWhirProof<F, E = BinaryField128> = PcsProof<F, E, NativeWhirMmcs<F>>;
 
 pub(super) fn write_whir<F>(w: &mut Writer, p: &NativeWhirProof<F>) -> Result<(), ArtifactError>
 where
@@ -358,7 +358,7 @@ mod tests {
 
     fn fixture() -> (
         WhirDecode,
-        PcsProof<BinaryField32, BinaryField128, NativeMmcs<BinaryField32>>,
+        PcsProof<BinaryField32, BinaryField128, NativeWhirMmcs<BinaryField32>>,
     ) {
         let shape = WhirDecode {
             eval_widths: vec![(1, 1)],
@@ -477,13 +477,12 @@ mod tests {
         use p3_multilinear_util::point::Point;
         use p3_sumcheck::layout::{Layout, PrefixProver, SuffixProver, Table};
         use p3_sumcheck::{OpeningProtocol, PrescribedPointPcs, TableShape, TableSpec};
-        use p3_symmetric::{CompressionFunctionFromHasher, SerializingHasher};
         use p3_whir::{
             FoldingFactor, ProtocolParameters, SecurityAssumption, WhirConfig, WhirProver,
         };
 
-        use crate::artifact::binary_native::{BinaryNativeChallenger, BinaryNativeHash};
-        use crate::pcs::binary::BinaryWhirVerifier;
+        use crate::artifact::binary_native::BinaryNativeChallenger;
+        use crate::pcs::binary::{BinaryWhirVerifier, MerkleArity};
         macro_rules! check {
             ($field:ty, $layout:ident, $height:expr, $cap:expr) => {{
                 type F = $field;
@@ -508,11 +507,7 @@ mod tests {
                         &domain,
                     )
                     .unwrap();
-                    let mmcs = NativeMmcs::<F>::new(
-                        SerializingHasher::new(BinaryNativeHash(hash)),
-                        CompressionFunctionFromHasher::new(BinaryNativeHash(hash)),
-                        $cap,
-                    );
+                    let mmcs = NativeWhirMmcs::<F>::new(hash, MerkleArity::Two, $cap);
                     let pcs =
                         WhirProver::<E, F, _, _, Ch, L>::new(config.clone(), domain, mmcs.clone());
                     let protocol = OpeningProtocol::new(vec![TableSpec::new(

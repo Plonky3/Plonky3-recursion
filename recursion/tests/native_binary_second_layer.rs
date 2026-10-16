@@ -1,0 +1,413 @@
+//! A second native Tower128 recursion layer, built and run without proving.
+//!
+//! Its child is a real first-layer proof: a five-table product-bus circuit with
+//! the 1,625-column native Keccak table, opened by a multi-round WHIR proof
+//! over pairwise or four-digest Merkle trees under a cap and with grinding.
+//! Building the verifier and its witness takes seconds, while proving it takes
+//! gigabytes of codewords, so this bounds the circuit size at each arity and
+//! checks that witness generation refuses forged proof fields.
+
+use std::collections::HashMap;
+
+use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+use p3_binary_field::{BinaryField128, TowerLevel};
+use p3_circuit::ops::binary_native::BinaryCoordinateField;
+use p3_circuit::ops::{ByteHash, KECCAK_STATE_LIMBS, KECCAK256_RATE_BYTES, NpoTypeId};
+use p3_circuit::{CircuitBuilder, CircuitConstructionLimits, CircuitError, ExprId, Op, WitnessId};
+use p3_circuit_prover::direct::DirectCircuitLimits;
+use p3_field::PrimeCharacteristicRing;
+use p3_keccak_air::NUM_KECCAK_BINARY_COLS;
+use p3_matrix::dense::RowMajorMatrix;
+use p3_recursion::artifact::{
+    ArtifactLimits, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
+    BinaryNativeWhirPcsParameters,
+};
+use p3_recursion::pcs::binary::MerkleArity;
+use p3_recursion::prepared::{NativeBinaryRecursionOptions, PreparedNativeBinaryWhirLayer};
+use p3_recursion::verifier::{VerificationError, VerifierLimits};
+use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
+
+type F = BinaryField128;
+
+/// The first layer's output tree arity and cap, and the bounds of the second
+/// layer verifying it, each about 12% above its measured size. The trace cells
+/// follow from the table heights below.
+struct Case {
+    arity: MerkleArity,
+    cap_height: usize,
+    construction: CircuitConstructionLimits,
+    circuit: DirectCircuitLimits,
+    max_keccak_calls: usize,
+}
+
+/// Pairwise output trees under a cap of two levels: 4 roots. The second layer
+/// measures 346,535 expression nodes, 10,577 pending connections, 6,208
+/// non-primitive calls, 693,074 slots, 333,152 witnesses, 141,421 operations
+/// and 1,503 native Keccak-f calls.
+const PAIRWISE: Case = Case {
+    arity: MerkleArity::Two,
+    cap_height: 2,
+    construction: CircuitConstructionLimits {
+        max_expression_nodes: 388_000,
+        max_pending_connects: 11_800,
+        max_non_primitive_calls: 6_950,
+        max_non_primitive_slots: 776_000,
+    },
+    circuit: DirectCircuitLimits {
+        max_witnesses: 373_000,
+        max_operations: 158_000,
+        max_trace_cells: 1 << 27,
+    },
+    max_keccak_calls: 1_680,
+};
+/// Four-digest output trees under a cap of one level: the same 4 roots. The
+/// second layer measures 349,654 expression nodes, 10,577 pending
+/// connections, 6,002 non-primitive calls, 610,674 slots, 336,477 witnesses,
+/// 161,620 operations and 1,297 native Keccak-f calls. Its Keccak-f bound lies
+/// below the pairwise layer's count, so a layer whose trees fell back to
+/// pairwise nodes fails it.
+const FOUR_DIGEST: Case = Case {
+    arity: MerkleArity::Four,
+    cap_height: 1,
+    construction: CircuitConstructionLimits {
+        max_expression_nodes: 392_000,
+        max_pending_connects: 11_800,
+        max_non_primitive_calls: 6_720,
+        max_non_primitive_slots: 684_000,
+    },
+    circuit: DirectCircuitLimits {
+        max_witnesses: 377_000,
+        max_operations: 181_000,
+        max_trace_cells: 1 << 27,
+    },
+    max_keccak_calls: 1_450,
+};
+/// About 12% above the measured 60 calls of the first transcript refill,
+/// whose 148 constant leading blocks take none.
+const MAX_FIRST_REFILL_CALLS: usize = 68;
+/// Measured padded witness, gate, public, Keccak and bridge table heights.
+/// One more row of growth at a power-of-two boundary doubles that table.
+const MAX_LOG_HEIGHTS: [usize; 5] = [20, 18, 4, 16, 12];
+
+struct SquaringAir;
+impl BaseAir<F> for SquaringAir {
+    fn width(&self) -> usize {
+        1
+    }
+    fn num_public_values(&self) -> usize {
+        2
+    }
+    fn main_next_row_columns(&self) -> Vec<usize> {
+        vec![0]
+    }
+}
+impl<AB: AirBuilder<F = F>> Air<AB> for SquaringAir {
+    fn eval(&self, b: &mut AB) {
+        let main = b.main();
+        let current = main.current_slice()[0];
+        let next = main.next_slice()[0];
+        let initial = b.public_values()[0];
+        let expected = b.public_values()[1];
+        b.when_first_row().assert_eq(current, initial);
+        b.when_transition().assert_eq(next, current * current);
+        b.when_last_row().assert_eq(current, expected);
+    }
+}
+
+const fn protocol() -> ProtocolParameters {
+    ProtocolParameters {
+        security_level: 8,
+        pow_bits: 0,
+        round_log_inv_rates: vec![],
+        folding_factor: FoldingFactor::Constant(1),
+        soundness_type: SecurityAssumption::JohnsonBound,
+        starting_log_inv_rate: 1,
+    }
+}
+
+/// A low WHIR security level that still meets the four-bit composed target,
+/// with four of its bits ground, over the case's output trees.
+fn options(case: &Case) -> NativeBinaryRecursionOptions {
+    let recursive = ProtocolParameters {
+        pow_bits: 4,
+        folding_factor: FoldingFactor::Constant(4),
+        ..protocol()
+    };
+    NativeBinaryRecursionOptions {
+        main: recursive.clone(),
+        preprocessed: recursive,
+        arity: case.arity,
+        cap_height: case.cap_height,
+        initial_bytes: b"native-binary-second-layer-test".to_vec(),
+        sumcheck_pow_bits: 0,
+        max_tau_draws: 32,
+        security_bits: 4,
+        max_pcs_codeword_cells: 1 << 24,
+        artifact_limits: ArtifactLimits {
+            verifier: VerifierLimits {
+                max_rounds: 256,
+                max_metadata_entries: 1 << 20,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn second_native_layer_verifier_is_bounded_and_refuses_forged_proof_fields() {
+    for case in [PAIRWISE, FOUR_DIGEST] {
+        second_layer_is_bounded_and_refuses_forged_proof_fields(&case);
+    }
+}
+
+fn second_layer_is_bounded_and_refuses_forged_proof_fields(case: &Case) {
+    let input = F::from_repr(0xfedcba98765432108123456789abcdef);
+    let mut values = vec![input];
+    for _ in 0..3 {
+        let value = *values.last().unwrap();
+        values.push(value * value);
+    }
+    let expected = vec![vec![input, *values.last().unwrap()]];
+    let spec = BinaryNativeVerifierSpec {
+        main: BinaryNativeWhirPcsParameters::<F>::new(2, protocol(), ByteHash::Keccak256, 0)
+            .unwrap(),
+        preprocessed: None,
+        transcript_hash: ByteHash::Keccak256,
+        initial_bytes: b"native-binary-second-layer-source".to_vec(),
+        sumcheck_pow_bits: 0,
+        max_tau_draws: 8,
+        security_bits: 4,
+    };
+    let (prover, authority) = BinaryNativeWhirAuthority::<F, _>::setup(
+        vec![SquaringAir],
+        vec![2],
+        spec,
+        &VerifierLimits::default(),
+    )
+    .unwrap();
+    let proof = prover
+        .prove(&expected, vec![RowMajorMatrix::new(values, 1)])
+        .unwrap();
+    let source = authority.verify_native(&proof, &expected).unwrap();
+    let first = PreparedNativeBinaryWhirLayer::from_native_authority(
+        &authority,
+        options(case),
+        &DirectCircuitLimits::default(),
+    )
+    .unwrap();
+    let proof = first.prove_verified(&source).unwrap();
+    let checked = first.verify(&proof, &expected).unwrap();
+    let child = first.authority();
+    let shape = child.recursive_verifier().input_shape();
+    assert_eq!(shape.public_value_counts().len(), 5);
+
+    let (circuit, bus) = PreparedNativeBinaryWhirLayer::verifier_circuit(
+        child,
+        &options(case),
+        &case.circuit,
+        Some(&case.construction),
+    )
+    .unwrap();
+    let calls: Vec<_> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::NonPrimitiveOpWithExecutor {
+                executor,
+                inputs,
+                outputs,
+                ..
+            } if executor.op_type() == &NpoTypeId::native_keccak_f1600() => {
+                Some((&inputs[0], &outputs[0]))
+            }
+            _ => None,
+        })
+        .collect();
+    let keccak_calls = calls.len();
+    eprintln!(
+        "second native layer over {:?} trees: {} witnesses, {} operations, {keccak_calls} Keccak-f calls, log heights {:?}",
+        case.arity,
+        circuit.witness_count,
+        circuit.ops.len(),
+        bus.log_heights()
+    );
+    assert!(keccak_calls <= case.max_keccak_calls);
+    // The first transcript refill starts from the sponge state of its constant
+    // leading blocks, held as constant capacity limbs, and each of its later
+    // calls continues from the previous call's capacity output.
+    let constants: HashMap<WitnessId, F> = circuit
+        .ops
+        .iter()
+        .filter_map(|op| match *op {
+            Op::Const { out, val } => Some((out, val)),
+            _ => None,
+        })
+        .collect();
+    let capacity = KECCAK256_RATE_BYTES / 2;
+    let start = &calls[0].0[capacity..];
+    assert!(start.iter().all(|id| constants.contains_key(id)));
+    assert!(start.iter().any(|id| constants[id] != F::ZERO));
+    let refill = 1 + calls
+        .windows(2)
+        .take_while(|pair| {
+            pair[0].1.len() >= KECCAK_STATE_LIMBS
+                && pair[1].0[capacity..KECCAK_STATE_LIMBS]
+                    == pair[0].1[capacity..KECCAK_STATE_LIMBS]
+        })
+        .count();
+    assert!(refill <= MAX_FIRST_REFILL_CALLS);
+    assert_eq!(bus.log_heights().len(), MAX_LOG_HEIGHTS.len());
+    assert!(
+        bus.log_heights()
+            .iter()
+            .zip(MAX_LOG_HEIGHTS)
+            .all(|(&height, max)| height <= max)
+    );
+    // Building the circuit refuses a nonzero draw budget below the tallest
+    // table's log height, as preparation does.
+    let required_draws = *bus.log_heights().iter().max().unwrap();
+    let short = NativeBinaryRecursionOptions {
+        max_tau_draws: required_draws - 1,
+        ..options(case)
+    };
+    let refused = PreparedNativeBinaryWhirLayer::verifier_circuit(
+        child,
+        &short,
+        &case.circuit,
+        Some(&case.construction),
+    );
+    assert!(matches!(
+        refused,
+        Err(VerificationError::InvalidProofShape(message)) if message.contains("draw budget")
+    ));
+
+    // The verifier allocates its private inputs only through the child input
+    // shape and in this order, so a scratch allocation locates proof fields.
+    let mut scratch = CircuitBuilder::<F>::new();
+    let targets = shape.allocate_native_targets(&mut scratch).unwrap();
+    let scratch = scratch.build().unwrap();
+    let position = |expr: ExprId| {
+        let id = scratch.expr_to_widx[&expr];
+        scratch
+            .private_input_rows
+            .iter()
+            .position(|&row| row == id)
+            .unwrap()
+    };
+    let keccak = targets
+        .opening
+        .evals
+        .iter()
+        .position(|batch| batch.current().len() == NUM_KECCAK_BINARY_COLS)
+        .expect("the native Keccak table is opened");
+    assert!(targets.opening.rounds.len() > 1);
+    assert_eq!(
+        Some(targets.commitment.len()),
+        case.arity.cap_roots(case.cap_height)
+    );
+
+    let public: Vec<F> = checked.public_values().iter().flatten().copied().collect();
+    let private = checked
+        .native_input()
+        .private_native_values(&shape)
+        .unwrap();
+    assert_eq!(scratch.private_input_rows.len(), private.len());
+    assert_eq!(circuit.private_input_rows.len(), private.len());
+    let run = |private: &[F]| {
+        let mut runner = circuit.runner();
+        runner.set_public_inputs(&public)?;
+        runner.set_private_inputs(private)?;
+        runner.run().map(|traces| traces.witness_trace)
+    };
+    let witness = run(&private).unwrap();
+    assert_eq!(witness.num_rows(), circuit.witness_count as usize);
+    let forge = |expr: ExprId, delta: F| {
+        let mut forged = private.clone();
+        forged[position(expr)] += delta;
+        run(&forged)
+    };
+
+    // A sibling word with a seventeenth coordinate reaches a native Keccak
+    // lane, in the initial commitment and in the last folded oracle alike. The
+    // runner refuses such a lane; in a proof, the Keccak AIR rejects it. A
+    // shared upper sibling instead conflicts with its computed root witness.
+    let wide = F::from_raw_coordinates(1 << 16).unwrap();
+    let initial = &targets.opening.rounds[0].paths[0];
+    let last = targets.opening.final_paths[0]
+        .last()
+        .expect("the final oracle has a Merkle path below its cap");
+    for sibling in [initial[0][3], last[12]] {
+        assert!(private[position(sibling)].to_raw_coordinates() < 1 << 16);
+        let refused = forge(sibling, wide);
+        match refused {
+            Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. }) => {
+                assert_eq!(op, NpoTypeId::native_keccak_f1600());
+            }
+            Err(CircuitError::WitnessConflict { witness_id, .. })
+                if case.arity == MerkleArity::Two && sibling == last[12] =>
+            {
+                assert_eq!(witness_id, circuit.expr_to_widx[&sibling]);
+            }
+            _ => panic!("unexpected sibling forgery result: {refused:?}"),
+        }
+    }
+    // A cap limb reaches the transcript as a word, and a flipped limb changes
+    // the draws. In a WHIR round cap it is a native Keccak lane of the next
+    // refill, which refuses a seventeenth coordinate. The commitment cap,
+    // absorbed after the odd-length initial bytes, is split into checked
+    // bytes, which recompose only the limb's low sixteen coordinates and so
+    // conflict with a limb that has a seventeenth. The forged limb also has a
+    // changed low coordinate, which the cap's Merkle root does not have.
+    let commitment = targets.commitment[0][5];
+    let round_cap = targets.opening.rounds[0].cap[0][5];
+    for limb in [commitment, round_cap] {
+        assert!(private[position(limb)].to_raw_coordinates() < 1 << 16);
+        assert!(forge(limb, F::ONE).is_err());
+    }
+    assert!(matches!(
+        forge(round_cap, wide),
+        Err(CircuitError::InvalidNonPrimitiveOpInput { op, .. })
+            if op == NpoTypeId::native_keccak_f1600()
+    ));
+    let delta = F::from_raw_coordinates((1 << 16) | 1).unwrap();
+    let forged = private[position(commitment)] + delta;
+    let low = F::from_raw_coordinates(forged.to_raw_coordinates() & 0xffff).unwrap();
+    let refused = forge(commitment, delta);
+    assert!(
+        matches!(
+            &refused,
+            Err(CircuitError::WitnessConflict { existing, new, .. })
+                if *existing == format!("{forged:?}") && *new == format!("{low:?}")
+        ),
+        "{refused:?}"
+    );
+    // An opened Keccak column value changes the transcript and the claims.
+    let opened = targets.opening.evals[keccak].current()[0].as_expr();
+    assert!(forge(opened, F::ONE).is_err());
+    // Each WHIR round of both openings grinds two to four bits here. A witness
+    // for zero bits is constrained to zero, so a nonzero one shows grinding.
+    // Changing any witness fails its own check or moves the later queries.
+    let pow: Vec<_> = [
+        Some(&targets.opening),
+        targets.preprocessed_opening.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .flat_map(|opening| {
+        opening
+            .rounds
+            .iter()
+            .map(|round| &round.pow_witness)
+            .chain([&opening.final_pow_witness])
+            .map(|witness| witness.as_expr())
+    })
+    .collect();
+    assert!(
+        pow.iter()
+            .any(|&witness| private[position(witness)] != F::ZERO)
+    );
+    for witness in pow {
+        assert!(forge(witness, F::ONE).is_err());
+    }
+}

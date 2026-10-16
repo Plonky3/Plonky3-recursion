@@ -4,10 +4,12 @@
 //! materialized, constrained and reconstructed only at serialization boundaries.
 //! GHASH and polynomial carriers must not use this field's multiplication.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use p3_binary_field::{BinaryField128, TowerLevel};
 
+use super::binary_native::WordSplitHint;
 use crate::{CircuitBuilder, CircuitBuilderError, ExprId};
 
 /// A native Tower128 scalar belonging to one builder's expression graph.
@@ -99,6 +101,59 @@ impl CircuitBuilder<BinaryField128> {
         self.native_tower128_from_bits(bits.try_into().expect("eight words have 128 bits"))
     }
 
+    /// Packs sixteen low-first bytes into the scalar `sum_k bytes[k] * x_k`,
+    /// where `x_k` has the single raw coordinate `8 * k`.
+    ///
+    /// Every byte is constrained to eight raw coordinates, which costs nothing
+    /// when its coordinates are already known. In the tower basis, multiplying
+    /// a scalar of at most eight coordinates by `x_k` shifts its coordinates
+    /// up by `8 * k`, so the packed scalar's coordinates are the bytes' bits in
+    /// order; they are recorded for later decompositions. IDs must belong to
+    /// this builder's graph.
+    pub fn native_tower128_from_bytes(
+        &mut self,
+        bytes: [ExprId; 16],
+    ) -> Result<NativeTower128Target, CircuitBuilderError> {
+        let mut bits = Vec::with_capacity(128);
+        for &byte in &bytes {
+            bits.extend(self.binary_decompose_coordinates(byte, 8)?);
+        }
+        let mut sum = bytes[0];
+        for (k, &byte) in bytes.iter().enumerate().skip(1) {
+            let shift = self.define_const(BinaryField128::from_repr(1 << (8 * k)));
+            sum = self.mul_add(byte, shift, sum);
+        }
+        self.check_construction_limits()?;
+        self.record_native_coordinates(sum, &bits);
+        Ok(NativeTower128Target { value: sum })
+    }
+
+    /// Packs eight low-first words into the scalar `sum_j words[j] * x_j`,
+    /// where `x_j` has the single raw coordinate `16 * j`, with seven fused
+    /// multiply-adds and no decomposition.
+    ///
+    /// In the tower basis, multiplying a scalar of at most sixteen coordinates
+    /// by `x_j` shifts its coordinates up by `16 * j`, so the packed scalar's
+    /// coordinates are the words' in order once every word has at most sixteen
+    /// coordinates. The caller must establish that range, for example by
+    /// reading the words from native Keccak-f or Blake3 outputs, which the
+    /// native hash AIR derives from Boolean bits. The word provenance is retained for later word splits,
+    /// while checked bit decomposition still establishes Boolean coordinates. IDs must belong to
+    /// this builder's graph.
+    pub fn native_tower128_from_unchecked_words(
+        &mut self,
+        words: [ExprId; 8],
+    ) -> Result<NativeTower128Target, CircuitBuilderError> {
+        let mut sum = words[0];
+        for (j, &word) in words.iter().enumerate().skip(1) {
+            let shift = self.define_const(BinaryField128::from_repr(1 << (16 * j)));
+            sum = self.mul_add(word, shift, sum);
+        }
+        self.check_construction_limits()?;
+        self.record_native_words(sum, &words);
+        Ok(NativeTower128Target { value: sum })
+    }
+
     pub fn native_tower128_to_words(
         &mut self,
         value: &NativeTower128Target,
@@ -111,5 +166,58 @@ impl CircuitBuilder<BinaryField128> {
             .map(|word| self.binary_recompose_coordinates(word))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(words.try_into().expect("128 bits have eight words"))
+    }
+
+    /// Splits a scalar into `count` low-first raw sixteen-coordinate words
+    /// without range-checking them.
+    ///
+    /// The hinted words satisfy `value = sum_j words[j] * x_j`, where `x_j`
+    /// has the single raw coordinate `16 * j`. In the tower basis, multiplying
+    /// a scalar of at most sixteen coordinates by `x_j` shifts its coordinates
+    /// up by `16 * j`. Once every word is constrained to sixteen coordinates,
+    /// the words are therefore the unique raw split of `value`, and `value`
+    /// has no coordinate at or above `16 * count`. The caller must establish
+    /// that range, for example by absorbing every word through
+    /// [`Self::native_keccak256_words`], whose AIR range-checks absorbed words.
+    /// A zero count constrains `value` to zero. IDs must belong to this
+    /// builder's graph.
+    pub fn native_tower128_unchecked_words(
+        &mut self,
+        value: &NativeTower128Target,
+        count: usize,
+    ) -> Result<Vec<ExprId>, CircuitBuilderError> {
+        if count > 8 {
+            return Err(CircuitBuilderError::BinaryDecompositionTooManyBits {
+                expected: 128,
+                n_bits: count.saturating_mul(16),
+            });
+        }
+        self.check_construction_limits()?;
+        if let Some(words) = self.cached_native_words(value.value, count)? {
+            return Ok(words);
+        }
+        let words = if count == 0 {
+            Vec::new()
+        } else {
+            self.push_unconstrained_op(
+                vec![vec![value.value]],
+                count,
+                WordSplitHint,
+                "native_tower128_unchecked_words",
+            )
+            .2
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(CircuitBuilderError::MissingOutput)?
+        };
+        let mut sum = words.first().copied().unwrap_or(ExprId::ZERO);
+        for (j, &word) in words.iter().enumerate().skip(1) {
+            let shift = self.define_const(BinaryField128::from_repr(1 << (16 * j)));
+            sum = self.mul_add(word, shift, sum);
+        }
+        self.connect(value.value, sum);
+        self.check_construction_limits()?;
+        self.record_native_words(value.value, &words);
+        Ok(words)
     }
 }

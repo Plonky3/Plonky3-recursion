@@ -99,7 +99,7 @@ impl<F: Field> Clone for NonPrimitiveOpParams<F> {
 pub struct NonPrimitiveOperationData<F: Field> {
     pub op_id: NonPrimitiveOpId,
     pub op_type: NpoTypeId,
-    /// Input expressions (e.g., for Poseidon2Perm: [in0, in1, in2, in3, mmcs_index_sum, mmcs_bit])
+    /// Input expressions (e.g., for Poseidon2Perm: [in0, in1, in2, in3, mmcs_bit])
     pub input_exprs: Vec<Vec<ExprId>>,
     /// Output expressions (e.g., for Poseidon2Perm: [out0, out1])
     pub output_exprs: Vec<Vec<ExprId>>,

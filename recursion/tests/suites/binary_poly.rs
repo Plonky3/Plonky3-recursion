@@ -8,6 +8,8 @@ mod binary_poly_fraction_gkr;
 mod binary_poly_generic_sumcheck;
 #[path = "../binary_poly_logup_star.rs"]
 mod binary_poly_logup_star;
+#[path = "../binary_poly_mixed_whir_native_authority.rs"]
+mod binary_poly_mixed_whir_native_authority;
 #[path = "../binary_poly_nonzero.rs"]
 mod binary_poly_nonzero;
 #[path = "../binary_poly_nonzero_tail.rs"]
@@ -35,3 +37,5 @@ mod binary_poly_whir_trusted_portable;
 #[path = "../common/test_config.rs"]
 mod test_config;
 use test_config::proof_config;
+#[path = "../common/sum_shapes_air.rs"]
+mod sum_shapes_air;

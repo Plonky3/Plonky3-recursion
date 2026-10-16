@@ -13,12 +13,11 @@ use p3_circuit::{CircuitBuilder, ExprId};
 use p3_commit::MultilinearPcs;
 use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64};
 use p3_lookup::InteractionSymbolicBuilder;
-use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleCap;
 use p3_multi_stark::MultiStarkProof;
 use p3_multi_stark::config::MultiStarkConfig;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::layout;
-use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 
 use super::binary_indexed::{BinaryIndexedLookupProofTargets, NativeIndexedInput};
@@ -32,7 +31,7 @@ use super::{
 use crate::BinaryTower128Challenger;
 use crate::pcs::binary::{
     BinaryBooleanWhirTraceInputShape, BinaryBooleanWhirTraceProofTargets,
-    BinaryBooleanWhirTraceVerifier, BinaryGenericSumcheckProofTargets,
+    BinaryBooleanWhirTraceVerifier, BinaryGenericSumcheckProofTargets, ByteDigestMmcs, MerkleArity,
     NativeBinaryBooleanWhirTraceInput, NativeBinaryGenericSumcheckInput,
 };
 type F = BinaryField128;
@@ -42,7 +41,7 @@ pub struct BinaryBooleanWhirTraceMultiStarkInputShape {
     relation: alloc::sync::Arc<BinaryMultiStarkRelationShape<F, BinaryField128>>,
     opening: BinaryBooleanWhirTraceInputShape,
     preprocessed: Option<BooleanWhirPreprocessedInputShape>,
-    cap_height: usize,
+    cap_roots: usize,
 }
 
 /// Trusted preprocessing authority, supplied independently of every proof.
@@ -52,6 +51,7 @@ pub struct BinaryBooleanWhirTraceMultiStarkInputShape {
 pub struct BinaryBooleanWhirTraceMultiStarkPreprocessing<PC> {
     pub config: WhirConfig<BinaryField128, F, PC>,
     pub hash: ByteHash,
+    pub arity: MerkleArity,
     pub cap_height: usize,
     pub commitment: MerkleCap<F, [u8; 32]>,
 }
@@ -96,7 +96,7 @@ impl BinaryBooleanWhirTraceMultiStarkInputShape {
     > {
         crate::artifact::binary_native::codec::MultiDecode {
             public_counts: self.public_value_counts().collect(),
-            cap_roots: 1usize << self.cap_height,
+            cap_roots: self.cap_roots,
             bus: self
                 .relation
                 .bus
@@ -152,7 +152,7 @@ impl BinaryBooleanWhirTraceMultiStarkInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
-        let commitment = (0..1usize << self.cap_height)
+        let commitment = (0..self.cap_roots)
             .map(|_| {
                 b.alloc_private_input_array::<16>("binary Boolean WHIR trace MultiStark commitment")
                     .to_vec()
@@ -314,6 +314,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
             heights,
             config,
             hash,
+            MerkleArity::Two,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -330,6 +331,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
         heights: &[usize],
         config: &WhirConfig<BinaryField128, F, PC>,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -345,6 +347,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
             heights,
             config,
             hash,
+            arity,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -364,6 +367,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
         heights: &[usize],
         config: &WhirConfig<BinaryField128, F, PC>,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -380,6 +384,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
             heights,
             config,
             hash,
+            arity,
             cap_height,
             pow_bits,
             max_tau_draws,
@@ -397,6 +402,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
         heights: &[usize],
         config: &WhirConfig<BinaryField128, F, PC>,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         pow_bits: usize,
         max_tau_draws: usize,
@@ -422,6 +428,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
             config,
             main_protocol,
             hash,
+            arity,
             cap_height,
             limits,
         )?;
@@ -440,10 +447,11 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
                 &preprocessing.config,
                 protocol,
                 preprocessing.hash,
+                preprocessing.arity,
                 preprocessing.cap_height,
                 limits,
             )?;
-            if preprocessing.commitment.num_roots() != 1usize << preprocessing.cap_height {
+            if preprocessing.commitment.num_roots() != verifier.cap_roots() {
                 return Err(invalid(
                     "binary Boolean WHIR trace MultiStark trusted preprocessing cap shape mismatch",
                 ));
@@ -469,7 +477,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
             relation: relation.input.clone(),
             opening: opening.input_shape(),
             preprocessed: preprocessed_input,
-            cap_height,
+            cap_roots: opening.cap_roots(),
         };
         Ok(Self {
             input,
@@ -581,10 +589,10 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
 
     /// Checks the complete visible proof before bounded replay. Failure leaves
     /// the caller's native transcript unchanged.
-    pub fn import_native<C, H, Co, Ch>(
+    pub fn import_native<C, M, Ch>(
         &self,
         config: &WhirConfig<BinaryField128, F, C::Challenger>,
-        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        mmcs: &M,
         public: &[Vec<F>],
         proof: &MultiStarkProof<C>,
         ch: &mut Ch,
@@ -596,14 +604,10 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
                 BinaryField128,
                 C::Challenger,
                 Commitment = MerkleCap<F, [u8; 32]>,
-                Proof = BooleanTraceCommitmentProof<
-                    F,
-                    BooleanWhirProof<F, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
-                >,
+                Proof = BooleanTraceCommitmentProof<F, BooleanWhirProof<F, F, M>>,
             >,
         F: PackedValue<Value = F>,
-        H: CryptographicHasher<F, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<F>,
         Ch: FieldChallenger<F>
             + CanSampleUniformBits<F>
             + GrindingChallenger<Witness = F>
@@ -616,10 +620,10 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
 
     /// Main and preprocessing may use independent WHIR schedules and byte trees.
     /// Both share one frontier budget before any transcript replay starts.
-    pub fn import_native_with_preprocessing<C, H, Co, Ch>(
+    pub fn import_native_with_preprocessing<C, M, Ch>(
         &self,
         config: &WhirConfig<BinaryField128, F, C::Challenger>,
-        mmcs: &MerkleTreeMmcs<F, u8, H, Co, 2, 32>,
+        mmcs: &M,
         preprocessed: Option<
             crate::pcs::binary::ByteMerkleWhirParameters<
                 '_,
@@ -627,8 +631,7 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
                 F,
                 BinaryField128,
                 C::Challenger,
-                H,
-                Co,
+                M,
             >,
         >,
         public: &[Vec<F>],
@@ -642,14 +645,10 @@ impl BinaryBooleanWhirTraceMultiStarkVerifier {
                 BinaryField128,
                 C::Challenger,
                 Commitment = MerkleCap<F, [u8; 32]>,
-                Proof = BooleanTraceCommitmentProof<
-                    F,
-                    BooleanWhirProof<F, MerkleTreeMmcs<F, u8, H, Co, 2, 32>>,
-                >,
+                Proof = BooleanTraceCommitmentProof<F, BooleanWhirProof<F, F, M>>,
             >,
         F: PackedValue<Value = F>,
-        H: CryptographicHasher<F, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<F>,
         Ch: FieldChallenger<F>
             + CanSampleUniformBits<F>
             + GrindingChallenger<Witness = F>

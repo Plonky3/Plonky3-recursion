@@ -26,7 +26,8 @@ pub struct PoseidonPermCall<V: PoseidonVariant> {
     /// `pos = mmcs_bit + 2·mmcs_bit2`.
     pub mmcs_bit2: Option<ExprId>,
     /// Optional CTL exposure for each input limb (one extension element).
-    /// If `None`, the limb is not exposed via CTL (in_ctl = 0).
+    /// If `None`, the limb is not exposed via CTL (in_ctl = 0), except on a non-challenger chain
+    /// start, where the builder feeds it a CTL-checked zero (the state the executor starts from).
     /// Note: For Merkle mode, unexposed limbs are provided via the private-data sibling.
     pub inputs: Vec<Option<ExprId>>,
     /// Output exposure flags for rate limbs (CTL-verified against witness table).
@@ -39,8 +40,6 @@ pub struct PoseidonPermCall<V: PoseidonVariant> {
     /// When true, capacity outputs are also allocated and returned, but NOT CTL-verified
     /// (they are constrained only by the permutation itself).
     pub return_all_outputs: bool,
-    /// Optional MMCS index accumulator value to expose.
-    pub mmcs_index_sum: Option<ExprId>,
     /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
     ///
     /// The executor adds it to the first capacity element of a fresh or chained capacity (a
@@ -61,7 +60,6 @@ impl<V: PoseidonVariant> Default for PoseidonPermCall<V> {
             inputs: vec![None; config.width_ext()],
             out_ctl: vec![false; config.rate_ext()],
             return_all_outputs: false,
-            mmcs_index_sum: None,
             absorb_len: 0,
         }
     }
@@ -77,7 +75,8 @@ pub struct PoseidonPermCallBase<V: PoseidonVariant> {
     /// Flag indicating whether a new chain is started.
     pub new_start: bool,
     /// Optional CTL exposure for each of the 16 input elements.
-    /// If `None`, the element is not exposed via CTL.
+    /// If `None`, the element is not exposed via CTL, except for a rate element on a
+    /// non-challenger chain start, which the builder feeds a CTL-checked zero.
     pub inputs: [Option<ExprId>; 16],
     /// Output exposure flags for the rate elements (first RATE=8 elements).
     /// When `out_ctl[i]` is true for i in 0..8, output[i] is CTL-verified.

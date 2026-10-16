@@ -27,7 +27,7 @@ use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerFiel
 
 mod native_poly;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Node {
     Constant(u128),
     Current(usize),
@@ -79,6 +79,8 @@ struct AirProgram {
     preprocessed_width: usize,
     preprocessed_next_columns: Vec<usize>,
     periods: Vec<Vec<u128>>,
+    /// Bytes the native transcript binds for the periodic values, as the AIR states them.
+    periodic_statement: Vec<u8>,
     log_height: usize,
     degree: usize,
     usage: InputResourceUsage,
@@ -113,20 +115,23 @@ where
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
-        Self::build(air, log_height, limits, false).map(|(plan, _)| plan)
+        Self::build(air, log_height, limits, false, false).map(|(plan, _)| plan)
     }
 
     /// Internal entry point for a surrounding verifier that also consumes the
     /// retained bus and indexed obligations. The public AIR constructor rejects them.
+    /// `bits_committed` states that the surrounding commitment stores this AIR's main
+    /// trace as bits, the only case in which it may declare bit columns.
     pub(super) fn with_interaction_limits<A>(
         air: &A,
         log_height: usize,
         limits: &VerifierLimits,
+        bits_committed: bool,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
-        Self::build(air, log_height, limits, true)
+        Self::build(air, log_height, limits, true, bits_committed)
     }
 
     #[cfg(test)]
@@ -138,7 +143,7 @@ where
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
     {
-        let output = Self::with_interaction_limits(air, log_height, limits)?;
+        let output = Self::with_interaction_limits(air, log_height, limits, false)?;
         if !output.0.program.indexed.is_empty() {
             return Err(invalid(
                 "binary AIR interactions require a supported reduction",
@@ -152,6 +157,7 @@ where
         log_height: usize,
         limits: &VerifierLimits,
         allow_interactions: bool,
+        bits_committed: bool,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<F, E>> + Air<BusSymbolicBuilder<F, E>>,
@@ -161,6 +167,7 @@ where
             log_height,
             limits,
             allow_interactions,
+            bits_committed,
             F::raw_coordinates,
         )
         .map(|(program, bus)| {
@@ -194,6 +201,9 @@ where
     }
     pub fn preprocessed_next_columns(&self) -> &[usize] {
         &self.program.preprocessed_next_columns
+    }
+    pub(super) fn periodic_statement(&self) -> &[u8] {
+        &self.program.periodic_statement
     }
     pub const fn log_height(&self) -> usize {
         self.program.log_height
@@ -473,6 +483,7 @@ impl AirProgram {
         log_height: usize,
         limits: &VerifierLimits,
         allow_interactions: bool,
+        bits_committed: bool,
         base_raw: fn(F) -> u128,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<F>>), VerificationError>
     where
@@ -498,7 +509,7 @@ impl AirProgram {
                 component: "binary AIR symbolic columns",
             })?;
         usage.add_metadata_entries(limits, columns)?;
-        if air.assumes_boolean_trace() {
+        if air.boolean_columns() != 0 && !bits_committed {
             return Err(invalid("binary AIR requires a Boolean trace commitment"));
         }
         let next_columns = air.main_next_row_columns();
@@ -533,6 +544,7 @@ impl AirProgram {
             .iter()
             .map(|period| period.iter().copied().map(base_raw).collect())
             .collect();
+        let periodic_statement = air.periodic_statement();
         let pins = air.public_boundary_io();
         let pin_nodes =
             pins.len()
@@ -716,6 +728,7 @@ impl AirProgram {
                 preprocessed_width: layout.preprocessed_width,
                 preprocessed_next_columns,
                 periods,
+                periodic_statement,
                 log_height,
                 degree,
                 usage,
@@ -791,8 +804,13 @@ impl AirProgram {
             )?);
         }
         b.check_construction_limits()?;
-        let mut values: Vec<P::ChallengeTarget> = Vec::with_capacity(self.nodes.len());
-        for node in &self.nodes {
+        let fusion = P::FUSES_AIR_SUMS.then(|| self.fusion());
+        let mut values: Vec<Option<P::ChallengeTarget>> = Vec::with_capacity(self.nodes.len());
+        for (index, node) in self.nodes.iter().enumerate() {
+            if fusion.as_ref().is_some_and(|fusion| fusion.skipped[index]) {
+                values.push(None);
+                continue;
+            }
             let value = match *node {
                 Node::Constant(raw) => P::constant(b, raw)?,
                 Node::Current(i) => current[i].clone(),
@@ -804,16 +822,36 @@ impl AirProgram {
                 Node::First => first.clone(),
                 Node::Last => last.clone(),
                 Node::Transition => transition.clone(),
-                Node::Add(x, y) => P::add(b, &values[x], &values[y]),
-                Node::Mul(x, y) => P::mul(b, &values[x], &values[y]),
+                Node::Add(x, y) => {
+                    match fusion.as_ref().and_then(|fusion| fusion.products[index]) {
+                        Some(product) => {
+                            let Node::Mul(p, q) = self.nodes[product] else {
+                                return Err(invalid("binary AIR fused product is not a product"));
+                            };
+                            let addend = if product == x { y } else { x };
+                            P::mul_add(
+                                b,
+                                value(&values, p)?,
+                                value(&values, q)?,
+                                value(&values, addend)?,
+                            )
+                        }
+                        None => P::add(b, value(&values, x)?, value(&values, y)?),
+                    }
+                }
+                Node::Mul(x, y) => P::mul(b, value(&values, x)?, value(&values, y)?),
             };
-            values.push(value);
+            values.push(Some(value));
             b.check_construction_limits()?;
         }
         let mut folded = P::constant(b, 0)?;
-        for &root in &self.constraints {
-            let weighted = P::mul(b, &folded, alpha);
-            folded = P::add(b, &weighted, &values[root]);
+        for (index, &root) in self.constraints.iter().enumerate() {
+            folded = match fusion.as_ref().and_then(|fusion| fusion.sums[index]) {
+                Some((u, v)) => {
+                    P::mul_add_add(b, &folded, alpha, value(&values, u)?, value(&values, v)?)
+                }
+                None => P::mul_add(b, &folded, alpha, value(&values, root)?),
+            };
             b.check_construction_limits()?;
         }
         let bus_fields = self
@@ -823,21 +861,116 @@ impl AirProgram {
                 declaration
                     .fields
                     .iter()
-                    .map(|&root| values[root].clone())
+                    .map(|&root| value(&values, root).cloned())
                     .collect()
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let bus_activations = self
             .bus
             .iter()
-            .map(|declaration| declaration.activation.map(|root| values[root].clone()))
-            .collect();
+            .map(|declaration| {
+                declaration
+                    .activation
+                    .map(|root| value(&values, root).cloned())
+                    .transpose()
+            })
+            .collect::<Result<_, _>>()?;
         Ok(BinaryAirEvaluation {
             folded,
             bus_fields,
             bus_activations,
         })
     }
+
+    /// Plans the characteristic-two evaluation. Structurally equal nodes evaluate
+    /// to one shared expression, so reads are counted per class of equal nodes,
+    /// with sums and products equal up to operand order, and per distinct reading
+    /// class, constraint or bus payload.
+    fn fusion(&self) -> Fusion {
+        let mut classes = BTreeMap::new();
+        let mut class: Vec<usize> = Vec::with_capacity(self.nodes.len());
+        let mut first = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let key = match *node {
+                Node::Add(x, y) => Node::Add(class[x].min(class[y]), class[x].max(class[y])),
+                Node::Mul(x, y) => Node::Mul(class[x].min(class[y]), class[x].max(class[y])),
+                ref leaf => leaf.clone(),
+            };
+            let next = classes.len();
+            let id = *classes.entry(key).or_insert(next);
+            first.push(id == next);
+            class.push(id);
+        }
+        let mut reads = alloc::vec![0usize; classes.len()];
+        for (node, _) in self.nodes.iter().zip(&first).filter(|&(_, &first)| first) {
+            if let Node::Add(x, y) | Node::Mul(x, y) = *node {
+                reads[class[x]] += 1;
+                reads[class[y]] += 1;
+            }
+        }
+        let payloads = self
+            .bus
+            .iter()
+            .flat_map(|bus| bus.fields.iter().chain(&bus.activation));
+        for &root in self.constraints.iter().chain(payloads) {
+            reads[class[root]] += 1;
+        }
+        // The operand order of a class's sums is fixed up to a swap, so the
+        // lower class picks the same product in every node of that class.
+        let products: Vec<Option<usize>> = self
+            .nodes
+            .iter()
+            .map(|node| match *node {
+                Node::Add(x, y) => [x, y]
+                    .into_iter()
+                    .filter(|&m| matches!(self.nodes[m], Node::Mul(..)) && reads[class[m]] == 1)
+                    .min_by_key(|&m| class[m]),
+                _ => None,
+            })
+            .collect();
+        // A product read once is read by one class of sums, each of which takes it.
+        let mut fused = alloc::vec![false; classes.len()];
+        for &product in products.iter().flatten() {
+            fused[class[product]] = true;
+        }
+        let mut skipped: Vec<bool> = class.iter().map(|&class| fused[class]).collect();
+        let sums = self
+            .constraints
+            .iter()
+            .map(|&root| match self.nodes[root] {
+                Node::Add(u, v) if reads[class[root]] == 1 && products[root].is_none() => {
+                    skipped[root] = true;
+                    Some((u, v))
+                }
+                _ => None,
+            })
+            .collect();
+        Fusion {
+            products,
+            skipped,
+            sums,
+        }
+    }
+}
+
+/// How a characteristic-two relation evaluates an [`AirProgram`]: a sum with a
+/// product that nothing else reads is one multiply-add, and a constraint that
+/// is a sum nothing else reads is folded as `folded * alpha + u + v`.
+struct Fusion {
+    /// The product operand of each sum evaluated as a multiply-add.
+    products: Vec<Option<usize>>,
+    /// Nodes whose values nothing reads: the products of those multiply-adds and
+    /// the sums folded as two addends.
+    skipped: Vec<bool>,
+    /// The two addends of each constraint folded as a sum.
+    sums: Vec<Option<(usize, usize)>>,
+}
+
+/// The value of a node that the evaluation reads.
+fn value<T>(values: &[Option<T>], node: usize) -> Result<&T, VerificationError> {
+    values[node]
+        .as_ref()
+        .ok_or_else(|| invalid("binary AIR evaluation reads a fused node"))
 }
 
 struct Compiler<'a, F> {
@@ -1000,22 +1133,27 @@ pub struct BinaryPolyAirConstraintPlan {
 
 impl BinaryPolyAirConstraintPlan {
     /// Internal constructor for a relation that closes retained bus and indexed claims.
+    /// `bits_committed` states that the surrounding commitment stores this AIR's main
+    /// trace as bits, which an AIR with bit columns requires.
     pub(super) fn with_interaction_limits<A>(
         air: &A,
         log_height: usize,
         limits: &VerifierLimits,
+        bits_committed: bool,
     ) -> Result<(Self, Vec<SymbolicBusInteraction<p3_binary_field::Poly64>>), VerificationError>
     where
         A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>
             + Air<BusSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>,
     {
-        let (program, declarations) = AirProgram::build::<
-            p3_binary_field::Poly64,
-            p3_binary_field::Poly192,
-            A,
-        >(air, log_height, limits, true, |value| {
-            value.to_bits() as u128
-        })?;
+        let (program, declarations) =
+            AirProgram::build::<p3_binary_field::Poly64, p3_binary_field::Poly192, A>(
+                air,
+                log_height,
+                limits,
+                true,
+                bits_committed,
+                |value| value.to_bits() as u128,
+            )?;
         Ok((Self { program }, declarations))
     }
 
@@ -1029,7 +1167,7 @@ impl BinaryPolyAirConstraintPlan {
         A: Air<InteractionSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>
             + Air<BusSymbolicBuilder<p3_binary_field::Poly64, p3_binary_field::Poly192>>,
     {
-        let output = Self::with_interaction_limits(air, log_height, limits)?;
+        let output = Self::with_interaction_limits(air, log_height, limits, false)?;
         if !output.0.program.indexed.is_empty() {
             return Err(invalid(
                 "binary Poly AIR indexed claims require a supported reduction",
@@ -1078,6 +1216,7 @@ impl BinaryPolyAirConstraintPlan {
             log_height,
             limits,
             false,
+            false,
             |value| value.to_bits() as u128,
         )
         .map(|(program, _)| Self { program })
@@ -1097,6 +1236,9 @@ impl BinaryPolyAirConstraintPlan {
     }
     pub fn preprocessed_next_columns(&self) -> &[usize] {
         &self.program.preprocessed_next_columns
+    }
+    pub(super) fn periodic_statement(&self) -> &[u8] {
+        &self.program.periodic_statement
     }
     pub const fn log_height(&self) -> usize {
         self.program.log_height

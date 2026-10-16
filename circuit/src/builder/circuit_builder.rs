@@ -237,6 +237,12 @@ pub struct CircuitBuilder<F: Field> {
 
     /// Fully Boolean, reconstructed native binary coordinates in this graph.
     native_coordinate_bits: HashMap<ExprId, Vec<ExprId>>,
+    /// Reconstructed sixteen-coordinate words. Their range is still the caller's
+    /// responsibility; these entries never imply checked Boolean coordinates.
+    native_word_splits: HashMap<ExprId, Vec<ExprId>>,
+    /// Field-specific coordinate constants and shared witness lookup tables.
+    pub(crate) native_coordinate_extractors:
+        HashMap<usize, crate::ops::binary_native::BinaryCoordinateExtractor<F>>,
 
     /// Coefficient wires a constraint pins to a base-field element: the inputs of a
     /// `recompose/coeff` row, whose per-coefficient bus tuple is zero-padded, and `Const`s
@@ -355,6 +361,8 @@ where
             recompose_npo_enabled: false,
             ext_recompose_coeffs: HashMap::new(),
             native_coordinate_bits: HashMap::new(),
+            native_word_splits: HashMap::new(),
+            native_coordinate_extractors: HashMap::new(),
             base_bound_coeffs: HashSet::new(),
             coefficient_normalization_sources: HashMap::new(),
             ext_select_sources: HashMap::new(),
@@ -374,6 +382,20 @@ where
 
     pub(crate) fn native_coordinates(&self, value: ExprId) -> Option<&[ExprId]> {
         self.native_coordinate_bits.get(&value).map(Vec::as_slice)
+    }
+
+    pub(crate) fn native_words(&self, value: ExprId) -> Option<&[ExprId]> {
+        self.native_word_splits.get(&value).map(Vec::as_slice)
+    }
+
+    pub(crate) fn record_native_words(&mut self, value: ExprId, words: &[ExprId]) {
+        if self
+            .native_word_splits
+            .get(&value)
+            .is_none_or(|known| words.len() < known.len())
+        {
+            self.native_word_splits.insert(value, words.to_vec());
+        }
     }
 
     /// Record only after Booleanity and reconstruction have both been constrained.
@@ -1160,6 +1182,11 @@ where
             map.insert(a, v.clone());
             map.insert(b, v);
         }
+    }
+
+    /// Whether `id` is the constant zero or the constant one.
+    pub(crate) fn is_const_bit(&self, id: ExprId) -> bool {
+        self.expr_builder.is_const_zero(id) || self.expr_builder.is_const_one(id)
     }
 
     /// Selects between two values using selector `b`:
@@ -2352,7 +2379,6 @@ where
             inputs: inputs.to_vec(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
-            mmcs_index_sum: None,
             absorb_len,
         })?;
 
@@ -2440,7 +2466,6 @@ where
             inputs: inputs.to_vec(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
-            mmcs_index_sum: None,
             absorb_len,
         })?;
 
@@ -3074,7 +3099,6 @@ mod tests {
                 inputs: vec![Some(z), Some(z), Some(z), Some(z)],
                 out_ctl: vec![true, true],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
                 absorb_len: 0,
             })
             .unwrap();

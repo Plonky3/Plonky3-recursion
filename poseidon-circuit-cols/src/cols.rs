@@ -22,8 +22,7 @@ pub const POSEIDON_LIMBS: usize = 4;
 /// constraints.
 pub const POSEIDON_PUBLIC_OUTPUT_LIMBS: usize = 2;
 
-/// Number of arity-4 circuit columns added between `mmcs_bit` and
-/// `mmcs_index_sum`.
+/// Number of arity-4 circuit columns added after `mmcs_bit`.
 ///
 /// An arity-4 Merkle row carries the high direction bit `mmcs_bit2` and the
 /// product `mmcs_bit_x_bit2 = mmcs_bit · mmcs_bit2`. The product linearizes the
@@ -48,16 +47,15 @@ pub const ARITY4_BIT_X_BIT2_IDX: usize = 1;
 /// The circuit-specific value columns follow the permutation block. `N_EXTRA`
 /// selects the Merkle arity:
 ///
-/// - `N_EXTRA = 0` (default): arity-2 layout, two circuit columns
-///   (`mmcs_bit`, `mmcs_index_sum`).
-/// - <code>N_EXTRA = [ARITY4_EXTRA_COLS]</code>: arity-4 layout, four circuit columns
-///   (`mmcs_bit`, `mmcs_bit2`, `mmcs_bit_x_bit2`, `mmcs_index_sum`).
+/// - `N_EXTRA = 0` (default): arity-2 layout, one circuit column (`mmcs_bit`).
+/// - <code>N_EXTRA = [ARITY4_EXTRA_COLS]</code>: arity-4 layout, three circuit columns
+///   (`mmcs_bit`, `mmcs_bit2`, `mmcs_bit_x_bit2`).
 ///
 /// # Memory Layout
 ///
 /// ```text
-///     arity-2:  [ ── permutation columns ── | mmcs_bit | mmcs_index_sum ]
-///     arity-4:  [ ── permutation columns ── | mmcs_bit | mmcs_bit2 | mmcs_bit_x_bit2 | mmcs_index_sum ]
+///     arity-2:  [ ── permutation columns ── | mmcs_bit ]
+///     arity-4:  [ ── permutation columns ── | mmcs_bit | mmcs_bit2 | mmcs_bit_x_bit2 ]
 /// ```
 #[repr(C)]
 pub struct PoseidonCircuitCols<T, P, const N_EXTRA: usize = 0> {
@@ -95,22 +93,6 @@ pub struct PoseidonCircuitCols<T, P, const N_EXTRA: usize = 0> {
     /// - `mmcs_bit_x_bit2`: equal to `mmcs_bit · mmcs_bit2`. Linearizes the
     ///   four-way one-hot so the placement constraint stays degree three.
     pub mmcs_extra: [T; N_EXTRA],
-
-    /// Running MMCS query-index accumulator.
-    ///
-    /// Across a chain of Merkle rows this accumulates the index decomposition
-    /// of the leaf index:
-    ///
-    /// ```text
-    ///     arity-2:  next_sum = current_sum × 2 + next_bit
-    ///     arity-4:  next_sum = current_sum × 4 + next_bit + 2 · next_bit2
-    /// ```
-    ///
-    /// The constraint is only active when the row is not a chain start
-    /// and the Merkle-path flag is set.
-    ///
-    /// On chain-start rows the prover may write any value.
-    pub mmcs_index_sum: T,
 }
 
 /// Return the total number of columns in a single arity-2 row.
@@ -126,32 +108,31 @@ pub const fn num_cols<P>() -> usize {
 /// Return the total number of columns in a single arity-4 row.
 ///
 /// Same `size_of` trick as [`num_cols`], but with the arity-4 layout that adds
-/// [`ARITY4_EXTRA_COLS`] columns between `mmcs_bit` and `mmcs_index_sum`.
+/// [`ARITY4_EXTRA_COLS`] columns after `mmcs_bit`.
 pub const fn num_cols_arity4<P>() -> usize {
     size_of::<PoseidonCircuitCols<u8, P, ARITY4_EXTRA_COLS>>()
 }
 
-/// `true` when the outer wrapper adds exactly two circuit columns over the
+/// `true` when the outer wrapper adds exactly one circuit column over the
 /// inner permutation block (arity-2 layout).
 ///
-/// The wrapper lays out the inner permutation block first, then the two
-/// circuit-specific value columns (`mmcs_bit`, `mmcs_index_sum`). The
-/// `align_to` casts and the `circuit_ncols = ncols - inner_ncols` arithmetic
-/// in trace generation rely on that boundary.
-pub const fn circuit_cols_add_two(outer_num_cols: usize, inner_num_cols: usize) -> bool {
-    outer_num_cols == inner_num_cols + 2
-}
-
-/// `true` when the outer wrapper adds exactly four circuit columns over the
-/// inner permutation block (arity-4 layout).
-///
-/// The wrapper lays out the inner permutation block first, then the four
-/// circuit-specific value columns (`mmcs_bit`, `mmcs_bit2`, `mmcs_bit_x_bit2`,
-/// `mmcs_index_sum`). The `align_to` casts and the
+/// The wrapper lays out the inner permutation block first, then the
+/// circuit-specific value column `mmcs_bit`. The `align_to` casts and the
 /// `circuit_ncols = ncols - inner_ncols` arithmetic in trace generation rely on
 /// that boundary.
-pub const fn circuit_cols_add_four(outer_num_cols: usize, inner_num_cols: usize) -> bool {
-    outer_num_cols == inner_num_cols + 2 + ARITY4_EXTRA_COLS
+pub const fn circuit_cols_add_one(outer_num_cols: usize, inner_num_cols: usize) -> bool {
+    outer_num_cols == inner_num_cols + 1
+}
+
+/// `true` when the outer wrapper adds exactly three circuit columns over the
+/// inner permutation block (arity-4 layout).
+///
+/// The wrapper lays out the inner permutation block first, then the three
+/// circuit-specific value columns (`mmcs_bit`, `mmcs_bit2`, `mmcs_bit_x_bit2`).
+/// The `align_to` casts and the `circuit_ncols = ncols - inner_ncols`
+/// arithmetic in trace generation rely on that boundary.
+pub const fn circuit_cols_add_three(outer_num_cols: usize, inner_num_cols: usize) -> bool {
+    outer_num_cols == inner_num_cols + 1 + ARITY4_EXTRA_COLS
 }
 
 impl<T, P, const N_EXTRA: usize> Borrow<PoseidonCircuitCols<T, P, N_EXTRA>> for [T] {
@@ -181,37 +162,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_circuit_cols_add_two_true() {
-        assert!(circuit_cols_add_two(7, 5));
+    fn test_circuit_cols_add_one_true() {
+        assert!(circuit_cols_add_one(6, 5));
     }
 
     #[test]
-    fn test_circuit_cols_add_two_false() {
-        assert!(!circuit_cols_add_two(8, 5));
+    fn test_circuit_cols_add_one_false() {
+        assert!(!circuit_cols_add_one(7, 5));
     }
 
     #[test]
-    fn test_circuit_cols_add_four_true() {
-        assert!(circuit_cols_add_four(9, 5));
+    fn test_circuit_cols_add_three_true() {
+        assert!(circuit_cols_add_three(8, 5));
     }
 
     #[test]
-    fn test_circuit_cols_add_four_false() {
-        assert!(!circuit_cols_add_four(10, 5));
+    fn test_circuit_cols_add_three_false() {
+        assert!(!circuit_cols_add_three(9, 5));
     }
 
     #[test]
     fn test_num_cols_empty_perm() {
-        assert_eq!(num_cols::<[u8; 0]>(), 2);
+        assert_eq!(num_cols::<[u8; 0]>(), 1);
     }
 
     #[test]
     fn test_num_cols_arity4_empty_perm() {
-        assert_eq!(num_cols_arity4::<[u8; 0]>(), 4);
+        assert_eq!(num_cols_arity4::<[u8; 0]>(), 3);
     }
 
     #[test]
     fn test_num_cols_perm_width_4() {
-        assert_eq!(num_cols::<[u8; 4]>(), 6);
+        assert_eq!(num_cols::<[u8; 4]>(), 5);
     }
 }

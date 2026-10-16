@@ -14,6 +14,7 @@ use p3_multi_stark::{
     ProverInstance, ProverInstances, VerifierInstance, VerifierInstances, prove, setup, verify,
 };
 use p3_recursion::BinaryTower128Challenger;
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::verifier::{
     BinaryPolyWhirMultiStarkPreprocessing, BinaryPolyWhirMultiStarkVerifier, VerifierLimits,
 };
@@ -331,6 +332,7 @@ fn constructors_reject_geometry_outside_the_native_witness_contract() {
                 &main,
                 VariableOrder::Suffix,
                 ByteHash::Blake3,
+                MerkleArity::Two,
                 0,
                 0,
                 8,
@@ -338,6 +340,7 @@ fn constructors_reject_geometry_outside_the_native_witness_contract() {
                     config: pp,
                     order,
                     hash: ByteHash::Blake3,
+                    arity: MerkleArity::Two,
                     cap_height: 0,
                     commitment: p3_merkle_tree::MerkleCap::new(vec![[0; 32]])
                 },
@@ -480,6 +483,7 @@ fn independent_preprocessing_caps_rates_and_sparse_successors_close_the_relation
             &main_cfg,
             PpLayout::variable_order(),
             ByteHash::Blake3,
+            MerkleArity::Two,
             0,
             0,
             8,
@@ -487,6 +491,7 @@ fn independent_preprocessing_caps_rates_and_sparse_successors_close_the_relation
                 config: pp_cfg.clone(),
                 order: PpLayout::variable_order(),
                 hash: ByteHash::Blake3,
+                arity: MerkleArity::Two,
                 cap_height: 1,
                 commitment: pp_cap.clone(),
             },
@@ -550,7 +555,7 @@ fn independent_preprocessing_caps_rates_and_sparse_successors_close_the_relation
             }
         }
         let mut unchanged = make();
-        let result = recursive.import_native_with_preprocessing::<PpConfig, _, _, _>(
+        let result = recursive.import_native_with_preprocessing::<PpConfig, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),
@@ -587,7 +592,7 @@ fn independent_preprocessing_caps_rates_and_sparse_successors_close_the_relation
     .unwrap();
     let mut imported_ch = make();
     let input = recursive
-        .import_native_with_preprocessing::<PpConfig, _, _, _>(
+        .import_native_with_preprocessing::<PpConfig, _, _>(
             &main_cfg,
             &main_tree,
             Some((&pp_cfg, &pp_tree)),

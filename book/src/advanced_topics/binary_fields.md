@@ -14,7 +14,8 @@ prime fields this repository is built on:
 ## What this repository supports today
 
 The repository supports complete native binary recursion for Tower128, and for
-Poly64 with Poly192 challenges, using additive WHIR, product buses and native Keccak.
+Poly64 with Poly192 challenges, using additive WHIR, product buses and native
+Keccak or Blake3 hash tables.
 The Tower128 owner also accepts Tower32 children. It separately verifies binary
 PCS and additive-WHIR proofs inside prime-field circuits, including indexed
 lookup variants. `recursion/examples/native_binary_recursion.rs` and
@@ -107,10 +108,11 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
   from constrained bits, avoiding the indexed backend's 100 extra limb columns.
 - **Full native Tower128 recursion.**
   `prepared::PreparedNativeBinaryWhirLayer` builds a complete native scalar
-  verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark authority, including product
-  GKR, generic sumcheck, AIR evaluation and both main/preprocessing openings.
-  It proves that verifier over Tower128 using native Keccak and product buses,
-  and verifies against independently supplied child public values. Checked
+  verifier for a trusted Tower32 or Tower128 additive-WHIR MultiStark
+  authority, including product GKR, generic sumcheck, AIR evaluation and both
+  main/preprocessing openings. It proves that verifier over Tower128 using
+  native hash tables (Keccak or Blake3) and product buses, and verifies
+  against independently supplied child public values. Checked
   child tokens must match the retained authority identity before packing or
   witness execution. The output authority can be used as the next layer's
   trusted child. `recursion/examples/native_binary_recursion.rs` demonstrates
@@ -119,6 +121,14 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
   codeword limits are explicit; codeword counts exclude Merkle trees and
   proving workspaces. Dense Keccak openings currently cause substantial growth
   in later layers. These proofs are non-hiding.
+- **Full native folding recursion.**
+  `prepared::PreparedNativeBinaryLayer` verifies a trusted tower MultiStark
+  authority committed with the BaseFold folding PCS (`BinaryNativeAuthority`)
+  in a Tower128 circuit and proves it with the same folding PCS, product buses
+  and native Keccak. Each output PCS draws its derived query count plus
+  `query_draw_slack` candidates in circuit. The output authority is the next
+  layer's trusted child; grouped, indexed and BLAKE3-hashed children are
+  rejected before graph construction. These proofs are non-hiding.
 - **Full native polynomial recursion.**
   `prepared::PreparedNativeBinaryPolyWhirLayer` verifies a trusted Poly64
   additive-WHIR MultiStark proof in a Poly64 circuit, with Poly192 challenges
@@ -188,6 +198,14 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
   bounds and cap selection. Native tests cover odd-width rows, non-power-of-two
   heights, tower/polynomial carriers and a cap at the leaf layer. The caller
   still supplies trusted row widths, heights and serialization rules.
+  `verify_byte_hash_mmcs_opening_bytes_with_host_arity::<_, 4>` opens trees
+  whose nodes compress four digests, in the level order of p3's
+  `MerkleTreeMmcs`. Under Keccak a four-digest node hashes 128 bytes, one
+  Keccak-f block like a pairwise node, so a path takes about half the Keccak-f
+  calls. A native WHIR recursion layer chooses its output trees' arity in
+  `NativeBinaryRecursionOptions::arity`; both native recursion examples use
+  pairwise trees by default and four-digest trees under `--hash keccak`, and
+  `--merkle-arity` overrides the arity.
 - **Binary hash configurations.** `p3_test_utils::binary_field_params` provides the
   configuration `p3-binary-pcs` tests with, once per hash (`keccak` and `blake3` submodules
   with identical item names):
@@ -258,4 +276,4 @@ proofs. `recursion/examples/binary_prover.rs` demonstrates the prime-field outer
 - Efficient bounded-size composition across many native layers. Output
   authorities can prepare subsequent layers, but dense Keccak oracle openings
   currently make those verifier circuits grow substantially.
-- MMCS trees of arity above two.
+- Folding-PCS MMCS trees of arity above two.

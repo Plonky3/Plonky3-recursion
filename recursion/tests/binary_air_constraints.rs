@@ -15,6 +15,8 @@ use p3_multi_stark::folder::MultilinearFolder;
 use p3_multi_stark::selectors::BoundaryEvals;
 use p3_recursion::verifier::{BinaryAirConstraintPlan, VerificationError, VerifierLimits};
 
+use crate::sum_shapes_air::{CarryAir, SUM_SHAPE_COLUMNS, SumShapesAir};
+
 #[derive(Clone)]
 struct RecurrenceAir;
 impl<F> BaseAir<F> for RecurrenceAir {
@@ -128,6 +130,44 @@ fn recurrence_constraints_match_native_at_dense_tower_points() {
     let mut wrong = values;
     wrong[32] = BabyBear::from_u16(256); // First public value must remain F8.
     assert!(!run(&circuit, &wrong));
+}
+
+/// In a prime circuit field, the bit-emulated relation's fold of every sum shape and of the
+/// BLAKE3 carry chain is the AIR polynomial's fold, and each circuit keeps its measured operation
+/// and witness counts. They may be restated when the circuit compiler's lowering changes, which
+/// moves them together with the Poly64 pin in `binary_poly_air_constraints.rs`.
+#[test]
+fn prime_fold_of_sum_shapes_keeps_its_measured_counts() {
+    const MEASURED: [(usize, u32); 2] = [(528_444, 527_860), (111_731, 111_315)];
+    type E = BinaryField128;
+    let dense = |i: u128| E::from_repr(0x1917_a591_b613_85e7_4371_49af_310d_ace3 ^ (i << 64 | i));
+    let (_, shapes, _) = compare!(
+        SumShapesAir,
+        E,
+        E,
+        1,
+        (0..SUM_SHAPE_COLUMNS as u128).map(dense).collect(),
+        vec![E::ZERO; SUM_SHAPE_COLUMNS],
+        vec![],
+        vec![dense(101)],
+        dense(103)
+    );
+    let (_, carries, _) = compare!(
+        CarryAir {
+            bits: 3,
+            addend_first: false,
+        },
+        E,
+        E,
+        1,
+        (0..9).map(dense).collect(),
+        vec![E::ZERO; 9],
+        vec![],
+        vec![dense(107)],
+        dense(109)
+    );
+    let counts = [&shapes, &carries].map(|circuit| (circuit.ops.len(), circuit.witness_count));
+    assert_eq!(counts, MEASURED);
 }
 
 fn narrow_recurrence() -> (Circuit<BabyBear>, Vec<BabyBear>) {
@@ -319,6 +359,7 @@ enum Unsupported {
     Preprocessed,
     Periodic,
     Boolean,
+    BitColumns,
     BadPin,
     Empty,
     Constant,
@@ -346,6 +387,13 @@ impl<F: Field> BaseAir<F> for UnsupportedAir {
     }
     fn assumes_boolean_trace(&self) -> bool {
         matches!(self.0, Unsupported::Boolean)
+    }
+    fn boolean_columns(&self) -> usize {
+        match self.0 {
+            Unsupported::Boolean => 2,
+            Unsupported::BitColumns => 1,
+            _ => 0,
+        }
     }
     fn main_next_row_columns(&self) -> Vec<usize> {
         match self.0 {
@@ -477,6 +525,7 @@ fn unsupported_obligations_and_invalid_declarations_are_rejected() {
         Unsupported::DuplicateNext,
         Unsupported::OutOfRangeNext,
         Unsupported::Boolean,
+        Unsupported::BitColumns,
         Unsupported::BadPin,
         Unsupported::Empty,
         Unsupported::Constant,

@@ -14,6 +14,10 @@ use super::binary_host::BinaryCircuitHost;
 use crate::builder::CircuitBuilderError;
 use crate::types::ExprId;
 
+mod arity;
+
+pub use arity::MmcsAritySchedule;
+
 /// Bits per limb.
 const LIMB_BITS: usize = 16;
 /// 16-bit limbs in a 32-byte digest.
@@ -353,6 +357,203 @@ where
         )
     }
 
+    /// [`Self::verify_byte_hash_mmcs_opening_bytes_with_host`] for rows of
+    /// low-first sixteen-bit words.
+    ///
+    /// Each word stands for its two little-endian bytes, so a row of `n` words
+    /// authenticates the same `2n`-byte string. Rows hash with
+    /// [`BinaryCircuitHost::hash_words`], which range-checks every word (a
+    /// native host absorbs each one as a hash block input: a Keccak lane limb
+    /// or a BLAKE3 block word), and their digest words are used directly.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_opening_bytes_with_host`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_opening_words_with_host<H>(
+        &mut self,
+        hash: ByteHash,
+        rows: &[Vec<ExprId>],
+        heights: &[usize],
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<F>,
+    {
+        H::check_hash(hash)?;
+        self.verify_byte_hash_mmcs_opening_with(
+            rows,
+            heights,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| H::hash_words(builder, hash, row),
+            |builder, left, right| H::compress(builder, hash, left, right),
+        )
+    }
+
+    /// Constrains every leaf of one complete aligned subtree of a single-matrix
+    /// byte-hash MMCS commitment of `height` rows.
+    ///
+    /// `leaves[i]` is the exact byte row at position `(upper << k) | i`, where
+    /// `leaves.len() = 2^k` divides `height` and `index_bits` are the
+    /// little-endian bits of `upper`. Leaves hash as in
+    /// [`Self::verify_byte_hash_mmcs_opening_bytes`] and compress pairwise, even
+    /// position on the left, for `k` levels. The subtree root then takes the
+    /// `siblings` above it to the cap root selected by the high index bits, as
+    /// a leaf of a tree of `height / 2^k` rows.
+    ///
+    /// # Errors
+    ///
+    /// [`CircuitBuilderError::NonPrimitiveOpArity`] if the leaf count is not a
+    /// power of two dividing `height`, or as
+    /// [`Self::verify_byte_hash_mmcs_opening_bytes`] at the reduced height.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_subtree_bytes<BF>(
+        &mut self,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        BF: PrimeField64,
+        F: ExtensionField<BF>,
+    {
+        self.verify_byte_hash_mmcs_subtree_with(
+            leaves,
+            height,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| builder.byte_hash_bytes::<BF>(hash, row),
+            |builder, left, right| builder.byte_hash_compress::<BF>(hash, left, right),
+        )
+    }
+
+    /// [`Self::verify_byte_hash_mmcs_subtree_bytes`] under an explicit circuit
+    /// host, hashing and compressing as
+    /// [`Self::verify_byte_hash_mmcs_opening_bytes_with_host`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_subtree_bytes`] and the host's hash.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_subtree_bytes_with_host<H>(
+        &mut self,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<F>,
+    {
+        H::check_hash(hash)?;
+        self.verify_byte_hash_mmcs_subtree_with(
+            leaves,
+            height,
+            index_bits,
+            siblings,
+            cap,
+            |builder, row| {
+                let digest = H::hash_bytes(builder, hash, row)?;
+                H::words_from_bytes(builder, &digest)
+            },
+            |builder, left, right| H::compress(builder, hash, left, right),
+        )
+    }
+
+    /// [`Self::verify_byte_hash_mmcs_subtree_bytes_with_host`] for leaves of
+    /// low-first sixteen-bit words.
+    ///
+    /// `leaves[i]` serializes as two little-endian bytes per word, so a leaf
+    /// of any even byte length hashes with [`BinaryCircuitHost::hash_words`]
+    /// and its digest words are used directly. The host's word hash
+    /// range-checks every leaf word; a native host absorbs each one as a raw
+    /// Keccak limb. A single leaf authenticates one row under its full index
+    /// and path.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verify_byte_hash_mmcs_subtree_bytes`] and the host's hash.
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_byte_hash_mmcs_subtree_words_with_host<H>(
+        &mut self,
+        hash: ByteHash,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), CircuitBuilderError>
+    where
+        H: BinaryCircuitHost<F>,
+    {
+        H::check_hash(hash)?;
+        self.verify_byte_hash_mmcs_subtree_with(
+            leaves,
+            height,
+            index_bits,
+            siblings,
+            cap,
+            |builder, words| H::hash_words(builder, hash, words),
+            |builder, left, right| H::compress(builder, hash, left, right),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_byte_hash_mmcs_subtree_with(
+        &mut self,
+        leaves: &[Vec<ExprId>],
+        height: usize,
+        index_bits: &[ExprId],
+        siblings: &[Vec<ExprId>],
+        cap: &[Vec<ExprId>],
+        mut hash_leaf: impl FnMut(&mut Self, &[ExprId]) -> Result<Vec<ExprId>, CircuitBuilderError>,
+        compress: impl Fn(&mut Self, &[ExprId], &[ExprId]) -> Result<Vec<ExprId>, CircuitBuilderError>
+        + Copy,
+    ) -> Result<(), CircuitBuilderError> {
+        if !leaves.len().is_power_of_two() || !height.is_multiple_of(leaves.len()) {
+            return Err(CircuitBuilderError::NonPrimitiveOpArity {
+                op: "MmcsSubtreeOpening",
+                expected: format!("a power-of-two leaf count dividing the height {height}"),
+                got: leaves.len(),
+            });
+        }
+        // The subtree root is the single leaf digest of the reduced tree, so
+        // every shape check at that height precedes any leaf hashing.
+        self.verify_byte_hash_mmcs_opening_with(
+            &[Vec::new()],
+            &[height / leaves.len()],
+            index_bits,
+            siblings,
+            cap,
+            |builder, _| {
+                let mut layer = leaves
+                    .iter()
+                    .map(|leaf| hash_leaf(builder, leaf))
+                    .collect::<Result<Vec<_>, _>>()?;
+                while layer.len() > 1 {
+                    layer = layer
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|[left, right]| compress(builder, left, right))
+                        .collect::<Result<_, _>>()?;
+                }
+                Ok(layer.pop().expect("a power-of-two leaf count is nonempty"))
+            },
+            compress,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn verify_byte_hash_mmcs_opening_with(
         &mut self,
@@ -452,16 +653,7 @@ where
         let leaf = rows_at(log_max);
         let mut node = hash_rows(self, &leaf)?;
         for (level, (&bit, sibling)) in index_bits.iter().zip(siblings).enumerate() {
-            let (left, right): (Vec<ExprId>, Vec<ExprId>) = node
-                .iter()
-                .zip(sibling)
-                .map(|(&current, &other)| {
-                    (
-                        self.select(bit, other, current),
-                        self.select(bit, current, other),
-                    )
-                })
-                .unzip();
+            let (left, right) = self.order_digest_pair(bit, &node, sibling);
             node = compress(self, &left, &right)?;
 
             let reached = log_max - level - 1;
@@ -495,6 +687,37 @@ where
         }
         self.check_construction_limits()?;
         Ok(())
+    }
+
+    /// Orders the digest `node` with its `sibling` under the Boolean `bit`: `(node, sibling)`
+    /// when clear, `(sibling, node)` when set.
+    ///
+    /// In characteristic two, with `d = sibling + node`, the pair is `(node + bit * d,
+    /// sibling + bit * d)`: three gates per limb instead of the four of two selects. A constant
+    /// `bit` folds away under [`Self::select`].
+    pub(super) fn order_digest_pair(
+        &mut self,
+        bit: ExprId,
+        node: &[ExprId],
+        sibling: &[ExprId],
+    ) -> (Vec<ExprId>, Vec<ExprId>) {
+        node.iter()
+            .zip(sibling)
+            .map(|(&current, &other)| {
+                if F::TWO == F::ZERO && !self.is_const_bit(bit) {
+                    let diff = self.add(other, current);
+                    (
+                        self.mul_add(bit, diff, current),
+                        self.mul_add(bit, diff, other),
+                    )
+                } else {
+                    (
+                        self.select(bit, other, current),
+                        self.select(bit, current, other),
+                    )
+                }
+            })
+            .unzip()
     }
 
     /// Constrains the number whose little-endian (boolean) bits are `bits` to be at most `bound`.
@@ -640,6 +863,78 @@ mod tests {
         ));
         assert!(b.construction_usage().unwrap().expression_nodes <= 648);
         assert!(b.build().is_err());
+    }
+
+    /// Orders two digests under `bit`, a public input when `None`, checks the ordered pair at
+    /// every value the bit takes, and returns the ALU rows the ordering costs.
+    fn digest_pair_ordering_rows<F>(bit: Option<bool>, limb: impl Fn(u64) -> F) -> usize
+    where
+        F: Field + Eq + core::hash::Hash,
+    {
+        let mut builder = CircuitBuilder::<F>::new();
+        let selector = match bit {
+            None => builder.public_input(),
+            Some(set) => builder.define_const(F::from_bool(set)),
+        };
+        let node: Vec<ExprId> = (0..DIGEST_LIMBS).map(|_| builder.public_input()).collect();
+        let sibling: Vec<ExprId> = (0..DIGEST_LIMBS).map(|_| builder.public_input()).collect();
+        let (left, right) = builder.order_digest_pair(selector, &node, &sibling);
+        let circuit = builder.build().unwrap();
+
+        let node_values: Vec<F> = (0..DIGEST_LIMBS as u64).map(&limb).collect();
+        let sibling_values: Vec<F> = (100..100 + DIGEST_LIMBS as u64).map(&limb).collect();
+        for set in bit.map_or_else(|| vec![false, true], |set| vec![set]) {
+            let public: Vec<F> = bit
+                .is_none()
+                .then(|| F::from_bool(set))
+                .into_iter()
+                .chain(node_values.iter().chain(&sibling_values).copied())
+                .collect();
+            let mut runner = circuit.runner();
+            runner.set_public_inputs(&public).unwrap();
+            let traces = runner.run().unwrap();
+            let read = |digest: &[ExprId]| -> Vec<F> {
+                digest
+                    .iter()
+                    .map(|id| {
+                        *traces
+                            .witness_trace
+                            .get_value(circuit.expr_to_widx[id])
+                            .unwrap()
+                    })
+                    .collect()
+            };
+            let (first, second) = if set {
+                (&sibling_values, &node_values)
+            } else {
+                (&node_values, &sibling_values)
+            };
+            assert_eq!(read(&left), *first);
+            assert_eq!(read(&right), *second);
+        }
+        circuit
+            .ops
+            .iter()
+            .filter(|op| matches!(op, crate::ops::Op::Alu { .. }))
+            .count()
+    }
+
+    /// A pairwise Merkle level orders its digest pair under an index bit. In characteristic
+    /// two that costs an add and two multiply-adds per limb, a quarter less than the four rows
+    /// of two selects that odd characteristic keeps, and a constant bit costs nothing.
+    #[test]
+    fn digest_pair_ordering_costs_three_alu_rows_per_limb_in_characteristic_two() {
+        use p3_binary_field::{BinaryField128, TowerLevel};
+
+        let binary =
+            |i: u64| BinaryField128::from_repr((0x0123_4567_89ab_cdef_u128 << 64) | u128::from(i));
+        let prime = |i: u64| BabyBear::from_u64(i + 1);
+        assert_eq!(digest_pair_ordering_rows(None, binary), 3 * DIGEST_LIMBS);
+        assert_eq!(digest_pair_ordering_rows(None, prime), 4 * DIGEST_LIMBS);
+        for set in [false, true] {
+            assert_eq!(digest_pair_ordering_rows(Some(set), binary), 0);
+            assert_eq!(digest_pair_ordering_rows(Some(set), prime), 0);
+        }
     }
 
     #[test]

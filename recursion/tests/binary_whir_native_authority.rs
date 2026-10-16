@@ -8,6 +8,7 @@ use p3_recursion::artifact::{
     ArtifactError, BinaryNativeVerifierSpec, BinaryNativeWhirAuthority,
     BinaryNativeWhirPcsParameters, CanonicalBinaryStatement, ExpectedVerifierArtifact,
 };
+use p3_recursion::pcs::binary::MerkleArity;
 use p3_recursion::verifier::VerifierLimits;
 use p3_sumcheck::layout::{PrefixProver, SuffixProver};
 use p3_whir::{FoldingFactor, ProtocolParameters, SecurityAssumption};
@@ -43,11 +44,17 @@ macro_rules! check {
     ($f:ty, $layout:ident) => {{
         type F = $f;
         type L = $layout<F, BinaryField128>;
-        for hash in [ByteHash::Keccak256, ByteHash::Blake3] {
+        for (hash, arity) in [
+            (ByteHash::Keccak256, MerkleArity::Two),
+            (ByteHash::Keccak256, MerkleArity::Four),
+            (ByteHash::Blake3, MerkleArity::Two),
+            (ByteHash::Blake3, MerkleArity::Four),
+        ] {
             let main = BinaryNativeWhirPcsParameters::<F>::with_limits(
                 3,
                 parameters(),
                 hash,
+                arity,
                 0,
                 &VerifierLimits::default(),
             )
@@ -139,6 +146,7 @@ fn whir_parameters_reject_unbounded_constructor_work_before_native_derivation() 
             n,
             params,
             ByteHash::Blake3,
+            MerkleArity::Two,
             0,
             &limits,
         )
@@ -175,6 +183,26 @@ fn whir_parameters_reject_unbounded_constructor_work_before_native_derivation() 
     params.starting_log_inv_rate = 29;
     params.soundness_type = SecurityAssumption::UniqueDecoding;
     assert!(make(3, params).is_err());
+    // A cap counts tree levels: the five-bit domain has five pairwise levels
+    // but three four-digest ones.
+    let capped = |arity, cap_height| {
+        BinaryNativeWhirPcsParameters::<BinaryField32>::with_limits(
+            3,
+            parameters(),
+            ByteHash::Blake3,
+            arity,
+            cap_height,
+            &limits,
+        )
+    };
+    assert!(capped(MerkleArity::Two, 5).is_ok());
+    assert!(capped(MerkleArity::Two, 6).is_err());
+    assert!(capped(MerkleArity::Four, 3).is_ok());
+    assert!(capped(MerkleArity::Four, 4).is_err());
+    assert_eq!(
+        capped(MerkleArity::Four, 3).unwrap().arity(),
+        MerkleArity::Four
+    );
 }
 
 struct PreprocessedAir {

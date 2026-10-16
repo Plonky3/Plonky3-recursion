@@ -56,6 +56,7 @@ pub mod field_params;
 pub mod indexed;
 pub mod manifest;
 pub mod native_binary;
+mod native_blake3;
 pub mod native_bus;
 mod primitive_plan;
 pub mod tuning;

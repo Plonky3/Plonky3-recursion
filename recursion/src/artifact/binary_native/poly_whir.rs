@@ -1,6 +1,10 @@
 //! Factory-owned native additive WHIR proofs and checked recursion input.
 
+use p3_air::Air;
 use p3_binary_field::{Poly64, Poly192};
+use p3_field::Field;
+use p3_multi_stark::folder::{InteractionMultilinearFolder, MultilinearFolder};
+use p3_multi_stark::packed_ext::PackedExt;
 use p3_sumcheck::layout::SuffixProver;
 
 use super::config::{
@@ -9,6 +13,13 @@ use super::config::{
 use super::family::PolyWhirFamily;
 use super::*;
 use crate::verifier::{BinaryPolyWhirMultiStarkVerifier, NativeBinaryPolyWhirMultiStarkInput};
+
+/// The packing of [`Poly64`].
+pub(super) type Poly64Packing = <Poly64 as Field>::Packing;
+/// The packing of [`Poly192`] over [`Poly64Packing`].
+pub(super) type Poly192Packing = <Poly192 as ExtensionField<Poly64>>::ExtensionPacking;
+/// [`Poly192`] as packed [`Poly64`] coordinates.
+pub(super) type Poly192PackedExt = PackedExt<Poly64, Poly192Packing>;
 
 /// Trusted AIRs, matched native key and exact additive domain and layout.
 pub struct BinaryNativePolyWhirAuthority<A, L = SuffixProver<Poly64, Poly192>>
@@ -123,29 +134,33 @@ where
         })
     }
 }
+// The bounds of `p3_multi_stark::folder::ProverAir<Poly64, Poly192>`, with all six folders
+// under one binder. Where `Poly64` is its own packing, the scalar and packed folders are the
+// same type: under one binder their bounds are one where-clause, whereas the separately
+// bound supertraits of `ProverAir` leave two that the trait solver finds ambiguous.
 impl<A, L> BinaryNativePolyWhirProver<A, L>
 where
     L: BinaryNativePolyWhirLayout,
-    A: VerifierAir<Poly64, Poly192>
-        + for<'a> p3_air::Air<p3_multi_stark::folder::MultilinearFolder<'a, Poly64, Poly64, Poly192>>
-        + for<'a> p3_air::Air<
-            p3_multi_stark::folder::MultilinearFolder<
-                'a,
-                Poly64,
-                p3_multi_stark::packed_ext::PackedExt<Poly64, Poly192>,
-                p3_multi_stark::packed_ext::PackedExt<Poly64, Poly192>,
-            >,
-        > + for<'a> p3_air::Air<
-            p3_multi_stark::folder::InteractionMultilinearFolder<'a, Poly64, Poly64, Poly192>,
-        > + for<'a> p3_air::Air<
-            p3_multi_stark::folder::InteractionMultilinearFolder<
-                'a,
-                Poly64,
-                p3_multi_stark::packed_ext::PackedExt<Poly64, Poly192>,
-                p3_multi_stark::packed_ext::PackedExt<Poly64, Poly192>,
-            >,
-        >,
+    A: VerifierAir<Poly64, Poly192>,
+    for<'a> A: Air<MultilinearFolder<'a, Poly64, Poly64, Poly192>>
+        + Air<MultilinearFolder<'a, Poly64, Poly64Packing, Poly192Packing>>
+        + Air<MultilinearFolder<'a, Poly64, Poly192PackedExt, Poly192PackedExt>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly64, Poly192>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly64Packing, Poly192Packing>>
+        + Air<InteractionMultilinearFolder<'a, Poly64, Poly192PackedExt, Poly192PackedExt>>,
 {
+    pub(crate) fn with_security_bits(
+        mut self,
+        authority: BinaryNativePolyWhirAuthority<A, L>,
+        bits: usize,
+    ) -> Result<(Self, BinaryNativePolyWhirAuthority<A, L>), VerificationError> {
+        self.state = State::with_security_bits(self.state, authority.state, bits)?;
+        let authority = BinaryNativePolyWhirAuthority {
+            state: self.state.clone(),
+        };
+        Ok((self, authority))
+    }
+
     /// Ordinary row-major AIR traces. Trusted shapes are checked before
     /// commitment or any native transcript mutation.
     pub fn prove(
@@ -154,5 +169,18 @@ where
         traces: Vec<RowMajorMatrix<Poly64>>,
     ) -> Result<MultiStarkProof<BinaryNativePolyWhirConfig<L>>, VerificationError> {
         self.state.prove(&self.key, public, traces)
+    }
+
+    /// Proves column-major tables with the selected backend and ordinary security checks.
+    pub fn prove_tables_with_backend<B>(
+        &self,
+        public: &[Vec<Poly64>],
+        tables: Vec<p3_sumcheck::layout::Table<Poly64>>,
+    ) -> Result<MultiStarkProof<BinaryNativePolyWhirConfig<L>>, VerificationError>
+    where
+        B: p3_multi_stark::ZerocheckBackend<Poly64, Poly192, A>,
+    {
+        self.state
+            .prove_tables_with_backend::<B>(&self.key, public, tables)
     }
 }

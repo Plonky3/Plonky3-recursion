@@ -9,6 +9,7 @@ use super::super::config::{
     BinaryNativeBooleanWhirTraceConfig, BinaryNativeWhirPcsParameters, NativeBooleanWhirTracePcs,
 };
 use super::*;
+use crate::pcs::binary::MerkleArity;
 use crate::verifier::{
     BinaryBooleanWhirTraceMultiStarkPreprocessing, BinaryBooleanWhirTraceMultiStarkVerifier,
     NativeBinaryBooleanWhirTraceMultiStarkInput,
@@ -22,11 +23,12 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
     type Recursive = BinaryBooleanWhirTraceMultiStarkVerifier;
     type Input = NativeBinaryBooleanWhirTraceMultiStarkInput;
     type Decode = codec::MultiDecode<codec::BooleanTraceDecode<codec::WhirDecode>>;
-    fn hash(p: &Self::Parameters) -> ByteHash {
-        p.hash
-    }
+    type Trees = NativeWhirMmcs<E>;
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
+    }
+    fn arity(p: &Self::Parameters) -> MerkleArity {
+        p.arity
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.config.max_pow_bits()
@@ -53,12 +55,14 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
                 heights,
                 &main.config,
                 main.hash,
+                main.arity,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
                 BinaryBooleanWhirTraceMultiStarkPreprocessing {
                     config: pp.config.clone(),
                     hash: pp.hash,
+                    arity: pp.arity,
                     cap_height: pp.cap_height,
                     commitment: MerkleCap::new(vec![[0; 32]; roots]),
                 },
@@ -70,6 +74,7 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
                 heights,
                 &main.config,
                 main.hash,
+                main.arity,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
@@ -79,11 +84,13 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
         recursive.retain_native_parameter_metadata(parameters_usage.metadata_entries, limits)?;
         Ok(recursive)
     }
+    fn trees(p: &Self::Parameters) -> Self::Trees {
+        NativeWhirMmcs::new(p.hash, p.arity, p.cap_height)
+    }
     fn build_config(
         spec: &BinaryNativeVerifierSpec<Self::Parameters>,
-        base: &NativeMmcs<E>,
-        _round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<E>, NativeMmcs<E>)>,
+        base: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
         Ok(BinaryNativeBooleanWhirTraceConfig {
             main: build_pcs(&spec.main, base)?,
@@ -93,7 +100,7 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
                 .preprocessed
                 .as_ref()
                 .zip(preprocessed)
-                .map(|(pp, (base, _))| build_pcs(pp, base))
+                .map(|(pp, base)| build_pcs(pp, base))
                 .transpose()?,
         })
     }
@@ -115,9 +122,8 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
     fn import_native(
         recursive: &Self::Recursive,
         config: &Self::Config,
-        base: &NativeMmcs<E>,
-        _round: &NativeMmcs<E>,
-        preprocessed: Option<&(NativeMmcs<E>, NativeMmcs<E>)>,
+        base: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<E>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<E>,
@@ -129,7 +135,7 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
                 .preprocessed_parameters
                 .as_ref()
                 .zip(preprocessed)
-                .map(|(pcs, (base, _))| (&pcs.config, base)),
+                .map(|(pcs, base)| (&pcs.config, base)),
             public,
             proof,
             ch,
@@ -148,7 +154,7 @@ impl NativeFamily<E, E> for BooleanWhirTraceFamily {
 
 fn build_pcs(
     p: &BinaryNativeWhirPcsParameters<E>,
-    base: &NativeMmcs<E>,
+    base: &NativeWhirMmcs<E>,
 ) -> Result<NativeBooleanWhirTracePcs, VerificationError> {
     let bit_arity = p.config.num_variables().checked_add(7).ok_or(
         VerificationError::ResourceArithmeticOverflow {

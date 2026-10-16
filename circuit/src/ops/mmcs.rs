@@ -134,7 +134,6 @@ impl<F: Field> CircuitBuilder<F> {
                         inputs,
                         out_ctl: vec![false; rate_ext],
                         return_all_outputs: false,
-                        mmcs_index_sum: None,
                     },
                 )?;
             }
@@ -155,7 +154,6 @@ impl<F: Field> CircuitBuilder<F> {
                     inputs,
                     out_ctl: vec![is_final; rate_ext],
                     return_all_outputs: false,
-                    mmcs_index_sum: None,
                 },
             )?;
             op_ids.push(op_id);
@@ -178,7 +176,6 @@ impl<F: Field> CircuitBuilder<F> {
                     inputs,
                     out_ctl: vec![true; rate_ext],
                     return_all_outputs: false,
-                    mmcs_index_sum: None,
                 },
             )?;
             output = tail_output;
@@ -303,7 +300,6 @@ impl<F: Field> CircuitBuilder<F> {
                 inputs: leaf_inputs,
                 out_ctl: vec![false; rate_ext],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
             },
         )?;
         op_ids.push(op_id_leaf);
@@ -325,7 +321,6 @@ impl<F: Field> CircuitBuilder<F> {
                     inputs: vec![None; width_ext],
                     out_ctl: vec![is_last; rate_ext],
                     return_all_outputs: false,
-                    mmcs_index_sum: None,
                 },
             )?;
             op_ids.push(op_id);

@@ -13,7 +13,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_multilinear_util::point::Point;
 use p3_recursion::BinaryTower128Challenger;
 use p3_recursion::pcs::binary::{
-    BinaryBooleanWhirTraceVerifier, RecursiveBinaryTowerField,
+    BinaryBooleanWhirTraceVerifier, MerkleArity, RecursiveBinaryTowerField,
     verify_binary_query_indices_with_continuation,
 };
 use p3_sumcheck::layout::{SuffixProver, Table};
@@ -426,6 +426,7 @@ fn trusted_trace_geometry_and_combined_limits_reject_before_allocation() {
             next_rows: None,
         }],
         ByteHash::Keccak256,
+        MerkleArity::Two,
         0,
         &limits,
     )
@@ -435,6 +436,7 @@ fn trusted_trace_geometry_and_combined_limits_reject_before_allocation() {
             &config,
             protocol,
             ByteHash::Keccak256,
+            MerkleArity::Two,
             0,
             &limits,
         ),

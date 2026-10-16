@@ -684,9 +684,9 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "p3-air"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be7a317aa82ba3d758229db6dd1e2baa75f9aa6f1179d98b3b1e0c2c6b930d59"
+checksum = "8b020ac789aec9b2c68f44f380e844d416be00f54cb5b3baf57f1c09f33ecac5"
 dependencies = [
  "p3-field",
  "p3-matrix",
@@ -697,9 +697,9 @@ dependencies = [
 
 [[package]]
 name = "p3-baby-bear"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "923c206a5680448c97314ab1cd86064608988513535a5532e35e1da8258f4a0d"
+checksum = "aa764fc926ffd85226d3bb8558f99edbe96488cfa46feb27b98af337cf2d4fa6"
 dependencies = [
  "p3-field",
  "p3-mds",
@@ -712,9 +712,9 @@ dependencies = [
 
 [[package]]
 name = "p3-batch-stark"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3de9ea6d9df5aaa3bcd70a2deb1be64b88281f0908f7b5032079dc1b1b1ead02"
+checksum = "d07e21283453e50263631faf8376c1c402501b376110ab7ebb7b32489e9aaf1f"
 dependencies = [
  "hashbrown",
  "p3-air",
@@ -733,9 +733,9 @@ dependencies = [
 
 [[package]]
 name = "p3-binary-dft"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d647038292e71df507cb4c4de9b4259ab8bcdc2a661e37712adda9e7e9b458f6"
+checksum = "a02d05e50368ccbb1c815001f7563abb54e5627eba0ff7b215c3e65f606619e7"
 dependencies = [
  "p3-binary-field",
  "p3-commit",
@@ -747,15 +747,16 @@ dependencies = [
 
 [[package]]
 name = "p3-binary-field"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fae8d58121ed5478834484dc0371302c8a4684287c3e90781d9872580b92c88"
+checksum = "e9aa4e1da9c58a4603209cc6eb2cc302398f857859516d2415d059de02c432b4"
 dependencies = [
  "num-bigint",
  "p3-challenger",
  "p3-field",
  "p3-maybe-rayon",
  "p3-symmetric",
+ "p3-util",
  "rand 0.10.3",
  "serde",
  "tracing",
@@ -763,9 +764,9 @@ dependencies = [
 
 [[package]]
 name = "p3-binary-pcs"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48ba861b833138bb2df22dfe438693aa2dba647c6abc1a6c9281cb5d77610ad2"
+checksum = "f14cecb057cac0387b610095c80c7f67d810a6aeef7a2891ae9fd430bdc73e66"
 dependencies = [
  "p3-binary-dft",
  "p3-binary-field",
@@ -786,20 +787,21 @@ dependencies = [
 
 [[package]]
 name = "p3-blake3"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e7b708d3242f8cfc6d7e5cf4d4d76a9eaccec9f764f0172e733a88380a4d161"
+checksum = "35aabf212b15e3d81815ffb4c6a756d092c79ff1c125a4752fe2b07a18233ab7"
 dependencies = [
  "blake3",
+ "cpufeatures",
  "p3-symmetric",
  "p3-util",
 ]
 
 [[package]]
 name = "p3-blake3-air"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88bfaf8f1723c78ba5bc4d2cb5d294639abba7504f046a5ca3cdcff12894c0af"
+checksum = "296c0d05146f4f98ecacd147f53e34612fd41fc627a6a1edaecc3143f5f6b901"
 dependencies = [
  "itertools 0.15.0",
  "p3-air",
@@ -812,9 +814,9 @@ dependencies = [
 
 [[package]]
 name = "p3-bus"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0eb51f53a7148ab3f84f65121a7182202b8b9c7840733e77ddd1d65cf096cd2"
+checksum = "b56734b88bf853b3b57b370a505cb03cf6501e36ee616e5b6febc83962b87875"
 dependencies = [
  "hashbrown",
  "num-bigint",
@@ -822,6 +824,7 @@ dependencies = [
  "p3-challenger",
  "p3-field",
  "p3-lookup",
+ "p3-maybe-rayon",
  "p3-multilinear-util",
  "p3-security",
  "p3-sumcheck",
@@ -832,9 +835,9 @@ dependencies = [
 
 [[package]]
 name = "p3-challenger"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92cccaed1c107ad279e76dfd10aa71cff1c1898eb282f406288ad556e65e5a8f"
+checksum = "6e8f9ccf2210aa7b450e5ae0202090558e972f108b0dd2e6ea98cf3853f0c3e5"
 dependencies = [
  "p3-field",
  "p3-keccak",
@@ -847,9 +850,9 @@ dependencies = [
 
 [[package]]
 name = "p3-circle"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "988348b2075851702187a64575869a667425b798899788f864b0ab6fe81a6ebd"
+checksum = "103e47f2cd2109caf04c67be59b4133852e52f43c1180a296a54f21e77479b83"
 dependencies = [
  "itertools 0.15.0",
  "p3-challenger",
@@ -941,6 +944,7 @@ dependencies = [
  "p3-poseidon2",
  "p3-poseidon2-air",
  "p3-poseidon2-circuit-air",
+ "p3-sumcheck",
  "p3-symmetric",
  "p3-test-utils",
  "p3-uni-stark",
@@ -960,14 +964,15 @@ dependencies = [
 
 [[package]]
 name = "p3-commit"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e53fe56a74c49a5511a68d0953527b8efc7e68d729bf773be5d1f34998b81e7"
+checksum = "e42c4f9a1d5cb79a948cfd991982bd2ae7d2c7378cc003750b981cafd050c342"
 dependencies = [
  "itertools 0.15.0",
  "p3-dft",
  "p3-field",
  "p3-matrix",
+ "p3-maybe-rayon",
  "p3-util",
  "serde",
  "thiserror",
@@ -975,9 +980,9 @@ dependencies = [
 
 [[package]]
 name = "p3-dft"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03c2282e0a50da4b65c508fdcf4b12ce9db65aa0efa9b521a361b8565815d2b8"
+checksum = "17bacf8fba4636e78e56fb82cd52594c1980d43231e2506985c2eed24fa4da1c"
 dependencies = [
  "itertools 0.15.0",
  "p3-field",
@@ -990,9 +995,9 @@ dependencies = [
 
 [[package]]
 name = "p3-field"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7cc6ecaf9cd198bb7d3b07eedf0c1524ca8fff07cffe8928785e302f45156cf"
+checksum = "b99e10cccce2dd21e870b993166773ab4136460eee92d5d757e164e2f6321557"
 dependencies = [
  "itertools 0.15.0",
  "num-bigint",
@@ -1006,7 +1011,9 @@ dependencies = [
 
 [[package]]
 name = "p3-fri"
-version = "0.8.0"
+version = "0.9.0-rc.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5375c6915178b6651823e9cd44dbea947a5c1029fd13d83c9904b54056d1a560"
 dependencies = [
  "itertools 0.15.0",
  "p3-challenger",
@@ -1026,9 +1033,9 @@ dependencies = [
 
 [[package]]
 name = "p3-goldilocks"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "325a854e1232dd1ce270245d9c978b71897c286f072d2fa31740956a800e70c5"
+checksum = "72cb81b61c286ec2c4bdab68294970d2de519b2673275290d14e11a27dce7556"
 dependencies = [
  "num-bigint",
  "p3-dft",
@@ -1045,10 +1052,11 @@ dependencies = [
 
 [[package]]
 name = "p3-keccak"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "649a30fbdf0592023f0964563afc118a22c09eb7c214f87f7fd6ea9080930748"
+checksum = "7b70bd62db2f6dd68e8dd949bab9a88e2c77b69fa5ccec7398f5239581374c06"
 dependencies = [
+ "cpufeatures",
  "p3-symmetric",
  "p3-util",
  "tiny-keccak",
@@ -1056,9 +1064,9 @@ dependencies = [
 
 [[package]]
 name = "p3-keccak-air"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f27eece036ec32f0e29f7e258321c94596c04ed1d75473df85d1d44dcc70658"
+checksum = "94a7df88a38fce5ab2d1cf59a7c2056b1de1694441361393f44257b116f46a5b"
 dependencies = [
  "p3-air",
  "p3-field",
@@ -1071,9 +1079,9 @@ dependencies = [
 
 [[package]]
 name = "p3-koala-bear"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3e053df3a9e96ccdf9fd25b90e6109b1e08c6f61f285c6b2f360d7099806785"
+checksum = "2d298600089b470d3236e48386776f0bc2391087a00c46be25db2598285588a6"
 dependencies = [
  "p3-field",
  "p3-mds",
@@ -1086,9 +1094,9 @@ dependencies = [
 
 [[package]]
 name = "p3-lookup"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "171ef0dbef4d758389569ab7a226236b8a4c529a0b19719ae15da878f7c06716"
+checksum = "e5cf7a5d1035ccb913b8600f7784d600dc05ced8af19116b77e64fa4adef8139"
 dependencies = [
  "hashbrown",
  "itertools 0.15.0",
@@ -1104,9 +1112,9 @@ dependencies = [
 
 [[package]]
 name = "p3-matrix"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35016a778f1da67e06a56b26320cdb72fd000045576a92bbf942289cb8be12bb"
+checksum = "14afbbbb66f3ade6f37cfe22b0c9fe09b0c14a7151bc4f68cd0dc3bd9c0ab524"
 dependencies = [
  "itertools 0.15.0",
  "p3-field",
@@ -1119,18 +1127,18 @@ dependencies = [
 
 [[package]]
 name = "p3-maybe-rayon"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe1d83295d958b3d098e11b7868ac35c866c9c0432ce5266b90f7844dad513de"
+checksum = "e0ee24f4ebb11df4ee411eb7cd236100dfa06ba8695956dcb409560c9b2d6880"
 dependencies = [
  "rayon",
 ]
 
 [[package]]
 name = "p3-mds"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b87bac3d0e7f7c5da90e833734062eaaaadf9628047b569077068fae5a2d83f3"
+checksum = "fcbcdea7c987cc7425a46bbbb651af302f7f1bf22e42c5fb4a2f40039cbbb11d"
 dependencies = [
  "p3-dft",
  "p3-field",
@@ -1141,9 +1149,9 @@ dependencies = [
 
 [[package]]
 name = "p3-merkle-tree"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "004eca9836b55d68f6a9e37a4544100495249dba6ed721763c9fce61534f12cd"
+checksum = "76c3255f4483fff346c8d6cd390b3ce585af080acdd14ed550462cd34c59e836"
 dependencies = [
  "itertools 0.15.0",
  "p3-commit",
@@ -1161,9 +1169,9 @@ dependencies = [
 
 [[package]]
 name = "p3-monty-31"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "636c04267f40c93213d19ead4c828f3ac3e8a452a0f6fb0a352db605e8d838b1"
+checksum = "aa494ffaf526118fe49f975babd5b5d9a7fff7d012a2d9e2b2511572a845a450"
 dependencies = [
  "itertools 0.15.0",
  "num-bigint",
@@ -1184,9 +1192,9 @@ dependencies = [
 
 [[package]]
 name = "p3-multi-stark"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0437304b3289d7a0fe3e758e5998cb909fc7d2131f6f1fee9ed78c679f8c70fa"
+checksum = "e8fa40e5d330387429f3d834095c5c2adf4ff9f987e8fae369172285b2f9e37a"
 dependencies = [
  "hashbrown",
  "itertools 0.15.0",
@@ -1211,9 +1219,9 @@ dependencies = [
 
 [[package]]
 name = "p3-multilinear-util"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63ae4486768daec9d5f1af277b3514d839409fb90887a617e4ba721e597a17df"
+checksum = "685f04f890714f46e30fb94129000099d3de658e6845bc60f65fbb55a9cc6556"
 dependencies = [
  "itertools 0.15.0",
  "p3-field",
@@ -1230,9 +1238,9 @@ version = "0.1.0"
 
 [[package]]
 name = "p3-poseidon1"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f58309738855348b9a6d9ff1d4009f4cdd04463dfa1e27552dcd25cc75b9513f"
+checksum = "1146fdd5fb74f14ed2d012cbd7023bf8c8d2149c7f2e2db9736e5b349f486f1a"
 dependencies = [
  "p3-field",
  "p3-mds",
@@ -1242,9 +1250,9 @@ dependencies = [
 
 [[package]]
 name = "p3-poseidon1-air"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2efdf7b621a902012d1235efd655667c3d7349d8b890c963ee19f8f1538c9265"
+checksum = "3b36f16f53deaf5b8d60a4fbbaf470d02b6d9c1c7e17f2c9002e72034ea70953"
 dependencies = [
  "p3-air",
  "p3-field",
@@ -1283,9 +1291,9 @@ dependencies = [
 
 [[package]]
 name = "p3-poseidon2"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3950061c69b220c60f76c72e6de54be97e2e5dc169a5374e9b57d6118114c8cf"
+checksum = "71b34c88fc6c81a4ad2b42639c0dac565564896decf423bc9d1eb56e461313c4"
 dependencies = [
  "p3-field",
  "p3-mds",
@@ -1297,9 +1305,9 @@ dependencies = [
 
 [[package]]
 name = "p3-poseidon2-air"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2062adf64c7d59eec1884bedd8567f78bbcf797688a0509b17cf98f9ce5ee0d3"
+checksum = "9b12d6e052794d7000addfd80288c10c0443b0f4d91ab06a031982fceba175bf"
 dependencies = [
  "p3-air",
  "p3-field",
@@ -1340,6 +1348,7 @@ dependencies = [
 name = "p3-recursion"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "clap",
  "hashbrown",
  "itertools 0.15.0",
@@ -1352,6 +1361,7 @@ dependencies = [
  "p3-binary-field",
  "p3-binary-pcs",
  "p3-blake3",
+ "p3-blake3-air",
  "p3-bus",
  "p3-challenger",
  "p3-circuit",
@@ -1393,9 +1403,9 @@ dependencies = [
 
 [[package]]
 name = "p3-security"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c20542aa9e2a1249996d4cb0a461a236a58d2cf61fae712cec63c04b3765c03"
+checksum = "b2870c11c4efef7dd9e95e5af892b271e7c9b32cc6297d85c91ff6a5f630530e"
 dependencies = [
  "libm",
  "p3-air",
@@ -1407,7 +1417,9 @@ dependencies = [
 
 [[package]]
 name = "p3-sumcheck"
-version = "0.8.0"
+version = "0.9.0-rc.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63e7fe0fb9a13955baedcefce40e72110bcabb60ee020f34d36cc8c902d5dc8d"
 dependencies = [
  "itertools 0.15.0",
  "p3-binary-field",
@@ -1428,9 +1440,9 @@ dependencies = [
 
 [[package]]
 name = "p3-symmetric"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb7b7cc37b4f9592c57bfceabc737de757267b23ae956b2e648d24461f93fb42"
+checksum = "8583f712a9158e1f92168be2bccea2a218d522d02211a49ff6ab027d99e1ee6a"
 dependencies = [
  "itertools 0.15.0",
  "p3-field",
@@ -1467,9 +1479,9 @@ dependencies = [
 
 [[package]]
 name = "p3-uni-stark"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0992185743e8e406eeb1dd8ca4704d1f5246ccf2790f9b521c5455585bfa479"
+checksum = "d6649beb0478effe1007bd6070157a176bfc20b3b9419dcf9b15cd9e73382713"
 dependencies = [
  "itertools 0.15.0",
  "p3-air",
@@ -1487,9 +1499,9 @@ dependencies = [
 
 [[package]]
 name = "p3-util"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2deb6b0e30be32c696ab3cd443cc6f10b2ffce0faa31d37bd59e58789dd6df1"
+checksum = "cacb3a964026837cc630c83d6b7b0a0f4f61df9d776531ef6f77061550af8173"
 dependencies = [
  "p3-maybe-rayon",
  "serde",
@@ -1497,9 +1509,9 @@ dependencies = [
 
 [[package]]
 name = "p3-whir"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc06f2c693397c13aab1b6cf4ac415bb340818a9438f915cc7b3d2431b8790d7"
+checksum = "434706b878b07247c42fe8a64b68cc32ea8a748c6afba129e67cf03ca63d5b63"
 dependencies = [
  "itertools 0.15.0",
  "libm",
@@ -1525,9 +1537,9 @@ dependencies = [
 
 [[package]]
 name = "p3-zk-codes"
-version = "0.8.0"
+version = "0.9.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7758e0589b60e7289fc1750e7ff444ac21201ae79e7143bc6dca64e29047a542"
+checksum = "f0fba624ddb1cfe44da658a20302adb227477de2243c71e1dbffd8f89744e305"
 dependencies = [
  "p3-dft",
  "p3-field",

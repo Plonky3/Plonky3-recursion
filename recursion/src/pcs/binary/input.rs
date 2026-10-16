@@ -4,12 +4,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::hash::Hash;
 
+use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_binary_pcs::BinaryPcsConfig;
 use p3_binary_pcs::transcript::{BinaryPcsShape, BinaryPcsVerifierTranscript};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryTower128Target, ByteHash, bytes_to_limbs};
+use p3_circuit::ops::binary_encoding::{BinaryCircuitEncoding, NativeBinaryEncoding};
+use p3_circuit::ops::binary_host::BinaryCircuitHost;
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target, bytes_to_limbs};
 use p3_circuit::{CircuitBuilder, ExprId};
-use p3_field::{ExtensionField, Field, PackedValue, PrimeField64};
+use p3_field::{ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64};
 use p3_matrix::Dimensions;
 use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs, PrunedMerklePaths};
 use p3_multilinear_util::point::Point;
@@ -18,7 +21,9 @@ use p3_sumcheck::strategy::Basis;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol, SumcheckData};
 use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 
-use super::verifier::batches;
+use super::verifier::{
+    CosetLeaves, batches, check_coset_leaves, coset_path_shape, coset_subtree_depth,
+};
 use super::{
     BinaryOracleOpeningTargets, BinaryPcs128ProofTargets, BinaryPcsVerifier,
     RecursiveBinaryChallengeField, RecursiveBinaryTowerField,
@@ -32,7 +37,7 @@ use crate::verifier::{InputResourceUsage, VerificationError};
 pub struct BinaryPcsInputShape {
     pub(super) config: BinaryPcsConfig,
     protocol: OpeningProtocol,
-    hash: ByteHash,
+    pub(super) hash: ByteHash,
     cap_height: usize,
     max_query_draws: usize,
     pub(super) grouping: Option<[super::grouped_pcs::BinaryCodewordGrouping; 2]>,
@@ -86,14 +91,46 @@ impl BinaryPcsInputShape {
         BF: PrimeField64,
         EF: ExtensionField<BF> + Eq + Hash,
     {
+        self.allocate_with(
+            circuit,
+            CosetLeaves::ordinary(self.grouping.is_some()),
+            alloc_field::<BF, EF>,
+        )
+    }
+
+    /// Allocates proof witnesses as native Tower128 scalars, one private
+    /// input per field value, in the order of [`Self::allocate_targets`].
+    /// Grouped codewords and hashes the native host cannot evaluate are
+    /// rejected before any input is allocated.
+    pub fn allocate_native_targets(
+        &self,
+        circuit: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<BinaryPcs128ProofTargets<NativeTower128Target>, VerificationError> {
+        if self.grouping.is_some() {
+            return Err(invalid(
+                "native scalar binary PCS verifier does not support grouped codewords",
+            ));
+        }
+        <NativeBinaryEncoding as BinaryCircuitHost<BinaryField128>>::check_hash(self.hash)?;
+        self.allocate_with(circuit, CosetLeaves::Symbols, alloc_native_field)
+    }
+
+    /// Proof witness allocation order shared by every scalar representation
+    /// and coset leaf mode. A mode the committed trees do not support is
+    /// rejected before any input is allocated.
+    pub(super) fn allocate_with<T, CF>(
+        &self,
+        circuit: &mut CircuitBuilder<CF>,
+        leaves: CosetLeaves,
+        mut field: impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+    ) -> Result<BinaryPcs128ProofTargets<T>, VerificationError>
+    where
+        CF: Field + Eq + Hash,
+    {
+        check_coset_leaves(&self.config, self.cap_height, self.grouping, leaves)?;
         let shape = BinaryPcsShape::new(&self.config);
         let sumcheck = (0..self.config.num_variables())
-            .map(|_| {
-                Ok([
-                    alloc_field::<BF, EF>(circuit)?,
-                    alloc_field::<BF, EF>(circuit)?,
-                ])
-            })
+            .map(|_| Ok([field(circuit)?, field(circuit)?]))
             .collect::<Result<_, VerificationError>>()?;
         let evals = self
             .protocol
@@ -101,44 +138,42 @@ impl BinaryPcsInputShape {
             .map(|(_, batch)| {
                 Ok(OpeningBatch::new(
                     (0..batch.current().len())
-                        .map(|_| alloc_field::<BF, EF>(circuit))
+                        .map(|_| field(circuit))
                         .collect::<Result<_, _>>()?,
                     (0..batch.next().len())
-                        .map(|_| alloc_field::<BF, EF>(circuit))
+                        .map(|_| field(circuit))
                         .collect::<Result<_, _>>()?,
                 ))
             })
             .collect::<Result<_, VerificationError>>()?;
-        let log_domain = self.config.num_variables() + self.config.log_inv_rate();
+        let path_shape = |start: usize, arity: usize| {
+            let (per_query, depth) =
+                coset_path_shape(&self.config, self.cap_height, leaves, start, arity);
+            (shape.num_pairs * per_query, depth)
+        };
         let mut rounds = Vec::new();
         for (start, arity) in batches(&self.config).skip(1) {
             let cap = (0..1usize << self.cap_height)
                 .map(|_| alloc_digest(circuit))
                 .collect();
-            let (rows, paths) = alloc_oracle::<BF, EF>(
+            let (rows, paths) = alloc_oracle(
                 circuit,
                 shape.num_pairs << arity,
-                if self.grouping.is_some() {
-                    0
-                } else {
-                    log_domain - start - self.cap_height
-                },
+                path_shape(start, arity),
+                &mut field,
             )?;
             rounds.push(BinaryOracleOpeningTargets { cap, rows, paths });
         }
-        let (base_rows, base_paths) = alloc_oracle::<BF, EF>(
+        let (base_rows, base_paths) = alloc_oracle(
             circuit,
             shape.num_pairs << self.config.log_folding_factor(),
-            if self.grouping.is_some() {
-                0
-            } else {
-                log_domain - self.cap_height
-            },
+            path_shape(0, self.config.log_folding_factor()),
+            &mut field,
         )?;
         let final_codeword = (0..shape.final_codeword_len)
-            .map(|_| alloc_field::<BF, EF>(circuit))
+            .map(|_| field(circuit))
             .collect::<Result<_, _>>()?;
-        let pow_witness = alloc_field::<BF, EF>(circuit)?;
+        let pow_witness = field(circuit)?;
         let query_indices = (0..shape.num_pairs)
             .map(|_| {
                 (0..shape.pair_bits)
@@ -192,6 +227,38 @@ impl NativeBinaryPcsInput {
         &self.queries
     }
 
+    /// Path digests of the oracle at fold batch `(start, arity)` in circuit
+    /// input order. A query coset authenticated as one Merkle subtree takes
+    /// its offset-0 siblings above the subtree, and a whole-coset leaf the
+    /// complete path its symbols share; otherwise every restored path.
+    fn circuit_path_digests<'a>(
+        &self,
+        paths: &'a [Vec<[u8; 32]>],
+        start: usize,
+        arity: usize,
+        leaves: CosetLeaves,
+    ) -> Result<Vec<&'a [u8; 32]>, VerificationError> {
+        let skip = match (
+            leaves,
+            coset_subtree_depth(&self.shape.config, self.shape.cap_height, start, arity),
+        ) {
+            (CosetLeaves::External, _) | (CosetLeaves::Symbols, None) => {
+                return Ok(paths.iter().flatten().collect());
+            }
+            (CosetLeaves::Symbols, Some(_)) => arity,
+            (CosetLeaves::Coset, _) => 0,
+        };
+        let mut digests = Vec::new();
+        for coset in paths.chunks(1usize << arity) {
+            digests.extend(
+                coset[0]
+                    .get(skip..)
+                    .ok_or_else(|| invalid("binary PCS restored path is shorter than its coset"))?,
+            );
+        }
+        Ok(digests)
+    }
+
     /// Packs exactly the private input order of `shape().allocate_targets()`.
     /// A different verifier shape is rejected before packing.
     pub fn private_values<EF: Field>(
@@ -218,21 +285,23 @@ impl NativeBinaryPcsInput {
                 push_field(&mut values, raw);
             }
         }
-        for round in &self.rounds {
+        let leaves = CosetLeaves::ordinary(self.shape.grouping.is_some());
+        for (round, (start, arity)) in self.rounds.iter().zip(batches(&self.shape.config).skip(1)) {
             for digest in &round.cap {
                 push_digest(&mut values, digest);
             }
             for &raw in &round.rows {
                 push_field(&mut values, raw);
             }
-            for digest in round.paths.iter().flatten() {
+            for digest in self.circuit_path_digests(&round.paths, start, arity, leaves)? {
                 push_digest(&mut values, digest);
             }
         }
         for &raw in &self.base_rows {
             push_field(&mut values, raw);
         }
-        for digest in self.base_paths.iter().flatten() {
+        let base_arity = self.shape.config.log_folding_factor();
+        for digest in self.circuit_path_digests(&self.base_paths, 0, base_arity, leaves)? {
             push_digest(&mut values, digest);
         }
         for &raw in &self.final_codeword {
@@ -242,6 +311,95 @@ impl NativeBinaryPcsInput {
         let bits = BinaryPcsShape::new(&self.shape.config).pair_bits;
         for &index in &self.queries {
             values.extend((0..bits).map(|b| EF::from_bool(index >> b & 1 == 1)));
+        }
+        Ok(values)
+    }
+
+    /// Packs exactly the private input order of `shape().allocate_native_targets()`.
+    /// A different verifier shape is rejected before packing.
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryPcsInputShape,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary PCS imported input belongs to a different verifier",
+            ));
+        }
+        if expected.grouping.is_some() {
+            return Err(invalid(
+                "native scalar binary PCS verifier does not support grouped codewords",
+            ));
+        }
+        self.pack_native(CosetLeaves::Symbols)
+    }
+
+    /// Native Tower128 private inputs in the order of
+    /// [`BinaryPcsInputShape::allocate_with`] under `leaves`, which must match
+    /// the committed trees. The caller checks the verifier shape.
+    pub(super) fn pack_native(
+        &self,
+        leaves: CosetLeaves,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        check_coset_leaves(
+            &self.shape.config,
+            self.shape.cap_height,
+            self.shape.grouping,
+            leaves,
+        )?;
+        let mut values = Vec::new();
+        let push_digest = |values: &mut Vec<BinaryField128>,
+                           digest: &[u8; 32]|
+         -> Result<(), VerificationError> {
+            for word in bytes_to_limbs(digest) {
+                values.push(<NativeBinaryEncoding as BinaryCircuitEncoding<
+                    BinaryField128,
+                >>::encode_u16(word)?);
+            }
+            Ok(())
+        };
+        values.extend(
+            self.sumcheck
+                .iter()
+                .flatten()
+                .map(|&raw| BinaryField128::from_repr(raw)),
+        );
+        for evals in &self.evals {
+            values.extend(
+                evals
+                    .current()
+                    .iter()
+                    .chain(evals.next())
+                    .map(|&raw| BinaryField128::from_repr(raw)),
+            );
+        }
+        for (round, (start, arity)) in self.rounds.iter().zip(batches(&self.shape.config).skip(1)) {
+            for digest in &round.cap {
+                push_digest(&mut values, digest)?;
+            }
+            values.extend(round.rows.iter().map(|&raw| BinaryField128::from_repr(raw)));
+            for digest in self.circuit_path_digests(&round.paths, start, arity, leaves)? {
+                push_digest(&mut values, digest)?;
+            }
+        }
+        values.extend(
+            self.base_rows
+                .iter()
+                .map(|&raw| BinaryField128::from_repr(raw)),
+        );
+        let base_arity = self.shape.config.log_folding_factor();
+        for digest in self.circuit_path_digests(&self.base_paths, 0, base_arity, leaves)? {
+            push_digest(&mut values, digest)?;
+        }
+        values.extend(
+            self.final_codeword
+                .iter()
+                .map(|&raw| BinaryField128::from_repr(raw)),
+        );
+        values.push(BinaryField128::from_repr(self.pow_witness));
+        let bits = BinaryPcsShape::new(&self.shape.config).pair_bits;
+        for &index in &self.queries {
+            values.extend((0..bits).map(|b| BinaryField128::from_bool(index >> b & 1 == 1)));
         }
         Ok(values)
     }
@@ -613,25 +771,31 @@ where
     Ok(circuit.binary128_from_limbs::<BF>(limbs)?)
 }
 
+/// One native Tower128 scalar, one private input per field value.
+pub(super) fn alloc_native_field(
+    circuit: &mut CircuitBuilder<BinaryField128>,
+) -> Result<NativeTower128Target, VerificationError> {
+    let value = circuit.alloc_private_input("native binary PCS field");
+    circuit.check_construction_limits()?;
+    Ok(circuit.native_tower128_from_expr(value))
+}
+
 pub(super) fn alloc_digest<EF: Field + Eq + Hash>(circuit: &mut CircuitBuilder<EF>) -> Vec<ExprId> {
     circuit
         .alloc_private_input_array::<16>("binary PCS digest")
         .to_vec()
 }
 
-fn alloc_oracle<BF, EF>(
-    circuit: &mut CircuitBuilder<EF>,
+fn alloc_oracle<T, CF: Field + Eq + Hash>(
+    circuit: &mut CircuitBuilder<CF>,
     count: usize,
-    depth: usize,
-) -> Result<super::OracleOpeningTargets<BinaryTower128Target>, VerificationError>
-where
-    BF: PrimeField64,
-    EF: ExtensionField<BF> + Eq + Hash,
-{
+    (paths, depth): (usize, usize),
+    field: &mut impl FnMut(&mut CircuitBuilder<CF>) -> Result<T, VerificationError>,
+) -> Result<super::OracleOpeningTargets<T>, VerificationError> {
     let rows = (0..count)
-        .map(|_| alloc_field::<BF, EF>(circuit))
+        .map(|_| field(circuit))
         .collect::<Result<_, _>>()?;
-    let paths = (0..count)
+    let paths = (0..paths)
         .map(|_| (0..depth).map(|_| alloc_digest(circuit)).collect())
         .collect();
     Ok((rows, paths))

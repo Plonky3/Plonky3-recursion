@@ -8,6 +8,7 @@ use super::super::config::{
     NativePolyWhirPcs,
 };
 use super::*;
+use crate::pcs::binary::MerkleArity;
 use crate::verifier::{
     BinaryPolyWhirMultiStarkPreprocessing, BinaryPolyWhirMultiStarkVerifier,
     NativeBinaryPolyWhirMultiStarkInput,
@@ -24,11 +25,12 @@ where
     type Recursive = BinaryPolyWhirMultiStarkVerifier;
     type Input = NativeBinaryPolyWhirMultiStarkInput;
     type Decode = codec::MultiDecode<codec::WhirDecode>;
-    fn hash(p: &Self::Parameters) -> ByteHash {
-        p.hash
-    }
+    type Trees = NativeWhirMmcs<Poly64>;
     fn cap_height(p: &Self::Parameters) -> usize {
         p.cap_height
+    }
+    fn arity(p: &Self::Parameters) -> MerkleArity {
+        p.arity
     }
     fn pow_bits(p: &Self::Parameters) -> usize {
         p.config.max_pow_bits()
@@ -71,6 +73,7 @@ where
                 &main.config,
                 L::variable_order(),
                 main.hash,
+                main.arity,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
@@ -78,6 +81,7 @@ where
                     config: pp.config.clone(),
                     order: L::variable_order(),
                     hash: pp.hash,
+                    arity: pp.arity,
                     cap_height: pp.cap_height,
                     commitment: MerkleCap::new(vec![[0; 32]; roots]),
                 },
@@ -90,6 +94,7 @@ where
                 &main.config,
                 L::variable_order(),
                 main.hash,
+                main.arity,
                 main.cap_height,
                 spec.sumcheck_pow_bits,
                 spec.max_tau_draws,
@@ -99,11 +104,13 @@ where
         recursive.retain_native_parameter_metadata(parameters_usage.metadata_entries, limits)?;
         Ok(recursive)
     }
+    fn trees(p: &Self::Parameters) -> Self::Trees {
+        NativeWhirMmcs::new(p.hash, p.arity, p.cap_height)
+    }
     fn build_config(
         spec: &BinaryNativeVerifierSpec<Self::Parameters>,
-        base: &NativeMmcs<Poly64>,
-        _round: &NativeMmcs<Poly192>,
-        preprocessed: Option<&(NativeMmcs<Poly64>, NativeMmcs<Poly192>)>,
+        base: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
     ) -> Result<Self::Config, VerificationError> {
         Ok(BinaryNativePolyWhirConfig {
             main: WhirProver::new(
@@ -115,7 +122,7 @@ where
                 .preprocessed
                 .as_ref()
                 .zip(preprocessed)
-                .map(|(pp, (base, _))| {
+                .map(|(pp, base)| {
                     WhirProver::new(
                         pp.config.clone(),
                         BinaryWhirDomain::<Poly64>::default(),
@@ -142,9 +149,8 @@ where
     fn import_native(
         recursive: &Self::Recursive,
         config: &Self::Config,
-        base: &NativeMmcs<Poly64>,
-        _round: &NativeMmcs<Poly192>,
-        preprocessed: Option<&(NativeMmcs<Poly64>, NativeMmcs<Poly192>)>,
+        base: &Self::Trees,
+        preprocessed: Option<&Self::Trees>,
         public: &[Vec<Poly64>],
         proof: &MultiStarkProof<Self::Config>,
         ch: &mut BinaryNativeChallenger<Poly64>,
@@ -156,7 +162,7 @@ where
                 .preprocessed
                 .as_ref()
                 .zip(preprocessed)
-                .map(|(pcs, (base, _))| (&**pcs, base)),
+                .map(|(pcs, base)| (&**pcs, base)),
             public,
             proof,
             ch,

@@ -100,6 +100,21 @@ fn owned_native_authority_verifies_all_caps_and_independent_statements() {
                         vec![RowMajorMatrix::new(vec![public[0][0] + fixed; 4], 1)],
                     )
                     .unwrap();
+                let selected = prover
+                    .prove_tables_with_backend::<p3_multi_stark::ReprBackend<
+                        p3_binary_field::BinaryField2,
+                        p3_binary_field::Ghash128,
+                    >>(
+                        &public,
+                        vec![p3_sumcheck::layout::Table::new(
+                            RowMajorMatrix::new(vec![public[0][0] + fixed; 4], 1).transpose(),
+                        )],
+                    )
+                    .unwrap();
+                assert_eq!(
+                    postcard::to_allocvec(&proof).unwrap(),
+                    postcard::to_allocvec(&selected).unwrap()
+                );
                 let verified = authority.verify_native(&proof, &public).unwrap();
                 assert_eq!(verified.public_values(), public);
                 let encoded = authority.encode_native_proof(&proof, &public).unwrap();
@@ -135,6 +150,54 @@ fn owned_native_authority_verifies_all_caps_and_independent_statements() {
                 assert!(authority.verify_native(&oversized, &public).is_err());
             }
         }
+    }
+}
+
+#[test]
+fn native_setup_rejects_missing_or_malformed_preprocessing() {
+    struct PreprocessedAir(Option<RowMajorMatrix<F>>);
+    impl BaseAir<F> for PreprocessedAir {
+        fn width(&self) -> usize {
+            1
+        }
+        fn preprocessed_width(&self) -> usize {
+            1
+        }
+        fn preprocessed_trace(&self) -> Option<RowMajorMatrix<F>> {
+            self.0.clone()
+        }
+    }
+    impl<AB: AirBuilder<F = F>> Air<AB> for PreprocessedAir {
+        fn eval(&self, b: &mut AB) {
+            b.assert_eq(
+                b.main().current_slice()[0],
+                b.preprocessed().current_slice()[0],
+            );
+        }
+    }
+    for trace in [
+        None,
+        Some(RowMajorMatrix::new(vec![F::ONE; 4], 2)),
+        Some(RowMajorMatrix::new(vec![F::ONE; 2], 1)),
+    ] {
+        let error = BinaryNativeAuthority::<F, F, _>::setup(
+            vec![PreprocessedAir(trace.clone())],
+            vec![2],
+            spec(ByteHash::Blake3, true),
+            &VerifierLimits::default(),
+        )
+        .err()
+        .expect("invalid preprocessing must be rejected before native setup");
+        let expected = if trace.is_none() {
+            "binary native AIR is missing its preprocessed trace"
+        } else {
+            "binary native preprocessed trace shape mismatch"
+        };
+        assert!(matches!(
+            error,
+            p3_recursion::verifier::VerificationError::InvalidProofShape(message)
+                if message == expected
+        ));
     }
 }
 

@@ -483,12 +483,9 @@ where
     H: BinaryCircuitHost<EF>,
     EF: Field + Eq + Hash,
 {
-    let bytes = ch.sample_bytes_with_host::<H, EF>(b, E::RAW_BITS / 8)?;
+    let drawn = ch.sample_byte_bits_with_host::<H, EF>(b, E::RAW_BITS / 8)?;
     let mut bits = [ExprId::ZERO; 128];
-    for (i, byte) in bytes.into_iter().enumerate() {
-        let byte = H::decompose_word(b, byte, 8)?;
-        bits[8 * i..8 * i + 8].copy_from_slice(&byte);
-    }
+    bits[..drawn.len()].copy_from_slice(&drawn);
     Ok(b.binary128_from_bits(bits)?)
 }
 

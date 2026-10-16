@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     //                     /     \
     //               leaf [1..8]  sibling0 [9..16]
     //
-    // We expose final digest limbs 0-1 as public inputs and the mmcs_index_sum (should be binary 010 = 2).
+    // We expose final digest limbs 0-1 as public inputs; each row's direction bit is a constant.
 
     let perm = default_koalabear_poseidon2_16();
 
@@ -150,9 +150,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let row2_out_base = perm.permute(row2_state_base);
     let row2_out_limbs = collect_ext_limbs(&row2_out_base);
 
-    // mmcs_index_sum should be 2 (bits: row1=1, row2=0)
-    let mmcs_index_sum_row2 = Base::from_u64(2);
-
     // Build circuit
     let mut builder = CircuitBuilder::<Ext4>::new();
     builder.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
@@ -180,14 +177,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             inputs: inputs_row0.iter().map(|&x| Some(x)).collect(),
             out_ctl: vec![false, false],
             return_all_outputs: false,
-            mmcs_index_sum: None,
             absorb_len: 0,
         })?;
 
     let sibling1_inputs: Vec<Option<ExprId>> = vec![None; 4];
     let out0 = builder.public_input();
     let out1 = builder.public_input();
-    let mmcs_idx_sum_expr = builder.public_input();
 
     let mmcs_bit_row1 = builder.alloc_const(Ext4::from_prime_subfield(Base::ONE), "mmcs_bit_row1");
     let (row1_op_id, _row1_outputs) =
@@ -200,7 +195,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             inputs: sibling1_inputs,
             out_ctl: vec![false, false],
             return_all_outputs: false,
-            mmcs_index_sum: None,
             absorb_len: 0,
         })?;
 
@@ -216,7 +210,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             inputs: sibling2_inputs,
             out_ctl: vec![true, true],
             return_all_outputs: false,
-            mmcs_index_sum: Some(mmcs_idx_sum_expr),
             absorb_len: 0,
         })?;
     let row2_out0 = row2_outputs[0].ok_or("missing row2 out0")?;
@@ -245,11 +238,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (airs, degrees): (Vec<_>, Vec<usize>) = airs_degrees.into_iter().unzip();
 
     let mut runner = circuit.runner();
-    runner.set_public_inputs(&[
-        row2_out_limbs[0],
-        row2_out_limbs[1],
-        Ext4::from_prime_subfield(mmcs_index_sum_row2),
-    ])?;
+    runner.set_public_inputs(&[row2_out_limbs[0], row2_out_limbs[1]])?;
 
     // Set private inputs for Row 1
     // Row 1: mmcs_bit = 1 (Right Child). Previous digest chains from previous row.
@@ -273,7 +262,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let traces = runner.run()?;
 
-    // Check Poseidon2 trace rows and mmcs_index_sum exposure
+    // Check Poseidon2 trace rows
     let poseidon2_trace = traces
         .non_primitive_trace::<p3_circuit::ops::Poseidon2Trace<Base>>(&NpoTypeId::poseidon2_perm(
             Poseidon2Config::KOALA_BEAR_D4_W16,

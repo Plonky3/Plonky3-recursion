@@ -397,7 +397,7 @@ where
             .check_points(points.iter().map(Point::num_variables), proof.values.len())?;
         self.child
             .check_native_structure(base_mmcs, round_mmcs, commitment, &proof.opening)?;
-        let captured = route(
+        let captured = route::<E, E, _>(
             self.routing.plan.num_variables,
             &self.routing.plan.protocol,
             points,

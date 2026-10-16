@@ -3,6 +3,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
+use p3_air::BaseAir;
 use p3_matrix::Matrix;
 use p3_multi_stark::config::ProverData;
 use p3_multi_stark::{
@@ -31,9 +32,10 @@ where
     pub(super) spec: BinaryNativeVerifierSpec<K::Parameters>,
     pub(super) identity: Arc<[u8]>,
     pub(super) limits: ArtifactLimits,
-    base: NativeMmcs<F>,
-    round: NativeMmcs<E>,
-    preprocessed: Option<(NativeMmcs<F>, NativeMmcs<E>)>,
+    /// The statement's composed security, checked against `spec.security_bits` at setup.
+    pub(super) security: MultiStarkSecurityReport,
+    trees: K::Trees,
+    preprocessed_trees: Option<K::Trees>,
     pub(super) decode: K::Decode,
 }
 
@@ -73,13 +75,12 @@ where
             });
         }
     }
+    check_boolean_assumptions::<F, E, A, K>(&airs, &spec.main)?;
     let refs = airs.iter().collect::<Vec<_>>();
     let roots = if let Some(pp) = &spec.preprocessed {
-        let cap_height = K::cap_height(pp);
-        if cap_height >= usize::BITS as usize {
-            return Err(invalid("binary native preprocessing cap shift is invalid"));
-        }
-        let roots = 1usize << cap_height;
+        let roots = K::arity(pp)
+            .cap_roots(K::cap_height(pp))
+            .ok_or_else(|| invalid("binary native preprocessing cap shift is invalid"))?;
         usage.add_cap_roots(&limits.verifier, roots)?;
         usage.add_scalar_elements(
             &limits.verifier,
@@ -108,15 +109,9 @@ where
             }
         }
     }
-    let base = tree(K::hash(&spec.main), K::cap_height(&spec.main));
-    let round = tree(K::hash(&spec.main), K::cap_height(&spec.main));
-    let preprocessed = spec.preprocessed.as_ref().map(|pp| {
-        (
-            tree(K::hash(pp), K::cap_height(pp)),
-            tree(K::hash(pp), K::cap_height(pp)),
-        )
-    });
-    let config = K::build_config(&spec, &base, &round, preprocessed.as_ref())?;
+    let trees = K::trees(&spec.main);
+    let preprocessed_trees = spec.preprocessed.as_ref().map(K::trees);
+    let config = K::build_config(&spec, &trees, preprocessed_trees.as_ref())?;
     let mut setup_ch = BinaryNativeChallenger::for_setup(roots, spec.transcript_hash);
     let (proving, verifying) = p3_multi_stark::setup(&config, &refs, &mut setup_ch)
         .map_err(|_| invalid("binary native setup rejected"))?;
@@ -135,8 +130,8 @@ where
             .map(|((air, &height), public)| VerifierInstance::new(air, &verifying, height, public))
             .collect(),
     );
-    p3_multi_stark::security_report(&config, &instances)
-        .and_then(|report| report.require_security(spec.security_bits))
+    let security = p3_multi_stark::security_report(&config, &instances)
+        .and_then(|report| report.require_security(spec.security_bits).map(|()| report))
         .map_err(|error| {
             VerificationError::InvalidProofShape(alloc::format!(
                 "binary native statement security target is not met: {error}",
@@ -154,12 +149,41 @@ where
         spec,
         identity: Arc::from(identity),
         limits,
-        base,
-        round,
-        preprocessed,
+        security,
+        trees,
+        preprocessed_trees,
         decode,
     });
     Ok((state, proving))
+}
+
+/// Refuses an AIR that declares bit columns unless the family's main commitment stores its
+/// table as bits, as [`NativeFamily::bits_committed`] reports.
+///
+/// Under a commitment to field elements, an AIR that leaves its booleanity to the commitment
+/// accepts a trace holding non-bits. The multi-STARK prover and verifier refuse such an AIR
+/// outside the commitment's bit region. This check refuses it at setup, and also where a
+/// family's bit region covers the table but the family reports no bit-committed table.
+pub(super) fn check_boolean_assumptions<F, E, A, K>(
+    airs: &[A],
+    main: &K::Parameters,
+) -> Result<(), VerificationError>
+where
+    F: NativeAlphabet + TranscriptField + PackedValue<Value = F>,
+    E: ExtensionField<F> + PackedValue<Value = E>,
+    A: BaseAir<F>,
+    K: NativeFamily<F, E>,
+{
+    if airs
+        .iter()
+        .enumerate()
+        .any(|(table, air)| air.boolean_columns() != 0 && !K::bits_committed(main, table))
+    {
+        return Err(invalid(
+            "binary native AIR declares bit columns its commitment does not store as bits",
+        ));
+    }
+    Ok(())
 }
 
 impl<F, E, A, K> State<F, E, A, K>
@@ -168,6 +192,43 @@ where
     E: ExtensionField<F> + PackedValue<Value = E>,
     K: NativeFamily<F, E>,
 {
+    /// Changes only the enforced security target. Consuming the matched pair
+    /// prevents a retained authority snapshot from being mutated.
+    pub(super) fn with_security_bits(
+        state: Arc<Self>,
+        authority: Arc<Self>,
+        bits: usize,
+    ) -> Result<Arc<Self>, VerificationError> {
+        if !Arc::ptr_eq(&state, &authority) {
+            return Err(invalid(
+                "binary native security update requires matched keys",
+            ));
+        }
+        if bits == 0 || bits > 128 {
+            return Err(invalid(
+                "binary native security target must be within 1..=128",
+            ));
+        }
+        state.security.require_security(bits).map_err(|error| {
+            VerificationError::InvalidProofShape(alloc::format!(
+                "binary native statement security target is not met: {error}",
+            ))
+        })?;
+        drop(authority);
+        if state.spec.security_bits == bits {
+            return Ok(state);
+        }
+        let mut state = Arc::try_unwrap(state).map_err(|_| {
+            invalid("binary native security update has retained authority snapshots")
+        })?;
+        state.spec.security_bits = bits;
+        state.identity = Arc::from(
+            identity::<F, E, K>(&state.binary, &state.spec, &state.limits)
+                .map_err(|error| identity_error(&error))?,
+        );
+        Ok(Arc::new(state))
+    }
+
     fn challenger(&self) -> BinaryNativeChallenger<F> {
         BinaryNativeChallenger::fresh(self.spec.initial_bytes.clone(), self.spec.transcript_hash)
     }
@@ -196,9 +257,8 @@ where
         let input = K::import_native(
             &self.binary,
             &self.config,
-            &self.base,
-            &self.round,
-            self.preprocessed.as_ref(),
+            &self.trees,
+            self.preprocessed_trees.as_ref(),
             expected,
             proof,
             &mut self.challenger(),
@@ -247,21 +307,69 @@ where
         {
             return Err(invalid("binary native main trace shape mismatch"));
         }
+        let tables = traces
+            .into_iter()
+            .map(|trace| Table::new(trace.transpose()))
+            .collect();
+        self.prove_tables(key, public, tables)
+    }
+    /// Main tables in AIR order, each of its AIR's width and height. A table may hold field
+    /// cells or packed bits; the commitment decides which it accepts.
+    pub(super) fn prove_tables(
+        &self,
+        key: &ProvingKey<K::Config>,
+        public: &[Vec<F>],
+        tables: Vec<Table<F>>,
+    ) -> Result<MultiStarkProof<K::Config>, VerificationError>
+    where
+        A: ProverAir<F, E>,
+        E::ExtensionPacking: From<E> + From<F::Packing>,
+        ProverData<K::Config>: Clone,
+    {
+        self.prove_tables_with_backend::<p3_multi_stark::GenericBackend>(key, public, tables)
+    }
+
+    pub(super) fn prove_tables_with_backend<B>(
+        &self,
+        key: &ProvingKey<K::Config>,
+        public: &[Vec<F>],
+        tables: Vec<Table<F>>,
+    ) -> Result<MultiStarkProof<K::Config>, VerificationError>
+    where
+        A: ProverAir<F, E>,
+        B: p3_multi_stark::ZerocheckBackend<F, E, A>,
+        E::ExtensionPacking: From<E> + From<F::Packing>,
+        ProverData<K::Config>: Clone,
+    {
+        self.check_public(public)?;
+        if tables.len() != self.airs.len()
+            || tables
+                .iter()
+                .zip(self.airs.iter())
+                .zip(self.heights.iter())
+                .any(|((table, air), &height)| {
+                    table.num_polys() != air.width() || table.num_variables() != height
+                })
+        {
+            return Err(invalid("binary native main table shape mismatch"));
+        }
+        // The authority assessed these exact AIRs, heights and public-value counts at setup.
+        // Validate the retained target before the selected backend mutates the transcript.
+        self.security
+            .require_security(self.spec.security_bits)
+            .map_err(|_| invalid("binary native proof generation rejected"))?;
         let instances = ProverInstances::new(
-            traces
+            tables
                 .into_iter()
                 .zip(self.airs.iter())
                 .zip(public)
-                .map(|((trace, air), values)| {
-                    ProverInstance::new(air, Table::new(trace.transpose()), key, values)
-                })
+                .map(|((table, air), values)| ProverInstance::new(air, table, key, values))
                 .collect(),
         );
-        p3_multi_stark::prove_with_security(
+        p3_multi_stark::prove_with_backend::<K::Config, A, B>(
             &self.config,
             instances,
             self.spec.sumcheck_pow_bits,
-            self.spec.security_bits,
             &mut self.challenger(),
         )
         .map_err(|_| invalid("binary native proof generation rejected"))

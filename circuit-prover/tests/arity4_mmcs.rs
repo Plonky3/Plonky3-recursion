@@ -16,10 +16,11 @@
 //! bug, where only `pos = 0` was wired self-consistently.
 
 use p3_batch_stark::ProverData;
-use p3_circuit::CircuitBuilder;
 use p3_circuit::ops::{
-    Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace, perm_private_data,
+    NpoTypeId, Poseidon2Config, Poseidon2Trace, generate_poseidon2_trace, generate_recompose_trace,
+    perm_private_data,
 };
+use p3_circuit::{Circuit, CircuitBuilder, Traces};
 use p3_circuit_prover::batch_stark_prover::{poseidon2_air_builders, recompose_air_builders};
 use p3_circuit_prover::common::{NpoPreprocessor, get_airs_and_degrees_with_prep};
 use p3_circuit_prover::config::KoalaBearConfig;
@@ -33,7 +34,10 @@ use p3_field::{BasedVectorSpace, PrimeCharacteristicRing};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear, default_koalabear_poseidon2_32};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_poseidon2_circuit_air::KoalaBearD4Width32;
+use p3_poseidon2_circuit_air::{
+    KoalaBearD4Width32, extract_preprocessed_from_operations,
+    poseidon2_preprocessed_row_width_for_air,
+};
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 
 type F = KoalaBear;
@@ -67,19 +71,18 @@ fn pack_digest(digest: &[F]) -> Vec<EF> {
         .collect()
 }
 
-/// Build the circuit, native witness, and run the prover for an arity-4 opening at
-/// `index`. The `tamper` closure may mutate the siblings (as packed-EF limbs)
+/// Build the circuit and native witness for an arity-4 opening at `index`, then
+/// run it. The `tamper` closure may mutate the siblings (as packed-EF limbs)
 /// before they are wired into the circuit.
 ///
 /// Returns the runner result: `Ok` means the in-circuit root matched the native
-/// cap (the prover then proves and verifies the W32 table, which must succeed),
-/// `Err` means the `connect` against the root surfaced a witness conflict. The
-/// circuit build is infallible here, so build/prover-setup failures panic rather
-/// than masquerade as a tamper detection.
-fn run_arity4_round_trip(
+/// cap, `Err` means the `connect` against the root surfaced a witness conflict.
+/// The circuit build is infallible here, so build failures panic rather than
+/// masquerade as a tamper detection.
+fn witness_arity4(
     index: usize,
     tamper: impl FnOnce(&mut Vec<Vec<EF>>),
-) -> Result<(), p3_circuit::CircuitError> {
+) -> Result<(Circuit<EF>, Traces<EF>), p3_circuit::CircuitError> {
     let perm = default_koalabear_poseidon2_32();
     let leaf_hash = LeafHash::new(perm.clone());
     let compress = Compress4::new(perm.clone());
@@ -174,6 +177,17 @@ fn run_arity4_round_trip(
     // recovered root diverge from the native cap, so the root `connect` surfaces a
     // witness conflict here. Return it to the caller unmodified.
     let traces = runner.run()?;
+    Ok((circuit, traces))
+}
+
+/// Witness an arity-4 opening at `index` (see [`witness_arity4`]) and, when the
+/// run succeeds, prove and verify the W32 Poseidon2 table, which must succeed.
+fn run_arity4_round_trip(
+    index: usize,
+    tamper: impl FnOnce(&mut Vec<Vec<EF>>),
+) -> Result<(), p3_circuit::CircuitError> {
+    let (circuit, traces) = witness_arity4(index, tamper)?;
+    let permutation_config = Poseidon2Config::KOALA_BEAR_D4_W32;
 
     // Prove and verify the W32 Poseidon2 table end to end. On an untampered path
     // this must succeed; a failure here is a real prover regression, not a tamper.
@@ -244,5 +258,55 @@ fn arity4_mmcs_circuit_tampered_sibling_fails() {
         ),
         "tampered arity-4 sibling must fail the in-circuit root check with a \
          witness conflict, got: {result:?}"
+    );
+}
+
+/// The executor-written preprocessing and the row-based extraction the prover falls back to
+/// must agree on an arity-4 Merkle row's two direction-bit source indices, the slots the AIR's
+/// bit lookups read. Index 27 has `pos` 3, 2, 1, so both bit columns source the `one` constant
+/// on some row and a mismatch in either slot is visible.
+#[test]
+fn arity4_bit_source_indices_match_row_based_extraction() {
+    let (circuit, traces) = witness_arity4(27, |_siblings| {}).expect("honest arity-4 opening");
+    let op_type = NpoTypeId::poseidon2_perm(Poseidon2Config::KOALA_BEAR_D4_W32);
+
+    let npo_prep: Vec<Box<dyn NpoPreprocessor<F>>> = vec![
+        Box::new(Poseidon2Preprocessor),
+        Box::new(RecomposePreprocessor::default()),
+    ];
+    let mut air_builders = poseidon2_air_builders::<_, 4>();
+    air_builders.extend(recompose_air_builders(1, false));
+    let (_, _, non_primitive_columns) = get_airs_and_degrees_with_prep::<KoalaBearConfig, _, 4>(
+        &circuit,
+        &TablePacking::new(4, 4),
+        &npo_prep,
+        &air_builders,
+        ConstraintProfile::Standard,
+    )
+    .expect("derive airs and preprocessed columns");
+    let committed = &non_primitive_columns[&op_type];
+
+    let rows = &traces
+        .non_primitive_trace::<Poseidon2Trace<F>>(&op_type)
+        .expect("W32 Poseidon2 trace")
+        .operations;
+    let extracted = extract_preprocessed_from_operations::<8, 6, F, F>(rows, 4, 4, false);
+
+    let row_width = poseidon2_preprocessed_row_width_for_air(4, 8, 6);
+    let bit_slots = |prep: &[F], row: usize| {
+        let tail = row * row_width + row_width - 4;
+        [prep[tail], prep[tail + 1]]
+    };
+    let mut nonzero = [false; 2];
+    for row in 0..rows.len() {
+        let slots = bit_slots(committed, row);
+        assert_eq!(slots, bit_slots(&extracted, row), "row {row}");
+        nonzero[0] |= slots[0] != F::ZERO;
+        nonzero[1] |= slots[1] != F::ZERO;
+    }
+    assert_eq!(
+        nonzero,
+        [true, true],
+        "both bit columns source a nonzero witness"
     );
 }

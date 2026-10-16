@@ -18,6 +18,9 @@ use p3_field::Field;
 use crate::ops::HintExecutor;
 use crate::{CircuitBuilder, CircuitBuilderError, CircuitError, ExprId, WitnessId};
 
+mod coordinate;
+pub use coordinate::BinaryCoordinateExtractor;
+
 mod sealed {
     pub trait Sealed {}
 }
@@ -76,6 +79,59 @@ impl BinaryCoordinateField for Poly64 {
 }
 
 impl<F: BinaryCoordinateField> CircuitBuilder<F> {
+    /// Reuses the expensive trace-dual and root tables for a raw coordinate.
+    /// Returned extractors share their witness lookup tables within this builder.
+    pub fn binary_coordinate_extractor(
+        &mut self,
+        column: usize,
+    ) -> Result<BinaryCoordinateExtractor<F>, CircuitBuilderError> {
+        if let Some(extractor) = self.native_coordinate_extractors.get(&column) {
+            return Ok(extractor.clone());
+        }
+        let extractor = BinaryCoordinateExtractor::new(column)?;
+        self.native_coordinate_extractors
+            .insert(column, extractor.clone());
+        Ok(extractor)
+    }
+
+    pub(crate) fn cached_native_words(
+        &mut self,
+        value: ExprId,
+        count: usize,
+    ) -> Result<Option<Vec<ExprId>>, CircuitBuilderError> {
+        if let Some(constant) = self.constant_value(value) {
+            let raw = constant.to_raw_coordinates();
+            let bits = count * 16;
+            if bits < 128 && raw >> bits != 0 {
+                return Err(CircuitBuilderError::InvalidDimension {
+                    expected: bits,
+                    actual: 128 - raw.leading_zeros() as usize,
+                });
+            }
+            let words = (0..count)
+                .map(|i| {
+                    let raw = (raw >> (16 * i)) & 0xffff;
+                    self.define_const(
+                        F::from_raw_coordinates(raw).expect("a sixteen-coordinate word"),
+                    )
+                })
+                .collect();
+            self.check_construction_limits()?;
+            return Ok(Some(words));
+        }
+        if let Some(known) = self.native_words(value) {
+            let mut words = known.to_vec();
+            for &high in words.iter().skip(count) {
+                self.connect(high, ExprId::ZERO);
+            }
+            words.resize(count, ExprId::ZERO);
+            self.check_construction_limits()?;
+            self.record_native_words(value, &words);
+            return Ok(Some(words));
+        }
+        Ok(None)
+    }
+
     /// Decomposes a value into low-first Boolean raw coordinates.
     ///
     /// Reconstruction binds the hint to the input. A partial decomposition
@@ -163,6 +219,49 @@ impl<F: BinaryCoordinateField> CircuitBuilder<F> {
         self.record_native_coordinates(sum, bits);
         Ok(sum)
     }
+
+    /// Returns `1` when `value` is zero and `0` otherwise.
+    ///
+    /// A hint supplies `inverse`, the inverse of a nonzero `value` and zero
+    /// otherwise. The result is `z = value * inverse + 1`, which is
+    /// `1 - value * inverse` in characteristic two, under the constraint
+    /// `value * z = 0`. A nonzero `value` forces `z = 0`, and a zero `value`
+    /// gives `z = 1` whatever the hint, so `z` is Boolean and bound to `value`
+    /// without trusting the hint. Costs one hinted witness and two gates; a
+    /// constant `value` costs nothing. IDs must belong to this builder's graph.
+    pub fn binary_is_zero(&mut self, value: ExprId) -> Result<ExprId, CircuitBuilderError> {
+        self.check_construction_limits()?;
+        if let Some(constant) = self.constant_value(value) {
+            return Ok(if constant == F::ZERO {
+                self.define_const(F::ONE)
+            } else {
+                ExprId::ZERO
+            });
+        }
+        let inverse = self
+            .push_unconstrained_op(vec![vec![value]], 1, InverseOrZeroHint, "binary_is_zero")
+            .2[0]
+            .ok_or(CircuitBuilderError::MissingOutput)?;
+        self.binary_is_zero_with_inverse(value, inverse)
+    }
+
+    /// Returns `z = value * inverse + 1` under the constraint `value * z = 0`.
+    ///
+    /// For any `inverse`, a nonzero `value` has a satisfying witness only when
+    /// `inverse` is its inverse, giving `z = 0`, and a zero `value` gives
+    /// `z = 1`.
+    pub(crate) fn binary_is_zero_with_inverse(
+        &mut self,
+        value: ExprId,
+        inverse: ExprId,
+    ) -> Result<ExprId, CircuitBuilderError> {
+        let one = self.define_const(F::ONE);
+        let zero = self.mul_add(value, inverse, one);
+        let product = self.mul(value, zero);
+        self.assert_zero(product);
+        self.check_construction_limits()?;
+        Ok(zero)
+    }
 }
 
 const fn check_width<F: BinaryCoordinateField>(n_bits: usize) -> Result<(), CircuitBuilderError> {
@@ -228,5 +327,159 @@ impl<F: BinaryCoordinateField> HintExecutor<F> for CoordinateDecompositionHint {
 
     fn boxed(&self) -> Box<dyn HintExecutor<F>> {
         Box::new(self.clone())
+    }
+}
+
+/// Writes the low-first raw sixteen-coordinate words of one scalar.
+#[derive(Clone, Debug)]
+pub(crate) struct WordSplitHint;
+
+impl<F: BinaryCoordinateField> HintExecutor<F> for WordSplitHint {
+    fn execute(
+        &self,
+        inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        witness: &mut [Option<F>],
+    ) -> Result<(), CircuitError> {
+        if inputs.len() != 1 {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "WordSplitHint".into(),
+                expected: 1,
+                got: inputs.len(),
+            });
+        }
+        if outputs.len() > F::COORDINATE_BITS / 16 {
+            return Err(CircuitError::BinaryDecompositionTooManyBits {
+                expected: F::COORDINATE_BITS,
+                n_bits: outputs.len().saturating_mul(16),
+            });
+        }
+        let input = inputs[0];
+        let value = witness
+            .get(input.0 as usize)
+            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: input })?
+            .ok_or(CircuitError::WitnessNotSet { witness_id: input })?
+            .to_raw_coordinates();
+        for (j, &output) in outputs.iter().enumerate() {
+            let word = F::from_raw_coordinates(value >> (16 * j) & 0xffff)
+                .expect("a sixteen-coordinate word fits every carrier with a word");
+            let slot = witness
+                .get_mut(output.0 as usize)
+                .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: output })?;
+            if let Some(existing) = slot {
+                if *existing != word {
+                    return Err(CircuitError::WitnessConflict {
+                        witness_id: output,
+                        existing: format!("{existing:?}"),
+                        new: format!("{word:?}"),
+                        expr_ids: vec![],
+                    });
+                }
+            } else {
+                *slot = Some(word);
+            }
+        }
+        Ok(())
+    }
+
+    fn boxed(&self) -> Box<dyn HintExecutor<F>> {
+        Box::new(self.clone())
+    }
+}
+
+/// Writes the inverse of a nonzero scalar, or zero for a zero scalar.
+#[derive(Clone, Debug)]
+struct InverseOrZeroHint;
+
+impl<F: BinaryCoordinateField> HintExecutor<F> for InverseOrZeroHint {
+    fn execute(
+        &self,
+        inputs: &[WitnessId],
+        outputs: &[WitnessId],
+        witness: &mut [Option<F>],
+    ) -> Result<(), CircuitError> {
+        let &[input] = inputs else {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "InverseOrZeroHint".into(),
+                expected: 1,
+                got: inputs.len(),
+            });
+        };
+        let &[output] = outputs else {
+            return Err(CircuitError::UnconstrainedOpInputLengthMismatch {
+                op: "InverseOrZeroHint outputs".into(),
+                expected: 1,
+                got: outputs.len(),
+            });
+        };
+        let inverse = witness
+            .get(input.0 as usize)
+            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: input })?
+            .ok_or(CircuitError::WitnessNotSet { witness_id: input })?
+            .try_inverse()
+            .unwrap_or(F::ZERO);
+        let slot = witness
+            .get_mut(output.0 as usize)
+            .ok_or(CircuitError::WitnessIdOutOfBounds { witness_id: output })?;
+        match slot {
+            Some(existing) if *existing != inverse => Err(CircuitError::WitnessConflict {
+                witness_id: output,
+                existing: format!("{existing:?}"),
+                new: format!("{inverse:?}"),
+                expr_ids: vec![],
+            }),
+            Some(_) => Ok(()),
+            None => {
+                *slot = Some(inverse);
+                Ok(())
+            }
+        }
+    }
+
+    fn boxed(&self) -> Box<dyn HintExecutor<F>> {
+        Box::new(self.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs the zero test with a chosen inverse and a claimed result, both
+    /// public, so a forged hint reaches the constraints.
+    fn accepts<F: BinaryCoordinateField>(value: F, inverse: F, claimed: F) -> bool {
+        let mut builder = CircuitBuilder::<F>::new();
+        let inputs = [(); 3].map(|()| builder.public_input());
+        let zero = builder
+            .binary_is_zero_with_inverse(inputs[0], inputs[1])
+            .unwrap();
+        builder.connect(zero, inputs[2]);
+        let circuit = builder.build().unwrap();
+        let mut runner = circuit.runner();
+        runner
+            .set_public_inputs(&[value, inverse, claimed])
+            .and_then(|()| runner.run())
+            .is_ok()
+    }
+
+    fn rejects_forged_inverses<F: BinaryCoordinateField>(nonzero: u128) {
+        let value = F::from_raw_coordinates(nonzero).unwrap();
+        let inverse = value.inverse();
+        let other = value + F::ONE;
+        assert!(accepts(value, inverse, F::ZERO));
+        // No inverse but the true one satisfies the constraint for a nonzero value.
+        assert!(!accepts(value, F::ZERO, F::ONE));
+        assert!(!accepts(value, F::ONE, other));
+        assert!(!accepts(value, inverse, F::ONE));
+        for inverse in [F::ZERO, F::ONE, inverse] {
+            assert!(accepts(F::ZERO, inverse, F::ONE));
+            assert!(!accepts(F::ZERO, inverse, F::ZERO));
+        }
+    }
+
+    #[test]
+    fn zero_test_rejects_forged_inverses() {
+        rejects_forged_inverses::<BinaryField128>(0x8000_0000_0000_0000_0000_0000_0001_0000);
+        rejects_forged_inverses::<Poly64>(0x8000_0000_0001_0000);
     }
 }

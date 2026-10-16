@@ -28,6 +28,10 @@ mod binary_grouped_boolean_pcs;
 mod binary_grouped_boolean_trace;
 #[path = "../binary_grouped_boolean_trusted_portable.rs"]
 mod binary_grouped_boolean_trusted_portable;
+#[path = "../binary_mixed_whir_native_authority.rs"]
+mod binary_mixed_whir_native_authority;
+#[path = "../prepared_binary_mixed_whir.rs"]
+mod prepared_binary_mixed_whir;
 
 #[path = "../common/test_config.rs"]
 mod test_config;

@@ -5,13 +5,12 @@ use core::hash::Hash;
 
 use p3_binary_field::{BinaryField128, TowerLevel};
 use p3_challenger::{CanObserve, CanSampleUniformBits, FieldChallenger, GrindingChallenger};
-use p3_circuit::ops::{BinaryTower128Target, ByteHash};
+use p3_circuit::ops::{BinaryTower128Target, ByteHash, NativeTower128Target};
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::{ExtensionField, Field, PrimeField64};
-use p3_merkle_tree::{MerkleCap, MerkleTreeMmcs};
+use p3_merkle_tree::MerkleCap;
 use p3_multilinear_util::point::Point;
 use p3_sumcheck::{OpeningBatch, OpeningProtocol};
-use p3_symmetric::{CryptographicHasher, PseudoCompressionFunction};
 use p3_whir::WhirConfig;
 
 use super::trace_native::route;
@@ -20,7 +19,7 @@ use super::trace_routing::{TraceEntry, TraceRouting};
 use super::whir_plan::invalid;
 use super::{
     BinaryBooleanWhirInputShape, BinaryBooleanWhirProofTargets, BinaryBooleanWhirVerifier,
-    NativeBinaryBooleanWhirInput,
+    ByteDigestMmcs, MerkleArity, NativeBinaryBooleanWhirInput, NativeBooleanWhirProofTargets,
 };
 use crate::verifier::{InputResourceUsage, VerificationError, VerifierLimits};
 use crate::{BinaryQueryContinuation, BinaryTower128Challenger};
@@ -37,6 +36,13 @@ pub struct BinaryBooleanWhirTraceProofTargets {
     /// Protocol batch order, current values then next values in each batch.
     pub values: Vec<BinaryTower128Target>,
     pub opening: BinaryBooleanWhirProofTargets,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeBooleanWhirTraceProofTargets {
+    /// Protocol batch order, current values then next values in each batch.
+    pub values: Vec<NativeTower128Target>,
+    pub opening: NativeBooleanWhirProofTargets,
 }
 
 /// Pins the complete trace schedule, including unopened table placement, and
@@ -104,6 +110,24 @@ impl BinaryBooleanWhirTraceInputShape {
             opening: self.opening.allocate_targets::<BF, EF>(b)?,
         })
     }
+
+    /// One scalar input per opened value, then the packed opening's native inputs.
+    pub fn allocate_native_targets(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+    ) -> Result<NativeBooleanWhirTraceProofTargets, VerificationError> {
+        let values = (0..self.value_count)
+            .map(|_| {
+                let value = b.alloc_private_input("native binary WHIR trace value");
+                b.check_construction_limits()?;
+                Ok(b.native_tower128_from_expr(value))
+            })
+            .collect::<Result<_, VerificationError>>()?;
+        Ok(NativeBooleanWhirTraceProofTargets {
+            values,
+            opening: self.opening.allocate_native_targets(b)?,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -135,9 +159,28 @@ impl NativeBinaryBooleanWhirTraceInput {
         values.extend(self.opening.private_values::<EF>(&expected.opening)?);
         Ok(values)
     }
+
+    pub fn private_native_values(
+        &self,
+        expected: &BinaryBooleanWhirTraceInputShape,
+    ) -> Result<Vec<BinaryField128>, VerificationError> {
+        if &self.shape != expected {
+            return Err(invalid(
+                "binary WHIR trace input belongs to another verifier",
+            ));
+        }
+        let mut values: Vec<_> = self
+            .values
+            .iter()
+            .map(|&v| BinaryField128::from_repr(v))
+            .collect();
+        values.extend(self.opening.private_native_values(&expected.opening)?);
+        Ok(values)
+    }
 }
 
 impl BinaryBooleanWhirTraceVerifier {
+    /// [`Self::with_limits`] for pairwise trees under the default limits.
     pub fn new<C>(
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
         protocol: OpeningProtocol,
@@ -151,15 +194,19 @@ impl BinaryBooleanWhirTraceVerifier {
             config,
             protocol,
             hash,
+            MerkleArity::Two,
             cap_height,
             &VerifierLimits::default(),
         )
     }
 
+    /// Plans the routed bit openings over a tree whose nodes compress `arity`
+    /// digests and whose cap replaces its top `cap_height` levels.
     pub fn with_limits<C>(
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
         protocol: OpeningProtocol,
         hash: ByteHash,
+        arity: MerkleArity,
         cap_height: usize,
         limits: &VerifierLimits,
     ) -> Result<Self, VerificationError>
@@ -176,6 +223,7 @@ impl BinaryBooleanWhirTraceVerifier {
             config,
             plan.specs.clone(),
             hash,
+            arity,
             cap_height,
             limits,
         )?;
@@ -190,6 +238,11 @@ impl BinaryBooleanWhirTraceVerifier {
 
     pub const fn input_resource_usage(&self) -> InputResourceUsage {
         self.usage
+    }
+
+    /// The roots of the packed opening's cap.
+    pub(crate) const fn cap_roots(&self) -> usize {
+        self.child.cap_roots()
     }
 
     pub fn input_shape(&self) -> BinaryBooleanWhirTraceInputShape {
@@ -315,19 +368,75 @@ impl BinaryBooleanWhirTraceVerifier {
         Ok((self.routing.evals(&proof.values), ch))
     }
 
-    pub(crate) fn check_native_structure_with_usage<C, H, Co>(
+    /// The native carrier verifies the column-batched route of one table only, over a hash
+    /// with a native circuit.
+    pub(crate) fn check_native_circuit_support(&self) -> Result<(), VerificationError> {
+        self.routing.native_run()?;
+        self.child.check_native_circuit_support()
+    }
+
+    pub fn observe_commitment_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: &mut BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+    ) -> Result<(), VerificationError> {
+        self.child.observe_commitment_native(b, ch, cap)
+    }
+
+    /// Native target shapes at `points`: the opened values against the routing plan, then the
+    /// packed opening's targets.
+    pub(crate) fn check_native_targets(
+        &self,
+        b: &CircuitBuilder<BinaryField128>,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<NativeTower128Target>],
+        proof: &NativeBooleanWhirTraceProofTargets,
+    ) -> Result<(), VerificationError> {
+        self.routing
+            .check_points(points.iter().map(Vec::len), proof.values.len())?;
+        self.child.check_native_targets(b, cap, &proof.opening)
+    }
+
+    /// Native carrier counterpart of [`Self::verify_at`] for the column-batched route: binds
+    /// the opened values to one column-batched ring claim per opening, runs every ring-switch
+    /// round, authenticates the packed opening, and returns the opened values in protocol
+    /// order with the exact challenger after the packed WHIR opening.
+    pub fn verify_at_native(
+        &self,
+        b: &mut CircuitBuilder<BinaryField128>,
+        ch: BinaryTower128Challenger,
+        cap: &[Vec<ExprId>],
+        points: &[Vec<NativeTower128Target>],
+        proof: &NativeBooleanWhirTraceProofTargets,
+    ) -> Result<
+        (
+            Vec<OpeningBatch<NativeTower128Target>>,
+            BinaryTower128Challenger,
+        ),
+        VerificationError,
+    > {
+        self.check_native_circuit_support()?;
+        self.check_native_targets(b, cap, points, proof)?;
+        let (readings, ch) = self.routing.bind_native(b, ch, points, &proof.values)?;
+        let ch = self
+            .child
+            .verify_readings_native(b, ch, cap, &readings, &proof.opening)?;
+        Ok((self.routing.evals(&proof.values), ch))
+    }
+
+    pub(crate) fn check_native_structure_with_usage<C, M>(
         &self,
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
-        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, H, Co>,
+        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, M>,
         usage: &mut InputResourceUsage,
     ) -> Result<(), VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
-        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<BinaryField128>,
     {
         self.routing
             .check_points(points.iter().map(Point::num_variables), proof.values.len())?;
@@ -342,19 +451,18 @@ impl BinaryBooleanWhirTraceVerifier {
 
     /// Checks both child proof shapes before replaying the native column route.
     /// Restored paths and captured readings supply witnesses, not authority.
-    pub fn import_native<C, Ch, H, Co>(
+    pub fn import_native<C, Ch, M>(
         &self,
         config: &WhirConfig<BinaryField128, BinaryField128, C>,
-        mmcs: &MerkleTreeMmcs<BinaryField128, u8, H, Co, 2, 32>,
+        mmcs: &M,
         commitment: &MerkleCap<BinaryField128, [u8; 32]>,
         points: &[Point<BinaryField128>],
-        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, H, Co>,
+        proof: &super::ByteMerkleBooleanWhirTraceProof<BinaryField128, M>,
         target_challenger: &mut Ch,
     ) -> Result<NativeBinaryBooleanWhirTraceInput, VerificationError>
     where
         C: FieldChallenger<BinaryField128> + GrindingChallenger<Witness = BinaryField128>,
-        H: CryptographicHasher<BinaryField128, [u8; 32]> + Sync,
-        Co: PseudoCompressionFunction<[u8; 32], 2> + Sync,
+        M: ByteDigestMmcs<BinaryField128>,
         Ch: Clone
             + FieldChallenger<BinaryField128>
             + CanSampleUniformBits<BinaryField128>
@@ -371,7 +479,7 @@ impl BinaryBooleanWhirTraceVerifier {
         )?;
         let mut ch = target_challenger.clone();
         let plan = &self.routing.plan;
-        let captured = route(
+        let captured = route::<BinaryField128, BinaryField128, _>(
             plan.num_variables,
             &plan.protocol,
             points,
@@ -501,7 +609,7 @@ mod tests {
             // Also isolate the Boolean wrapper's checkpoint, before ring replay.
             let mut entry = Ch::from_hasher(vec![7, 19, 13], keccak::byte_hash());
             pcs.observe_commitment(&cap, &mut entry);
-            let captured = route(
+            let captured = route::<E, E, _>(
                 recursive.routing.plan.num_variables,
                 &recursive.routing.plan.protocol,
                 &points,

@@ -55,3 +55,34 @@ fn scalar_interpolation_matches_native_at_nodes_and_dense_challenges() {
         }
     }
 }
+
+#[test]
+fn native_scalar_interpolation_has_linear_witness_growth() {
+    let degree = 31;
+    let recursive = Binary128SumcheckInterpolator::new(degree).unwrap();
+    let mut b = CircuitBuilder::<F>::new();
+    let claim = scalar(&mut b);
+    let values = (0..degree).map(|_| scalar(&mut b)).collect::<Vec<_>>();
+    let challenge = scalar(&mut b);
+    let expected = scalar(&mut b);
+    let actual = recursive
+        .reduce_claim_native(&mut b, &claim, &values, &challenge)
+        .unwrap();
+    b.connect(actual.as_expr(), expected.as_expr());
+    let circuit = b.build().unwrap();
+    assert!(
+        usize::try_from(circuit.witness_count).unwrap() <= 8 * degree + 32,
+        "{} witnesses at degree {degree}",
+        circuit.witness_count
+    );
+    let claim = F::from_repr(19);
+    let values = (0..degree)
+        .map(|i| F::from_repr(i as u128 + 7))
+        .collect::<Vec<_>>();
+    let challenge = F::from_repr(0x8123456789abcdef);
+    let expected = RoundPolyInterpolator::<F>::new(degree).eval(&values, claim, challenge);
+    let public = [vec![claim], values, vec![challenge, expected]].concat();
+    let mut runner = circuit.runner();
+    runner.set_public_inputs(&public).unwrap();
+    runner.run_witness().unwrap();
+}

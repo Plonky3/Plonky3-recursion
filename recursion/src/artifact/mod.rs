@@ -16,15 +16,19 @@ pub use binary_native::{
     BinaryNativeConfig, BinaryNativeGroupedAuthority, BinaryNativeGroupedBooleanTraceAuthority,
     BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedBooleanTraceProver,
     BinaryNativeGroupedConfig, BinaryNativeGroupedPcsParameters, BinaryNativeGroupedProver,
-    BinaryNativeGroupedVerifierSpec, BinaryNativeHash, BinaryNativePcsParameters,
+    BinaryNativeGroupedVerifierSpec, BinaryNativeHash, BinaryNativeMixedWhirAuthority,
+    BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters, BinaryNativeMixedWhirProver,
+    BinaryNativePcsParameters, BinaryNativePolyMixedWhirAuthority, BinaryNativePolyMixedWhirConfig,
+    BinaryNativePolyMixedWhirPcsParameters, BinaryNativePolyMixedWhirProver,
     BinaryNativePolyWhirAuthority, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
     BinaryNativePolyWhirPcsParameters, BinaryNativePolyWhirProver, BinaryNativeProver,
     BinaryNativeVerifierSpec, BinaryNativeWhirAuthority, BinaryNativeWhirConfig,
     BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters, BinaryNativeWhirProver,
     CanonicalBinaryStatement, VerifiedBinaryNativeBooleanTraceProof,
     VerifiedBinaryNativeBooleanWhirTraceProof, VerifiedBinaryNativeGroupedBooleanTraceProof,
-    VerifiedBinaryNativeGroupedProof, VerifiedBinaryNativePolyWhirProof, VerifiedBinaryNativeProof,
-    VerifiedBinaryNativeWhirProof,
+    VerifiedBinaryNativeGroupedProof, VerifiedBinaryNativeMixedWhirProof,
+    VerifiedBinaryNativePolyMixedWhirProof, VerifiedBinaryNativePolyWhirProof,
+    VerifiedBinaryNativeProof, VerifiedBinaryNativeWhirProof,
 };
 use p3_circuit::{StatementError, StatementSchema};
 use p3_circuit_prover::{BatchStarkProof, CircuitVerifier};

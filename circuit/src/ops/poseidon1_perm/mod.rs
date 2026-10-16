@@ -1,8 +1,7 @@
 //! Poseidon1 permutation non-primitive operation (one Poseidon1 call per row).
 //!
 //! Supports standard hashing, sponge chaining (`new_start`), and Merkle-path
-//! verification (`merkle_path`/`mmcs_bit`) with leaf-index accumulation
-//! (`mmcs_index_sum`).
+//! verification (`merkle_path`/`mmcs_bit`).
 
 mod builder;
 pub mod call;

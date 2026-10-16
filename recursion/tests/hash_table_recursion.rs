@@ -420,7 +420,6 @@ mod through_the_fri_backend {
                 inputs: ordinary.into_iter().map(Some).collect(),
                 out_ctl: vec![true; CFG.rate_ext()],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
                 absorb_len: 0,
             })
             .unwrap();

@@ -6,23 +6,40 @@ use p3_circuit::ops::binary_host::BinaryCircuitHost;
 use p3_circuit::{CircuitBuilder, ExprId};
 use p3_field::Field;
 use p3_sumcheck::strategy::VariableOrder;
+use p3_util::reverse_bits_len;
 
 use super::gadgets::{next_eval_using, reduce_sumcheck_using};
 use super::verifier::observe_cap_with_host;
-use super::whir_gadgets::{eval_coefficients_using, eval_multilinear_using, select_eval_using};
+use super::whir_gadgets::{
+    Powers, eval_coefficients_using, eval_multilinear_using, eval_power_table_using,
+    select_eval_using,
+};
 use super::whir_plan::{FoldShape, OracleSite, WhirPlan, invalid};
-use super::{BinaryWhirProofTargets, BinaryWhirSumcheckTargets};
+use super::{BinaryWhirProofTargets, BinaryWhirSumcheckTargets, MerkleArity};
 use crate::BinaryTower128Challenger;
 use crate::verifier::VerificationError;
 use crate::verifier::binary_field_policy::{BinaryOracleWord, BinaryWhirPolicy};
 enum Weight<T> {
     Eq(Vec<T>),
-    Next {
-        selector: Vec<T>,
-        point: Vec<T>,
-        selector_last: bool,
-    },
     Select(Vec<T>),
+}
+/// Terms of the initial claim that take consecutive powers of the batching
+/// challenge `alpha`.
+pub(super) enum Batched<T> {
+    /// Columns of one opening and kind. A column at selector slot `c` has
+    /// weight `eq(c, r_sel) * w(point, r_x)`, with `w` the equality or the
+    /// successor weight, so the group's weight is `w(point, r_x)` times the
+    /// slot table of `alpha^k` at the `k`-th column's slot.
+    Columns {
+        point: Vec<T>,
+        next: bool,
+        selector_variables: usize,
+        /// Each column's selector slot, bit-reversed under prefix order to
+        /// match the reversed selector coordinates it is folded against.
+        slots: Vec<usize>,
+    },
+    /// An initial out-of-domain point over every variable.
+    Point(Vec<T>),
 }
 struct Term<T> {
     variables: usize,
@@ -69,9 +86,8 @@ where
     P::observe_seed::<H>(b, &mut ch, &p.engine_seed)?;
     P::observe_seed::<H>(b, &mut ch, &p.batching_seed)?;
     let alpha = P::sample::<H>(b, &mut ch)?;
-    let mut power = P::constant(b, 1)?;
-    let mut claim = P::constant(b, 0)?;
-    let mut terms = Vec::new();
+    let mut values = Vec::new();
+    let mut batched = Vec::new();
     for placement in &p.placements {
         for (opening, (table, request)) in p
             .protocol
@@ -79,41 +95,41 @@ where
             .enumerate()
             .filter(|(_, (table, _))| *table == placement.idx())
         {
+            let point = &points[opening];
+            let selector_variables = p.variables.checked_sub(point.len()).ok_or_else(|| {
+                invalid("binary WHIR opening point exceeds the committed variables")
+            })?;
             for (next, columns, evals) in [
                 (false, request.current(), proof.evals[opening].current()),
                 (true, request.next(), proof.evals[opening].next()),
             ] {
+                let mut slots = Vec::with_capacity(columns.len());
                 for (&column, eval) in columns.iter().zip(evals) {
                     let selector = &placement.selectors()[column];
-                    let selector = (0..selector.num_variables())
-                        .rev()
-                        .map(|bit| P::constant(b, ((selector.index() >> bit) & 1) as u128))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let point = points[opening].clone();
-                    let weight = if next {
-                        Weight::Next {
-                            selector,
-                            point,
-                            selector_last: p.order == VariableOrder::Prefix,
-                        }
+                    if selector.num_variables() != selector_variables {
+                        return Err(invalid(
+                            "binary WHIR selector does not complete the opening point",
+                        ));
+                    }
+                    // Prefix order stores bit-reversed slots; the reversed
+                    // slot against the reversed selector coordinates is the
+                    // same weight and keeps consecutive columns adjacent.
+                    slots.push(if p.order == VariableOrder::Prefix {
+                        reverse_bits_len(selector.index(), selector_variables)
                     } else {
-                        let lifted = if p.order == VariableOrder::Prefix {
-                            point.into_iter().chain(selector).collect()
-                        } else {
-                            selector.into_iter().chain(point).collect()
-                        };
-                        Weight::Eq(lifted)
-                    };
-                    let value = P::mul(b, &power, eval);
-                    claim = P::add(b, &claim, &value);
-                    terms.push(Term {
-                        variables: p.variables,
-                        coefficient: power.clone(),
-                        weight,
+                        selector.index()
                     });
-                    power = P::mul(b, &power, &alpha);
-                    b.check_construction_limits()?;
+                    values.push(eval.clone());
                 }
+                if !slots.is_empty() {
+                    batched.push(Batched::Columns {
+                        point: point.clone(),
+                        next,
+                        selector_variables,
+                        slots,
+                    });
+                }
+                b.check_construction_limits()?;
             }
             // The table index determines placement order; the prescribed
             // point and values retain their protocol opening indices.
@@ -121,16 +137,10 @@ where
         }
     }
     for (point, answer) in virtual_points.into_iter().zip(&proof.initial_ood_answers) {
-        let value = P::mul(b, &power, answer);
-        claim = P::add(b, &claim, &value);
-        terms.push(Term {
-            variables: p.variables,
-            coefficient: power.clone(),
-            weight: Weight::Eq(point),
-        });
-        power = P::mul(b, &power, &alpha);
-        b.check_construction_limits()?;
+        values.push(answer.clone());
+        batched.push(Batched::Point(point));
     }
+    let claim = horner_using::<P, CF>(b, &values, &alpha)?;
     let (mut claim, mut last_r) = fold_using::<P, H, CF>(
         b,
         &mut ch,
@@ -142,6 +152,7 @@ where
     let mut all_r = last_r.clone();
     let mut previous_cap = cap.to_vec();
     let mut checks = Vec::new();
+    let mut terms = Vec::new();
     for (i, (site, round)) in p.sites.iter().zip(&proof.rounds).enumerate() {
         observe_cap_with_host::<H, CF>(b, &mut ch, &round.cap)?;
         let mut ood_points = Vec::new();
@@ -191,8 +202,7 @@ where
                     .map(|pair| (pair, true)),
             )
         {
-            let weighted = P::mul(b, &power, value);
-            claim = P::add(b, &claim, &weighted);
+            claim = P::mul_add(b, &power, value, &claim);
             terms.push(Term {
                 variables: site.variables,
                 coefficient: power.clone(),
@@ -254,29 +264,14 @@ where
             "binary WHIR trusted fold arities do not close the domain",
         ));
     }
-    let mut weight = P::constant(b, 0)?;
+    let mut weight = batched_weight_using::<P, CF>(b, p.order, batched, &all_r, &alpha)?;
     for term in terms {
         let row = oriented(&all_r[all_r.len() - term.variables..], p.order);
         let value = match term.weight {
             Weight::Eq(point) => P::eq_eval(b, &point, &row)?,
             Weight::Select(point) => select_eval_using::<P, CF>(b, &point, &row)?,
-            Weight::Next {
-                selector,
-                point,
-                selector_last,
-            } => {
-                let (selector_row, local_row) = if selector_last {
-                    (&row[point.len()..], &row[..point.len()])
-                } else {
-                    (&row[..selector.len()], &row[selector.len()..])
-                };
-                let selector_weight = P::eq_eval(b, &selector, selector_row)?;
-                let next_weight = next_eval_using::<P, CF>(b, &point, local_row)?;
-                P::mul(b, &selector_weight, &next_weight)
-            }
         };
-        let scaled = P::mul(b, &term.coefficient, &value);
-        weight = P::add(b, &weight, &scaled);
+        weight = P::mul_add(b, &term.coefficient, &value, &weight);
         b.check_construction_limits()?;
     }
     let closing_r = oriented(&closing_r, p.order);
@@ -284,27 +279,249 @@ where
     let expected = P::mul(b, &weight, &final_value);
     P::assert_equal(b, &claim, &expected);
     for check in checks {
-        for ((row, path), index) in check.rows.iter().zip(check.paths).zip(&check.indices) {
-            let mut bytes = Vec::new();
-            for value in row {
-                bytes.extend(P::oracle_bytes::<H>(b, value, check.mode)?);
+        authenticate_using::<P, H, CF>(b, p.hash, p.arity, &check)?;
+    }
+    Ok((proof.evals.clone(), ch))
+}
+
+fn authenticate_using<P, H, CF>(
+    b: &mut CircuitBuilder<CF>,
+    hash: p3_circuit::ops::ByteHash,
+    arity: MerkleArity,
+    check: &Authentication<'_, P::ChallengeTarget>,
+) -> Result<(), VerificationError>
+where
+    CF: Field + Eq + Hash,
+    H: BinaryCircuitHost<CF>,
+    P: BinaryWhirPolicy<CF>,
+{
+    let cap_height = check.cap.len().ilog2() as usize;
+    for (range, depth) in check.site.queries.groups() {
+        if arity == MerkleArity::Two
+            && check.site.log_height == check.site.queries.index_bits()
+            && depth > cap_height
+        {
+            let low = check.site.log_height - depth;
+            let mut layer: Vec<_> = (0..range.len())
+                .map(|s| check.paths[range.start + (s ^ 1)][low].clone())
+                .collect();
+            for (s, root) in layer.iter().enumerate() {
+                let q = range.start + s;
+                authenticate_row_using::<P, H, CF>(
+                    b,
+                    hash,
+                    arity,
+                    &check.rows[q],
+                    check.mode,
+                    low,
+                    &check.indices[q][..low],
+                    &check.paths[q][..low],
+                    core::slice::from_ref(root),
+                )?;
+            }
+            for k in 0..depth - cap_height {
+                // Bind every redundant upper sibling, including paths that did
+                // not supply a representative root. No proof input is discarded.
+                for s in 0..range.len() {
+                    let expected = &layer[(s >> k) ^ 1];
+                    for (&actual, &expected) in
+                        check.paths[range.start + s][low + k].iter().zip(expected)
+                    {
+                        b.connect(actual, expected);
+                    }
+                    b.check_construction_limits()?;
+                }
+                layer = layer
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| {
+                        let digest = H::compress(b, hash, &pair[0], &pair[1])?;
+                        b.check_construction_limits()?;
+                        Ok(digest)
+                    })
+                    .collect::<Result<_, VerificationError>>()?;
+            }
+            for (actual, expected) in layer.iter().zip(&check.cap) {
+                for (&actual, &expected) in actual.iter().zip(expected) {
+                    b.connect(actual, expected);
+                }
                 b.check_construction_limits()?;
             }
-            for &limb in path.iter().flatten() {
-                H::decompose_word(b, limb, 16)?;
+        } else {
+            for q in range {
+                authenticate_row_using::<P, H, CF>(
+                    b,
+                    hash,
+                    arity,
+                    &check.rows[q],
+                    check.mode,
+                    check.site.log_height,
+                    &check.indices[q],
+                    &check.paths[q],
+                    &check.cap,
+                )?;
             }
-            b.verify_byte_hash_mmcs_opening_bytes_with_host::<H>(
-                p.hash,
-                &[bytes],
-                &[1usize << check.site.log_height],
-                index,
-                path,
-                &check.cap,
-            )?;
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Each opening keeps its trusted geometry and proof inputs explicit."
+)]
+fn authenticate_row_using<P, H, CF>(
+    b: &mut CircuitBuilder<CF>,
+    hash: p3_circuit::ops::ByteHash,
+    arity: MerkleArity,
+    row: &[P::ChallengeTarget],
+    mode: BinaryOracleWord,
+    log_height: usize,
+    index: &[ExprId],
+    path: &[Vec<ExprId>],
+    cap: &[Vec<ExprId>],
+) -> Result<(), VerificationError>
+where
+    CF: Field + Eq + Hash,
+    H: BinaryCircuitHost<CF>,
+    P: BinaryWhirPolicy<CF>,
+{
+    // Every value of a row shares one width, so either all of them
+    // split into words or none does.
+    let words = row
+        .iter()
+        .map(|value| P::oracle_words(b, value, mode))
+        .collect::<Result<Option<Vec<_>>, _>>()?;
+    let mut bytes = Vec::new();
+    if words.is_none() {
+        for value in row {
+            bytes.extend(P::oracle_bytes::<H>(b, value, mode)?);
             b.check_construction_limits()?;
         }
     }
-    Ok((proof.evals.clone(), ch))
+    for sibling in path {
+        H::constrain_sibling(b, sibling)?;
+    }
+    let heights = [1usize << log_height];
+    match (words, arity) {
+        (Some(words), MerkleArity::Two) => b.verify_byte_hash_mmcs_opening_words_with_host::<H>(
+            hash,
+            &[words.concat()],
+            &heights,
+            index,
+            path,
+            cap,
+        )?,
+        (Some(words), MerkleArity::Four) => b
+            .verify_byte_hash_mmcs_opening_words_with_host_arity::<H, 4>(
+                hash,
+                &[words.concat()],
+                &heights,
+                index,
+                path,
+                cap,
+            )?,
+        (None, MerkleArity::Two) => b.verify_byte_hash_mmcs_opening_bytes_with_host::<H>(
+            hash,
+            &[bytes],
+            &heights,
+            index,
+            path,
+            cap,
+        )?,
+        (None, MerkleArity::Four) => b
+            .verify_byte_hash_mmcs_opening_bytes_with_host_arity::<H, 4>(
+                hash,
+                &[bytes],
+                &heights,
+                index,
+                path,
+                cap,
+            )?,
+    }
+    b.check_construction_limits()?;
+    Ok(())
+}
+
+/// `sum_i x^i * values[i]`, accumulated from the last value.
+pub(super) fn horner_using<P, CF>(
+    b: &mut CircuitBuilder<CF>,
+    values: &[P::ChallengeTarget],
+    x: &P::ChallengeTarget,
+) -> Result<P::ChallengeTarget, VerificationError>
+where
+    CF: Field + Eq + Hash,
+    P: BinaryWhirPolicy<CF>,
+{
+    let mut values = values.iter().rev();
+    let Some(last) = values.next() else {
+        return Ok(P::constant(b, 0)?);
+    };
+    let mut sum = last.clone();
+    for value in values {
+        sum = P::mul_add(b, &sum, x, value);
+        b.check_construction_limits()?;
+    }
+    Ok(sum)
+}
+
+/// The weight of the initial claim at the folded point `all_r`: every
+/// batched item's weight times `alpha` to the number of columns before it,
+/// accumulated from the last item.
+pub(super) fn batched_weight_using<P, CF>(
+    b: &mut CircuitBuilder<CF>,
+    order: VariableOrder,
+    batched: Vec<Batched<P::ChallengeTarget>>,
+    all_r: &[P::ChallengeTarget],
+    alpha: &P::ChallengeTarget,
+) -> Result<P::ChallengeTarget, VerificationError>
+where
+    CF: Field + Eq + Hash,
+    P: BinaryWhirPolicy<CF>,
+{
+    let row = oriented(all_r, order);
+    let mut powers = Powers::new::<P, CF>(b, alpha)?;
+    let mut sum = None;
+    for item in batched.into_iter().rev() {
+        let (value, count) = match item {
+            Batched::Columns {
+                point,
+                next,
+                selector_variables,
+                slots,
+            } => {
+                let (selector_row, local_row) = if order == VariableOrder::Prefix {
+                    let (local, selector) = row.split_at(point.len());
+                    (selector.iter().rev().cloned().collect::<Vec<_>>(), local)
+                } else {
+                    let (selector, local) = row.split_at(selector_variables);
+                    (selector.to_vec(), local)
+                };
+                let local = if next {
+                    next_eval_using::<P, CF>(b, &point, local_row)?
+                } else {
+                    P::eq_eval(b, &point, local_row)?
+                };
+                let selectors =
+                    eval_power_table_using::<P, CF>(b, &slots, &selector_row, &mut powers)?;
+                (P::mul(b, &selectors, &local), slots.len())
+            }
+            Batched::Point(point) => (P::eq_eval(b, &point, &row)?, 1),
+        };
+        sum = Some(match sum {
+            None => value,
+            Some(later) => {
+                let shift = powers.get::<P, CF>(b, count);
+                P::mul_add(b, &shift, &later, &value)
+            }
+        });
+        b.check_construction_limits()?;
+    }
+    match sum {
+        Some(sum) => Ok(sum),
+        None => Ok(P::constant(b, 0)?),
+    }
 }
 
 fn fold_using<P, H, CF>(
@@ -354,8 +571,18 @@ where
         let zero = P::constant(b, 0)?;
         P::assert_equal(b, &witness, &zero);
     } else {
-        let bytes = P::oracle_bytes::<H>(b, &witness, BinaryOracleWord::Base)?;
-        ch.observe_bytes_with_host::<H, CF>(b, &bytes)?;
+        // The refill of the draw that follows range-checks each word.
+        let words = if H::hashes_words_whole(ch.hash()) {
+            P::oracle_words(b, &witness, BinaryOracleWord::Base)?
+        } else {
+            None
+        };
+        if let Some(words) = words {
+            ch.observe_words_with_host::<H, CF>(b, &words)?;
+        } else {
+            let bytes = P::oracle_bytes::<H>(b, &witness, BinaryOracleWord::Base)?;
+            ch.observe_bytes_with_host::<H, CF>(b, &bytes)?;
+        }
         for bit in ch.sample_bits_with_host::<H, CF>(b, bits)? {
             let difference = b.sub(ExprId::ZERO, bit);
             b.assert_zero(difference);
@@ -364,8 +591,8 @@ where
     Ok(())
 }
 
-pub(super) fn check_cap(cap_height: usize, cap: &[Vec<ExprId>]) -> Result<(), VerificationError> {
-    if cap.len() != 1usize << cap_height || cap.iter().any(|digest| digest.len() != 16) {
+pub(super) fn check_cap(roots: usize, cap: &[Vec<ExprId>]) -> Result<(), VerificationError> {
+    if cap.len() != roots || cap.iter().any(|digest| digest.len() != 16) {
         Err(invalid("binary WHIR cap shape mismatch"))
     } else {
         Ok(())
@@ -377,7 +604,7 @@ pub(super) fn check_targets<F, E, T, B>(
     points: &[Vec<T>],
     proof: &BinaryWhirProofTargets<T, B>,
 ) -> Result<(), VerificationError> {
-    check_cap(p.cap_height, cap)?;
+    check_cap(p.cap_roots, cap)?;
     let shapes = p.protocol.table_shapes();
     if points.len() != p.protocol.num_openings()
         || proof.evals.len() != points.len()
@@ -398,15 +625,15 @@ pub(super) fn check_targets<F, E, T, B>(
     }
     check_fold(&proof.initial_sumcheck, &p.initial_fold)?;
     for (site, round) in p.sites.iter().zip(&proof.rounds) {
-        check_cap(p.cap_height, &round.cap)?;
+        check_cap(p.cap_roots, &round.cap)?;
         if round.ood_answers.len() != site.ood {
             return Err(invalid("binary WHIR target OOD shape mismatch"));
         }
-        check_opening(site, p.cap_height, &round.rows, &round.paths)?;
+        check_opening(site, &round.rows, &round.paths)?;
         check_fold(&round.sumcheck, &site.fold)?;
     }
     let site = p.sites.last().expect("checked final site");
-    check_opening(site, p.cap_height, &proof.final_rows, &proof.final_paths)?;
+    check_opening(site, &proof.final_rows, &proof.final_paths)?;
     check_fold(&proof.final_sumcheck, &site.fold)
 }
 fn expand<P, CF>(
@@ -449,19 +676,96 @@ fn check_fold<T, B>(
 }
 fn check_opening<T>(
     site: &OracleSite,
-    cap: usize,
     rows: &[Vec<T>],
     paths: &[Vec<Vec<ExprId>>],
 ) -> Result<(), VerificationError> {
     if rows.len() != site.queries.num_queries()
         || rows.iter().any(|row| row.len() != site.width)
         || paths.len() != rows.len()
-        || paths.iter().any(|path| {
-            path.len() != site.log_height - cap || path.iter().any(|digest| digest.len() != 16)
-        })
+        || paths
+            .iter()
+            .any(|path| path.len() != site.path_len || path.iter().any(|digest| digest.len() != 16))
     {
         Err(invalid("binary WHIR target query opening shape mismatch"))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod forest_tests {
+    use alloc::vec;
+
+    use p3_binary_field::BinaryField128;
+    use p3_circuit::ops::binary_encoding::NativeBinaryEncoding;
+    use p3_circuit::ops::{ByteHash, NpoTypeId, Op};
+    use p3_field::PrimeCharacteristicRing;
+
+    use super::*;
+    use crate::pcs::binary::BinaryWhirQueryPlan;
+    use crate::verifier::binary_field_policy::NativeTower128Relation;
+
+    #[test]
+    fn shared_upper_forest_saves_the_expected_keccak_calls() {
+        let mut b = CircuitBuilder::<BinaryField128>::new();
+        b.enable_native_keccak_f1600().unwrap();
+        let site = OracleSite {
+            variables: 4,
+            width: 1,
+            log_height: 4,
+            path_len: 3,
+            query_pow_bits: 0,
+            queries: BinaryWhirQueryPlan::new(4, 8).unwrap(),
+            ood: 0,
+            fold: FoldShape {
+                rounds: 0,
+                pow_bits: 0,
+            },
+        };
+        let rows: Vec<_> = (0..8)
+            .map(|_| {
+                let value = b.public_input();
+                vec![b.native_tower128_from_expr(value)]
+            })
+            .collect();
+        let paths: Vec<_> = (0..8)
+            .map(|_| {
+                (0..3)
+                    .map(|_| (0..16).map(|_| b.public_input()).collect())
+                    .collect()
+            })
+            .collect();
+        let cap = (0..2)
+            .map(|_| (0..16).map(|_| b.public_input()).collect())
+            .collect();
+        let zero = ExprId::ZERO;
+        let one = b.define_const(BinaryField128::ONE);
+        let indices = (0..8)
+            .map(|s| {
+                let mut bits = vec![b.public_input()];
+                bits.extend((0..3).map(|bit| if (s >> bit) & 1 == 0 { zero } else { one }));
+                bits
+            })
+            .collect();
+        authenticate_using::<NativeTower128Relation<BinaryField128>, NativeBinaryEncoding, _>(
+            &mut b,
+            ByteHash::Keccak256,
+            MerkleArity::Two,
+            &Authentication {
+                site: &site,
+                rows: &rows,
+                paths: &paths,
+                cap,
+                indices,
+                mode: BinaryOracleWord::Base,
+            },
+        )
+        .unwrap();
+        let circuit = b.build().unwrap();
+        let hashes = circuit.ops.iter().filter(|op| matches!(op,
+            Op::NonPrimitiveOpWithExecutor { executor, .. } if executor.op_type() == &NpoTypeId::native_keccak_f1600()
+        )).count();
+        // Eight leaf hashes, eight lower-path hashes, and eight minus two upper nodes.
+        assert_eq!(hashes, 22);
     }
 }

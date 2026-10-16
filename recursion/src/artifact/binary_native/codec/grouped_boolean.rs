@@ -1,4 +1,5 @@
 //! Trusted-shape bounded trace and bit-ring proof bytes.
+use p3_binary_field::BitCoordinates;
 use p3_binary_pcs::{
     BooleanProof, BooleanTraceCommitmentProof, BooleanTraceProof, GroupedCodewordMmcs,
 };
@@ -93,6 +94,16 @@ pub(super) fn write_ring<E: RecursiveBinaryChallengeField>(
     w: &mut Writer,
     p: &BitRingSwitchClaimsProof<E>,
 ) -> Result<(), ArtifactError> {
+    write_ring_with::<E, E>(w, p)
+}
+pub(super) fn write_ring_with<F, E>(
+    w: &mut Writer,
+    p: &BitRingSwitchClaimsProof<F, E>,
+) -> Result<(), ArtifactError>
+where
+    F: ScalarWire + BitCoordinates,
+    E: ScalarWire + BitCoordinates,
+{
     for claim in &p.claims {
         write_fields(w, claim.tensor.rows())?;
         if let Some(successor) = &claim.successor {
@@ -125,17 +136,30 @@ where
         },
     })
 }
-fn read_tensor<E: RecursiveBinaryChallengeField>(
-    r: &mut Reader<'_>,
-) -> Result<BitTensor<E>, ArtifactError> {
+fn read_tensor<F, E>(r: &mut Reader<'_>) -> Result<BitTensor<E, F>, ArtifactError>
+where
+    F: ScalarWire + BitCoordinates,
+    E: BitCoordinates,
+{
     // The native checked constructor takes ownership of the charged vector;
     // no generic serde value or second tensor projection is allocated.
-    BitTensor::try_from(read_fields(r, E::RAW_BITS)?).map_err(|_| malformed("binary ring tensor"))
+    BitTensor::try_from(read_fields(r, BitTensor::<E, F>::DIMENSION)?)
+        .map_err(|_| malformed("binary ring tensor"))
 }
 pub(super) fn read_ring<E: RecursiveBinaryChallengeField>(
     r: &mut Reader<'_>,
     s: &RingDecode,
 ) -> Result<BitRingSwitchClaimsProof<E>, ArtifactError> {
+    read_ring_with::<E, E>(r, s)
+}
+pub(super) fn read_ring_with<F, E>(
+    r: &mut Reader<'_>,
+    s: &RingDecode,
+) -> Result<BitRingSwitchClaimsProof<F, E>, ArtifactError>
+where
+    F: ScalarWire + BitCoordinates,
+    E: ScalarWire + BitCoordinates,
+{
     let mut index = 0;
     let claims = r.read_exact_items("binary ring claims", s.successor.len(), 0, |r| {
         let successor = s.successor[index];
@@ -169,14 +193,14 @@ pub(super) fn read_ring<E: RecursiveBinaryChallengeField>(
             polynomial_evaluations: r.read_exact_items(
                 "binary ring rounds",
                 rounds,
-                E::RAW_BITS / 4,
+                checked_product(2, E::WIRE_BYTES)?,
                 read_array,
             )?,
             pow_witnesses: r.read_exact_items(
                 "binary ring empty sumcheck PoW",
                 0,
                 0,
-                read_field::<E>,
+                read_field::<F>,
             )?,
         },
         final_eval: read_field(r)?,
@@ -185,25 +209,29 @@ pub(super) fn read_ring<E: RecursiveBinaryChallengeField>(
 
 #[cfg(test)]
 mod tests {
-    use p3_binary_field::{BinaryField64, BinaryField128};
+    use p3_binary_field::{BinaryField64, BinaryField128, Poly64, Poly192};
 
     use super::*;
 
-    fn round_trip<E: RecursiveBinaryChallengeField>() {
+    fn round_trip<F, E>()
+    where
+        F: ScalarWire + BitCoordinates,
+        E: ScalarWire + BitCoordinates,
+    {
         let shape = RingDecode {
             successor: alloc::vec![false, true],
             min_rounds: 0,
             max_rounds: 2,
         };
         for count in 0..=2 {
-            let proof = BitRingSwitchClaimsProof {
+            let proof = BitRingSwitchClaimsProof::<F, E> {
                 claims: alloc::vec![
                     ClaimElements {
-                        tensor: BitTensor::<E>::zero(),
+                        tensor: BitTensor::<E, F>::zero(),
                         successor: None
                     },
                     ClaimElements {
-                        tensor: BitTensor::<E>::zero(),
+                        tensor: BitTensor::<E, F>::zero(),
                         successor: Some(SuccessorTensors {
                             carry: BitTensor::one(),
                             last: BitTensor::zero(),
@@ -217,11 +245,11 @@ mod tests {
                 final_eval: E::ONE,
             };
             let mut writer = Writer::new(1 << 20);
-            write_ring(&mut writer, &proof).unwrap();
+            write_ring_with(&mut writer, &proof).unwrap();
             let bytes = writer.finish().unwrap();
             let limits = ArtifactLimits::default();
             let mut reader = Reader::new(&bytes, &limits);
-            let decoded = read_ring::<E>(&mut reader, &shape).unwrap();
+            let decoded = read_ring_with::<F, E>(&mut reader, &shape).unwrap();
             reader.finish().unwrap();
             assert_eq!(decoded.claims, proof.claims);
             assert_eq!(
@@ -230,12 +258,12 @@ mod tests {
             );
             assert!(decoded.sumcheck.pow_witnesses.is_empty());
             assert_eq!(decoded.final_eval, proof.final_eval);
-            let round_at = 4 * E::RAW_BITS * (E::RAW_BITS / 8);
+            let round_at = 4 * BitTensor::<E, F>::DIMENSION * F::WIRE_BYTES;
             for bad in [3, u32::MAX] {
                 let mut changed = bytes.clone();
                 changed[round_at..round_at + 4].copy_from_slice(&bad.to_le_bytes());
                 assert!(matches!(
-                    read_ring::<E>(&mut Reader::new(&changed, &limits), &shape),
+                    read_ring_with::<F, E>(&mut Reader::new(&changed, &limits), &shape),
                     Err(ArtifactError::DecodeLimitExceeded {
                         component: "binary ring rounds",
                         ..
@@ -243,13 +271,19 @@ mod tests {
                 ));
             }
             for len in 0..bytes.len() {
-                assert!(read_ring::<E>(&mut Reader::new(&bytes[..len], &limits), &shape).is_err());
+                assert!(
+                    read_ring_with::<F, E>(&mut Reader::new(&bytes[..len], &limits), &shape)
+                        .is_err()
+                );
             }
         }
     }
     #[test]
     fn ring_codec_has_bounded_variable_rounds_and_fixed_successor_tensors() {
-        round_trip::<BinaryField64>();
-        round_trip::<BinaryField128>();
+        round_trip::<BinaryField64, BinaryField64>();
+        round_trip::<BinaryField128, BinaryField128>();
+        // A Poly192 tensor travels as 192 Poly64 rows, not as a square matrix.
+        assert_eq!(BitTensor::<Poly192, Poly64>::DIMENSION, 192);
+        round_trip::<Poly64, Poly192>();
     }
 }

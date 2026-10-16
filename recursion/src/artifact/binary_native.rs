@@ -24,6 +24,15 @@ pub use grouped_boolean::{
     VerifiedBinaryNativeGroupedBooleanTraceProof,
 };
 mod lifecycle;
+mod mixed_whir;
+pub use mixed_whir::{
+    BinaryNativeMixedWhirAuthority, BinaryNativeMixedWhirProver, VerifiedBinaryNativeMixedWhirProof,
+};
+mod poly_mixed_whir;
+pub use poly_mixed_whir::{
+    BinaryNativePolyMixedWhirAuthority, BinaryNativePolyMixedWhirProver,
+    VerifiedBinaryNativePolyMixedWhirProof,
+};
 mod poly_whir;
 pub use poly_whir::{
     BinaryNativePolyWhirAuthority, BinaryNativePolyWhirProver, VerifiedBinaryNativePolyWhirProof,
@@ -33,14 +42,24 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 pub use codec::CanonicalBinaryStatement;
+use config::NativeAlphabet;
 pub use config::{
     BinaryNativeBooleanTraceConfig, BinaryNativeBooleanWhirTraceConfig, BinaryNativeChallenger,
     BinaryNativeConfig, BinaryNativeGroupedBooleanTraceConfig, BinaryNativeGroupedConfig,
-    BinaryNativeHash, BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout,
-    BinaryNativePolyWhirPcsParameters, BinaryNativeWhirConfig, BinaryNativeWhirLayout,
-    BinaryNativeWhirPcsParameters,
+    BinaryNativeHash, BinaryNativeMixedWhirConfig, BinaryNativeMixedWhirPcsParameters,
+    BinaryNativePolyMixedWhirConfig, BinaryNativePolyMixedWhirPcsParameters,
+    BinaryNativePolyWhirConfig, BinaryNativePolyWhirLayout, BinaryNativePolyWhirPcsParameters,
+    BinaryNativeWhirConfig, BinaryNativeWhirLayout, BinaryNativeWhirPcsParameters,
 };
-use config::{NativeAlphabet, NativeMmcs, tree};
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "only the unit tests construct the mixed commitment directly"
+    )
+)]
+pub(crate) use config::{MixedWhirError, MixedWhirPcs, NativeMixedWhirPcs};
+pub(crate) use config::{NativeMmcs, NativeWhirMmcs, tree};
 use family::{NativeFamily, RawFamily};
 use lifecycle::State;
 use p3_binary_dft::EncodableLevel;
@@ -51,12 +70,12 @@ use p3_field::{ExtensionField, PackedValue};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_merkle_tree::MerkleCap;
 use p3_multi_stark::folder::{ProverAir, VerifierAir};
-use p3_multi_stark::{MultiStarkProof, ProvingKey};
+use p3_multi_stark::{MultiStarkProof, MultiStarkSecurityReport, ProvingKey};
 pub use whir::{BinaryNativeWhirAuthority, BinaryNativeWhirProver, VerifiedBinaryNativeWhirProof};
 
 use super::wire::{Writer, encode_framed};
 use super::{ArtifactError, ArtifactKind, ArtifactLimits};
-use crate::pcs::binary::{RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
+use crate::pcs::binary::{MerkleArity, RecursiveBinaryChallengeField, RecursiveBinaryTowerField};
 use crate::verifier::{
     BinaryMultiStarkPreprocessing, BinaryMultiStarkVerifier, InputResourceUsage,
     NativeBinaryMultiStarkInput, VerificationError, VerifierLimits,
@@ -252,12 +271,32 @@ where
     ) -> Result<MultiStarkProof<BinaryNativeConfig<F, E>>, VerificationError> {
         self.state.prove(&self.key, public, traces)
     }
+
+    /// Proves column-major tables with a selected zerocheck backend. The same
+    /// statement shape and composed security checks apply to every backend.
+    pub fn prove_tables_with_backend<B>(
+        &self,
+        public: &[Vec<F>],
+        tables: Vec<p3_sumcheck::layout::Table<F>>,
+    ) -> Result<MultiStarkProof<BinaryNativeConfig<F, E>>, VerificationError>
+    where
+        B: p3_multi_stark::ZerocheckBackend<F, E, A>,
+    {
+        self.state
+            .prove_tables_with_backend::<B>(&self.key, public, tables)
+    }
 }
 
 fn write_hash(w: &mut Writer, hash: ByteHash) -> Result<(), ArtifactError> {
     w.write_u8(match hash {
         ByteHash::Keccak256 => 1,
         ByteHash::Blake3 => 2,
+    })
+}
+fn write_arity(w: &mut Writer, arity: MerkleArity) -> Result<(), ArtifactError> {
+    w.write_u8(match arity {
+        MerkleArity::Two => 2,
+        MerkleArity::Four => 4,
     })
 }
 fn write_pcs(w: &mut Writer, pcs: BinaryNativePcsParameters) -> Result<(), ArtifactError> {
@@ -301,16 +340,30 @@ where
     E: ExtensionField<F> + PackedValue<Value = E>,
     K: NativeFamily<F, E>,
 {
+    // Revision 2 follows each commitment's parameters with the arity of its trees; revision 1
+    // has pairwise trees throughout.
+    let pairwise = core::iter::once(&spec.main)
+        .chain(&spec.preprocessed)
+        .all(|p| K::arity(p) == MerkleArity::Two);
+    let write_commitment = |w: &mut Writer, p: &K::Parameters| {
+        K::write_parameters(w, p)?;
+        if pairwise {
+            Ok(())
+        } else {
+            write_arity(w, K::arity(p))
+        }
+    };
     encode_framed(
         ArtifactKind::Verifier,
         K::suite(),
         limits.max_verifier_bytes,
         |w| {
-            w.write_u16(1)?; // Binary relation revision, including native 0.8 transcript/layout rules.
-            K::write_parameters(w, &spec.main)?;
+            // Binary relation revision, including native 0.8 transcript/layout rules.
+            w.write_u16(if pairwise { 1 } else { 2 })?;
+            write_commitment(w, &spec.main)?;
             w.write_bool(spec.preprocessed.is_some())?;
             if let Some(pp) = &spec.preprocessed {
-                K::write_parameters(w, pp)?;
+                write_commitment(w, pp)?;
             }
             write_hash(w, spec.transcript_hash)?;
             w.write_vec(
