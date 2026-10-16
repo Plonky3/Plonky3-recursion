@@ -115,7 +115,6 @@ pub struct PermCall {
     pub inputs: Vec<Option<ExprId>>,
     pub out_ctl: Vec<bool>,
     pub return_all_outputs: bool,
-    pub mmcs_index_sum: Option<ExprId>,
 }
 
 /// Private (witness) data for one perm row, typed for the configured hash so the
@@ -147,7 +146,6 @@ impl<F: Field> CircuitBuilder<F> {
                 inputs: call.inputs.clone(),
                 out_ctl: call.out_ctl.clone(),
                 return_all_outputs: call.return_all_outputs,
-                mmcs_index_sum: call.mmcs_index_sum,
                 absorb_len: 0,
             }),
             PermConfig::Poseidon2(config) => self.add_poseidon2_perm(&Poseidon2PermCall {
@@ -159,7 +157,6 @@ impl<F: Field> CircuitBuilder<F> {
                 inputs: call.inputs.clone(),
                 out_ctl: call.out_ctl.clone(),
                 return_all_outputs: call.return_all_outputs,
-                mmcs_index_sum: call.mmcs_index_sum,
                 absorb_len: 0,
             }),
         }

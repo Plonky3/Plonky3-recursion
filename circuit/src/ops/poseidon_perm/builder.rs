@@ -82,11 +82,10 @@ impl<F: Field> CircuitBuilder<F> {
         })?;
         self.zero_fill_lanes(&mut inputs, start_lanes);
 
-        let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(width_ext + 3);
+        let mut input_exprs: Vec<Vec<ExprId>> = Vec::with_capacity(width_ext + 2);
         for limb in &inputs {
             input_exprs.push(limb.map_or_else(Vec::new, |v| vec![v]));
         }
-        input_exprs.push(call.mmcs_index_sum.map_or_else(Vec::new, |v| vec![v]));
         input_exprs.push(call.mmcs_bit.map_or_else(Vec::new, |v| vec![v]));
         if call.config.is_arity4_shape() && call.merkle_path {
             input_exprs.push(call.mmcs_bit2.map_or_else(Vec::new, |v| vec![v]));

@@ -186,7 +186,6 @@ mod shared_materialization_tests {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: BabyBear::ZERO,
             input_values: {
                 let mut values = BabyBear::zero_vec(config.width());
                 values[0] = value;
@@ -196,8 +195,8 @@ mod shared_materialization_tests {
             input_indices: vec![0; config.width_ext()].into(),
             out_ctl: vec![false; config.rate_ext()].into(),
             output_indices: vec![0; config.rate_ext()].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         }
     }
@@ -1684,14 +1683,13 @@ impl Poseidon2Prover {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::<SC>::ZERO,
             input_values: Val::<SC>::zero_vec(width).into(),
             in_ctl: vec![false; width_ext].into(),
             input_indices: vec![0; width_ext].into(),
             out_ctl: vec![false; rate_ext].into(),
             output_indices: vec![0; rate_ext].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
         let mut padded_ops = operations;
@@ -2997,7 +2995,6 @@ mod committed_materialization_tests {
                             merkle_path: true,
                             mmcs_bit: row % 2 == 1,
                             mmcs_bit2: row % 3 == 1,
-                            mmcs_index_sum: Val::<SC>::from_usize(stream + 3),
                             input_values: (0..config.width())
                                 .map(|column| {
                                     Val::<SC>::from_usize(1 + stream * 100 + row * 10 + column)
@@ -3014,8 +3011,8 @@ mod committed_materialization_tests {
                                 .map(|i| (i + 20) as u32)
                                 .collect::<Vec<_>>()
                                 .into(),
-                            mmcs_index_sum_idx: 37,
-                            mmcs_ctl_enabled: true,
+                            mmcs_bit_idx: 37,
+                            mmcs_bit2_idx: 0,
                             absorb_len: config.rate_ext(),
                         })
                         .collect();

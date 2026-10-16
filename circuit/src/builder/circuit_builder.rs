@@ -2379,7 +2379,6 @@ where
             inputs: inputs.to_vec(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
-            mmcs_index_sum: None,
             absorb_len,
         })?;
 
@@ -2467,7 +2466,6 @@ where
             inputs: inputs.to_vec(),
             out_ctl: vec![true; config.rate_ext()],
             return_all_outputs: true,
-            mmcs_index_sum: None,
             absorb_len,
         })?;
 
@@ -3101,7 +3099,6 @@ mod tests {
                 inputs: vec![Some(z), Some(z), Some(z), Some(z)],
                 out_ctl: vec![true, true],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
                 absorb_len: 0,
             })
             .unwrap();

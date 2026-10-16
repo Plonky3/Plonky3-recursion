@@ -40,7 +40,6 @@ impl<F: Field> CircuitBuilder<F> {
                 inputs: call_inputs,
                 out_ctl: vec![is_last; rate_ext],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
                 absorb_len: 0,
             })?;
             outputs = maybe_outputs;

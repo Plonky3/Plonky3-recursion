@@ -401,7 +401,6 @@ fn build_shared_mixed_circuit() -> Circuit<EF> {
             inputs: vec![Some(rate0), Some(rate1), Some(cap0), Some(cap1)],
             out_ctl: vec![true; RATE_EXT],
             return_all_outputs: false,
-            mmcs_index_sum: None,
             absorb_len: RATE,
         })
         .expect("public-capacity challenger start builds");
@@ -424,7 +423,6 @@ fn build_shared_mixed_circuit() -> Circuit<EF> {
             inputs: ordinary_inputs.into_iter().map(Some).collect(),
             out_ctl: vec![true; RATE_EXT],
             return_all_outputs: true,
-            mmcs_index_sum: None,
             absorb_len: 0,
         })
         .expect("ordinary sponge start builds");
@@ -438,7 +436,6 @@ fn build_shared_mixed_circuit() -> Circuit<EF> {
             inputs: vec![None; WIDTH_EXT],
             out_ctl: vec![true; RATE_EXT],
             return_all_outputs: false,
-            mmcs_index_sum: None,
             absorb_len: 0,
         })
         .expect("ordinary sponge continuation builds");
@@ -448,7 +445,6 @@ fn build_shared_mixed_circuit() -> Circuit<EF> {
     let merkle_inputs: Vec<_> = (0..WIDTH_EXT)
         .map(|i| circuit.define_const(EF::from_u64(20_000 + i as u64)))
         .collect();
-    let mmcs_sum = circuit.define_const(EF::ZERO);
     let mmcs_bit = circuit.define_const(EF::ONE);
     circuit
         .add_poseidon2_perm(&Poseidon2PermCall {
@@ -460,7 +456,6 @@ fn build_shared_mixed_circuit() -> Circuit<EF> {
             inputs: merkle_inputs.into_iter().map(Some).collect(),
             out_ctl: vec![true; RATE_EXT],
             return_all_outputs: false,
-            mmcs_index_sum: Some(mmcs_sum),
             absorb_len: 0,
         })
         .expect("ordinary MMCS row builds");

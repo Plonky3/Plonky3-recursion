@@ -1,7 +1,6 @@
 //! Poseidon1 trace types and trace generation.
 
 use alloc::boxed::Box;
-use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::any::Any;
@@ -14,7 +13,6 @@ use crate::ops::NpoTypeId;
 use crate::ops::poseidon1_perm::config::Poseidon1Config;
 use crate::ops::poseidon1_perm::state::Poseidon1ExecutionState;
 use crate::tables::NonPrimitiveTrace;
-use crate::types::NonPrimitiveOpId;
 
 /// Poseidon1 configuration parameters for a field type.
 pub trait Poseidon1Params {
@@ -157,8 +155,7 @@ fn generate_poseidon1_trace_for<
     let operations: Vec<Poseidon1CircuitRow<Config::BaseField>> = state
         .rows
         .par_iter()
-        .enumerate()
-        .map(|(row_index, row)| -> Result<_, CircuitError> {
+        .map(|row| {
             let limb_count = Config::WIDTH / d;
             assert_eq!(
                 row.input_values.len(),
@@ -182,31 +179,20 @@ fn generate_poseidon1_trace_for<
                 }
             }
 
-            let mmcs_index_sum = row.mmcs_index_sum.as_base().ok_or_else(|| {
-                CircuitError::IncorrectNonPrimitiveOpPrivateData {
-                    op: op_type.clone(),
-                    operation_index: NonPrimitiveOpId(row_index as u32),
-                    expected: "base field mmcs_index_sum".to_string(),
-                    got: "extension value".to_string(),
-                }
-            })?;
-
-            Ok(Poseidon1CircuitRow {
+            Poseidon1CircuitRow {
                 new_start: row.new_start,
                 merkle_path: row.merkle_path,
                 mmcs_bit: row.mmcs_bit,
-                mmcs_index_sum,
                 input_values,
                 in_ctl: row.in_ctl.clone(),
                 input_indices: row.input_indices.clone(),
                 out_ctl: row.out_ctl.clone(),
                 output_indices: row.output_indices.clone(),
-                mmcs_index_sum_idx: row.mmcs_index_sum_idx,
-                mmcs_ctl_enabled: row.mmcs_ctl_enabled,
+                mmcs_bit_idx: row.mmcs_bit_idx,
                 absorb_len: row.absorb_len,
-            })
+            }
         })
-        .collect::<Result<Vec<_>, CircuitError>>()?;
+        .collect();
 
     Ok(Some(Box::new(Poseidon1Trace {
         op_type,

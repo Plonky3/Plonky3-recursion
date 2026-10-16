@@ -385,14 +385,13 @@ macro_rules! assert_goldilocks_air_native_agreement {
                 merkle_path: false,
                 mmcs_bit: false,
                 mmcs_bit2: false,
-                mmcs_index_sum: Goldilocks::ZERO,
                 input_values: state.to_vec().into(),
                 in_ctl: vec![false; <$config as Poseidon2Params>::WIDTH_EXT].into(),
                 input_indices: vec![0; <$config as Poseidon2Params>::WIDTH_EXT].into(),
                 out_ctl: vec![false; <$config as Poseidon2Params>::RATE_EXT].into(),
                 output_indices: vec![0; <$config as Poseidon2Params>::RATE_EXT].into(),
-                mmcs_index_sum_idx: 0,
-                mmcs_ctl_enabled: false,
+                mmcs_bit_idx: 0,
+                mmcs_bit2_idx: 0,
                 absorb_len: 0,
             };
             let trace = air.generate_trace_rows(&[row], &constants, 0);

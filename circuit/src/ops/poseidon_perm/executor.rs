@@ -338,7 +338,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         ctx: &ExecutionContext<'_, F>,
     ) -> Result<bool, CircuitError> {
         let width_ext = self.config.width_ext();
-        self.resolve_boolean_witness(inputs, ctx, width_ext + 1, "mmcs_bit")
+        self.resolve_boolean_witness(inputs, ctx, width_ext, "mmcs_bit")
     }
 
     /// Read the second MMCS direction bit (`mmcs_bit2`) from the witness table.
@@ -354,7 +354,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             return Ok(false);
         }
         let width_ext = self.config.width_ext();
-        self.resolve_boolean_witness(inputs, ctx, width_ext + 2, "mmcs_bit2")
+        self.resolve_boolean_witness(inputs, ctx, width_ext + 1, "mmcs_bit2")
     }
 
     /// Read a boolean direction bit from `inputs[slot]`, validating it is 0 or 1.
@@ -411,8 +411,8 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
     /// Construct the circuit trace row for D>1 (extension field) mode.
     ///
     /// Scans input/output slots to determine which limbs are CTL-exposed
-    /// and records their witness indices.
-    /// Also resolves the MMCS index accumulator if present.
+    /// and records their witness indices, plus the direction bits' source
+    /// witnesses on a Merkle row.
     fn build_trace_row<F: Field>(
         &self,
         inputs: &[Vec<WitnessId>],
@@ -420,8 +420,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         mmcs_bit: bool,
         mmcs_bit2: bool,
         input_values: Vec<F>,
-        ctx: &ExecutionContext<'_, F>,
-    ) -> Result<V::Row<F>, CircuitError> {
+    ) -> V::Row<F> {
         let width_ext = self.config.width_ext();
         let rate_ext = self.config.rate_ext();
 
@@ -443,19 +442,22 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             }
         }
 
-        let (mmcs_index_sum, mut mmcs_index_sum_idx, mut mmcs_ctl_enabled) =
-            if inputs[width_ext].len() == 1 {
-                let wid = inputs[width_ext][0];
-                let val = ctx.get_witness(wid)?;
-                (val, wid.0, true)
-            } else {
-                (F::ZERO, 0, false)
-            };
-        // An arity-2 Merkle row's bus slot carries its direction-bit source.
-        if self.merkle_path && !self.is_arity4() {
-            mmcs_index_sum_idx = inputs[width_ext + 1].first().map_or(0, |wid| wid.0);
-            mmcs_ctl_enabled = false;
-        }
+        let bit_source = |slot: usize| {
+            inputs
+                .get(slot)
+                .and_then(|wids| wids.first())
+                .map_or(0, |wid| wid.0)
+        };
+        let mmcs_bit_idx = if self.merkle_path {
+            bit_source(width_ext)
+        } else {
+            0
+        };
+        let mmcs_bit2_idx = if self.merkle_path && self.is_arity4() {
+            bit_source(width_ext + 1)
+        } else {
+            0
+        };
 
         debug_assert_eq!(
             input_values.len(),
@@ -463,21 +465,20 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             "Execution row must have width_ext input limbs"
         );
 
-        Ok(V::build_row(PoseidonRowFields {
+        V::build_row(PoseidonRowFields {
             new_start: self.new_start,
             merkle_path: self.merkle_path,
             mmcs_bit,
             mmcs_bit2,
-            mmcs_index_sum,
             input_values: input_values.into(),
             in_ctl,
             input_indices,
             out_ctl,
             output_indices,
-            mmcs_index_sum_idx,
-            mmcs_ctl_enabled,
+            mmcs_bit_idx,
+            mmcs_bit2_idx,
             absorb_len: self.absorb_len,
-        }))
+        })
     }
 
     /// Construct the circuit trace row for D=1 (base field) mode.
@@ -525,14 +526,13 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: F::ZERO,
             input_values: PoseidonRowValues::from_slice(input_values),
             in_ctl,
             input_indices,
             out_ctl,
             output_indices,
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: self.absorb_len,
         })
     }
@@ -573,18 +573,18 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
 
     /// Validate the input layout for D>1 (extension field) mode.
     ///
-    /// Expects exactly `width_ext + 2` input vectors:
+    /// Expects exactly `width_ext + 1` input vectors (`width_ext + 2` on an arity-4 Merkle row):
     /// - `width_ext` limb slots, each with 0 or 1 witness.
-    /// - 1 MMCS index accumulator slot (0 or 1 element).
     /// - 1 MMCS direction bit slot (0 or 1 element).
+    /// - On an arity-4 Merkle row, 1 high direction bit slot (0 or 1 element).
     fn validate_ext_inputs(&self, inputs: &[Vec<WitnessId>]) -> Result<(), CircuitError> {
         let width_ext = self.config.width_ext();
         // Arity-4 compression Merkle rows append a second direction bit slot.
         let arity4_merkle = self.is_arity4() && self.merkle_path;
         let expected_inputs = if arity4_merkle {
-            width_ext + 3
-        } else {
             width_ext + 2
+        } else {
+            width_ext + 1
         };
         if inputs.len() != expected_inputs {
             return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
@@ -605,22 +605,15 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         if inputs[width_ext].len() > 1 {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: self.op_type.clone(),
-                expected: "0 or 1 element for mmcs_index_sum".to_string(),
+                expected: "0 or 1 element for mmcs_bit".to_string(),
                 got: inputs[width_ext].len(),
             });
         }
-        if inputs[width_ext + 1].len() > 1 {
-            return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
-                op: self.op_type.clone(),
-                expected: "0 or 1 element for mmcs_bit".to_string(),
-                got: inputs[width_ext + 1].len(),
-            });
-        }
-        if arity4_merkle && inputs[width_ext + 2].len() > 1 {
+        if arity4_merkle && inputs[width_ext + 1].len() > 1 {
             return Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize {
                 op: self.op_type.clone(),
                 expected: "0 or 1 element for mmcs_bit2".to_string(),
-                got: inputs[width_ext + 2].len(),
+                got: inputs[width_ext + 1].len(),
             });
         }
         Ok(())
@@ -684,14 +677,12 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         let width_ext = self.config.width_ext();
         let limbs: &[Vec<WitnessId>] = match inputs.len() {
             n if n == width => inputs,
-            n if n == width_ext + 2 => {
+            n if n == width_ext + 1 => {
                 for (i, slot) in inputs[width_ext..].iter().enumerate() {
                     if !slot.is_empty() {
                         return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                             op: self.op_type.clone(),
-                            expected: format!(
-                                "empty mmcs slots for D=1 non-Merkle (tail slot {i})"
-                            ),
+                            expected: format!("empty mmcs slot for D=1 non-Merkle (tail slot {i})"),
                             got: slot.len(),
                         });
                     }
@@ -701,7 +692,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
             got => {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                     op: self.op_type.clone(),
-                    expected: format!("{width} or {} input vectors for D=1 mode", width_ext + 2),
+                    expected: format!("{width} or {} input vectors for D=1 mode", width_ext + 1),
                     got,
                 });
             }
@@ -965,14 +956,13 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         }
 
         // Arity-4 Merkle rows bind the two direction bits directly to the sampled-index witness; the
-        // base-4 accumulator is unused, so the accumulator idx / merkle-flag column slots carry the
-        // two bit-source witness indices, read on the WitnessChecks bus to balance the AIR's bit
-        // sends. The bit sources are always present (real index bit or the zero const).
+        // two bit-index column slots carry the bit-source witness indices, read on the WitnessChecks
+        // bus to balance the AIR's bit sends. The bit sources are always present (real index bit or
+        // the zero const).
         if self.config.is_arity4_shape() && self.merkle_path {
+            preprocessed.register_non_primitive_witness_reads(&self.op_type, &inputs[width_ext])?;
             preprocessed
                 .register_non_primitive_witness_reads(&self.op_type, &inputs[width_ext + 1])?;
-            preprocessed
-                .register_non_primitive_witness_reads(&self.op_type, &inputs[width_ext + 2])?;
             preprocessed.register_non_primitive_preprocessed_no_read(
                 &self.op_type,
                 &[F::from_bool(self.new_start), F::from_bool(self.merkle_path)],
@@ -984,7 +974,7 @@ impl<V: PoseidonVariant> PoseidonPermExecutor<V> {
         // carries the bit-source witness index, read on the WitnessChecks bus to balance the AIR's
         // bit send. The second slot is the compact D=1 capacity-side flag (zero otherwise).
         if self.merkle_path {
-            let bit_source = &inputs[width_ext + 1];
+            let bit_source = &inputs[width_ext];
             if bit_source.len() != 1 {
                 return Err(CircuitError::NonPrimitiveOpLayoutMismatch {
                     op: self.op_type.clone(),
@@ -1029,7 +1019,7 @@ impl<V: PoseidonVariant, F: Field + Send + Sync + 'static> NonPrimitiveExecutor<
                 op: self.op_type.clone(),
             })?;
 
-        // D=1 non-Merkle: base trace row (`width` limbs, or `width_ext+2` with empty MMCS tail).
+        // D=1 non-Merkle: base trace row (`width` limbs, or `width_ext+1` with an empty MMCS slot).
         if self.config.d() == 1 && !self.merkle_path {
             return self.execute_base(inputs, outputs, ctx, exec.as_ref());
         }
@@ -1067,7 +1057,7 @@ impl<V: PoseidonVariant, F: Field + Send + Sync + 'static> NonPrimitiveExecutor<
         // Run the permutation and record the result.
         let output = exec(&state);
 
-        let row = self.build_trace_row(inputs, outputs, mmcs_bit, mmcs_bit2, state, ctx)?;
+        let row = self.build_trace_row(inputs, outputs, mmcs_bit, mmcs_bit2, state);
         self.write_outputs(outputs, &output, ctx)?;
         self.update_chain_state(ctx, output, row);
 
@@ -1378,15 +1368,15 @@ mod tests {
     fn resolve_mmcs_bit_zero() {
         let exec = executor(CONFIG_D4_W16, true, false);
         let width_ext = CONFIG_D4_W16.width_ext();
-        // inputs[width_ext+1] has a witness with value 0
+        // inputs[width_ext] has a witness with value 0
         let mut witness = vec![None; width_ext + 2];
         witness[5] = Some(F::ZERO);
         let configs = HashMap::new();
         let mut op_states = BTreeMap::new();
         let ctx = make_ctx(&mut witness, &[], &configs, &mut op_states);
 
-        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
-        inputs[width_ext + 1] = vec![WitnessId(5)];
+        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
+        inputs[width_ext] = vec![WitnessId(5)];
 
         assert!(!exec.resolve_mmcs_bit(&inputs, &ctx).unwrap());
     }
@@ -1401,8 +1391,8 @@ mod tests {
         let mut op_states = BTreeMap::new();
         let ctx = make_ctx(&mut witness, &[], &configs, &mut op_states);
 
-        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
-        inputs[width_ext + 1] = vec![WitnessId(5)];
+        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
+        inputs[width_ext] = vec![WitnessId(5)];
 
         assert!(exec.resolve_mmcs_bit(&inputs, &ctx).unwrap());
     }
@@ -1417,8 +1407,8 @@ mod tests {
         let mut op_states = BTreeMap::new();
         let ctx = make_ctx(&mut witness, &[], &configs, &mut op_states);
 
-        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
-        inputs[width_ext + 1] = vec![WitnessId(5)];
+        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
+        inputs[width_ext] = vec![WitnessId(5)];
 
         let Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
             op,
@@ -1444,7 +1434,7 @@ mod tests {
         let mut op_states = BTreeMap::new();
         let ctx = make_ctx(&mut witness, &[], &configs, &mut op_states);
 
-        let inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        let inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
 
         let Err(CircuitError::IncorrectNonPrimitiveOpPrivateData {
             op,
@@ -1470,7 +1460,7 @@ mod tests {
         let mut op_states = BTreeMap::new();
         let ctx = make_ctx(&mut witness, &[], &configs, &mut op_states);
 
-        let inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        let inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
 
         assert!(!exec.resolve_mmcs_bit(&inputs, &ctx).unwrap());
     }
@@ -1479,8 +1469,8 @@ mod tests {
     fn validate_ext_inputs_correct_layout() {
         let exec = executor(CONFIG_D4_W16, true, false);
         let width_ext = CONFIG_D4_W16.width_ext(); // 4
-        // width_ext + 2 = 6 input vectors, each with 0 or 1 element
-        let inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        // width_ext + 1 = 5 input vectors, each with 0 or 1 element
+        let inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
         assert!(exec.validate_ext_inputs(&inputs).is_ok());
     }
 
@@ -1494,7 +1484,7 @@ mod tests {
             panic!("expected NonPrimitiveOpLayoutMismatch");
         };
         assert_eq!(op, op_type_d4());
-        assert_eq!(expected, "6 input vectors");
+        assert_eq!(expected, "5 input vectors");
         assert_eq!(got, 3);
     }
 
@@ -1502,7 +1492,7 @@ mod tests {
     fn validate_ext_inputs_multi_witness_limb_errors() {
         let exec = executor(CONFIG_D4_W16, true, false);
         let width_ext = CONFIG_D4_W16.width_ext();
-        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
         inputs[0] = vec![WitnessId(0), WitnessId(1)]; // 2 witnesses = invalid
         let Err(CircuitError::NonPrimitiveOpLayoutMismatch { op, expected, got }) =
             exec.validate_ext_inputs(&inputs)
@@ -1515,27 +1505,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_ext_inputs_multi_mmcs_index_sum_errors() {
-        let exec = executor(CONFIG_D4_W16, true, false);
-        let width_ext = CONFIG_D4_W16.width_ext();
-        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
-        inputs[width_ext] = vec![WitnessId(0), WitnessId(1)];
-        let Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize { op, expected, got }) =
-            exec.validate_ext_inputs(&inputs)
-        else {
-            panic!("expected IncorrectNonPrimitiveOpPrivateDataSize");
-        };
-        assert_eq!(op, op_type_d4());
-        assert_eq!(expected, "0 or 1 element for mmcs_index_sum");
-        assert_eq!(got, 2);
-    }
-
-    #[test]
     fn validate_ext_inputs_multi_mmcs_bit_errors() {
         let exec = executor(CONFIG_D4_W16, true, false);
         let width_ext = CONFIG_D4_W16.width_ext();
-        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
-        inputs[width_ext + 1] = vec![WitnessId(0), WitnessId(1)];
+        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
+        inputs[width_ext] = vec![WitnessId(0), WitnessId(1)];
         let Err(CircuitError::IncorrectNonPrimitiveOpPrivateDataSize { op, expected, got }) =
             exec.validate_ext_inputs(&inputs)
         else {
@@ -1619,16 +1593,9 @@ mod tests {
         let exec = executor(CONFIG_D4_W16, true, false);
         let width_ext = CONFIG_D4_W16.width_ext();
 
-        let mut witness: Vec<Option<F>> = vec![None; 10];
-        witness[7] = Some(F::from_u64(42));
-        let configs = HashMap::new();
-        let mut op_states = BTreeMap::new();
-        let ctx = make_ctx(&mut witness, &[], &configs, &mut op_states);
-
-        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
         inputs[0] = vec![WitnessId(1)];
         inputs[2] = vec![WitnessId(3)];
-        inputs[width_ext] = vec![WitnessId(7)];
 
         let outputs: Vec<Vec<WitnessId>> = vec![
             vec![WitnessId(5)], // out 0 exposed
@@ -1637,38 +1604,40 @@ mod tests {
 
         let input_values: Vec<F> = (0..width_ext).map(|i| F::from_u64(i as u64)).collect();
 
-        let row = exec
-            .build_trace_row(&inputs, &outputs, false, false, input_values, &ctx)
-            .unwrap();
+        let row = exec.build_trace_row(&inputs, &outputs, false, false, input_values);
 
         assert_eq!(row.in_ctl.to_vec(), vec![true, false, true, false]);
         assert_eq!(row.input_indices.to_vec(), vec![1, 0, 3, 0]);
         assert_eq!(row.out_ctl.to_vec(), vec![true, false]);
         assert_eq!(row.output_indices.to_vec(), vec![5, 0]);
-        assert!(row.mmcs_ctl_enabled);
-        assert_eq!(row.mmcs_index_sum, F::from_u64(42));
+        assert_eq!(row.mmcs_bit_idx, 0);
     }
 
     #[test]
-    fn build_trace_row_no_mmcs_index() {
-        let exec = executor(CONFIG_D4_W16, true, false);
+    fn build_trace_row_records_merkle_bit_source() {
         let width_ext = CONFIG_D4_W16.width_ext();
-
-        let mut witness: Vec<Option<F>> = vec![None; 10];
-        let configs = HashMap::new();
-        let mut op_states = BTreeMap::new();
-        let ctx = make_ctx(&mut witness, &[], &configs, &mut op_states);
-
-        let inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        let mut inputs: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
+        inputs[width_ext] = vec![WitnessId(7)];
         let outputs: Vec<Vec<WitnessId>> = vec![vec![]; CONFIG_D4_W16.rate_ext()];
-        let input_values = F::zero_vec(width_ext);
 
-        let row = exec
-            .build_trace_row(&inputs, &outputs, false, false, input_values, &ctx)
-            .unwrap();
-
-        assert!(!row.mmcs_ctl_enabled);
-        assert_eq!(row.mmcs_index_sum, F::ZERO);
+        // A Merkle row reads its direction bit at the bit's source witness; a sponge row has
+        // no direction bit to read.
+        let merkle = executor(CONFIG_D4_W16, false, true).build_trace_row(
+            &inputs,
+            &outputs,
+            true,
+            false,
+            F::zero_vec(width_ext),
+        );
+        assert_eq!(merkle.mmcs_bit_idx, 7);
+        let sponge = executor(CONFIG_D4_W16, true, false).build_trace_row(
+            &vec![vec![]; width_ext + 1],
+            &outputs,
+            false,
+            false,
+            F::zero_vec(width_ext),
+        );
+        assert_eq!(sponge.mmcs_bit_idx, 0);
     }
 
     #[test]
@@ -1684,10 +1653,10 @@ mod tests {
                 0,
             )
         };
-        let mut rate_only: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        let mut rate_only: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
         rate_only[0] = vec![WitnessId(1)];
         rate_only[1] = vec![WitnessId(2)];
-        let empty: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 2];
+        let empty: Vec<Vec<WitnessId>> = vec![vec![]; width_ext + 1];
         let mut prep = crate::PreprocessedColumns::<F, 4>::new();
 
         // The chain-start constraint pins a fresh sponge's capacity, but nothing binds its rate.
@@ -1748,14 +1717,13 @@ mod tests {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: F::ZERO,
             input_values: vec![].into(),
             in_ctl: vec![].into(),
             input_indices: vec![].into(),
             out_ctl: vec![].into(),
             output_indices: vec![].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -1789,14 +1757,13 @@ mod tests {
             merkle_path: true,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: F::ZERO,
             input_values: vec![].into(),
             in_ctl: vec![].into(),
             input_indices: vec![].into(),
             out_ctl: vec![].into(),
             output_indices: vec![].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -1834,7 +1801,7 @@ mod tests {
             panic!("expected NonPrimitiveOpLayoutMismatch");
         };
         assert_eq!(op, op_type_d1);
-        assert_eq!(expected, "16 or 18 input vectors for D=1 mode");
+        assert_eq!(expected, "16 or 17 input vectors for D=1 mode");
         assert_eq!(got, 10);
     }
 

@@ -25,11 +25,10 @@ use crate::{
 
 /// Poseidon2 circuit AIR for recursive proof composition.
 ///
-/// Wraps the upstream permutation AIR and adds four groups of constraints:
+/// Wraps the upstream permutation AIR and adds three groups of constraints:
 ///
 /// - Sponge chaining.
 /// - Merkle-path chaining.
-/// - MMCS leaf-index accumulator.
 /// - Cross-table lookup interactions.
 ///
 /// # Const Generic Parameters
@@ -88,8 +87,8 @@ pub struct Poseidon2CircuitAir<
     /// Enforces the core constraint:
     /// - The output state must equal the Poseidon2 permutation of the input state.
     ///
-    /// All circuit-level constraints (chaining, accumulator, cross-table
-    /// lookups) are layered on top by this crate.
+    /// All circuit-level constraints (chaining, cross-table lookups) are
+    /// layered on top by this crate.
     p3_poseidon2: Poseidon2Air<
         F,
         LinearLayers,
@@ -321,16 +320,14 @@ impl<
     /// # Two-Pass Strategy
     ///
     /// ```text
-    ///     Pass 1 (sequential)
-    ///         Write the direction bit, the MMCS accumulator, and the
-    ///         Poseidon2 input state into uninitialized trace memory.
+    ///     Pass 1
+    ///         Write the direction bits and the Poseidon2 input state into
+    ///         uninitialized trace memory.
     ///
     ///     Pass 2 (parallel)
     ///         Read the inputs back.
     ///         Compute the full Poseidon2 permutation for every row.
     /// ```
-    ///
-    /// Pass 1 is sequential because the MMCS accumulator depends on the previous row.
     ///
     /// Pass 2 is parallel because each permutation is independent.
     ///
@@ -386,14 +383,13 @@ impl<
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: F::ZERO,
             input_values: F::zero_vec(WIDTH).into(),
             in_ctl: Vec::new().into(),
             input_indices: Vec::new().into(),
             out_ctl: Vec::new().into(),
             output_indices: Vec::new().into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
         let sponge_ops = sources
@@ -404,20 +400,18 @@ impl<
 
         // Each row has two segments:
         //
-        //     [ --- permutation columns --- | direction bit | accumulator ]
+        //     [ --- permutation columns --- | direction bits ]
         //
         // The permutation segment holds the full Poseidon2 state.
         //
         // That includes the 16 input elements, all intermediate values
         // produced during the rounds, and the 16 output elements.
         //
-        // After the permutation block come two circuit-specific columns.
+        // After the permutation block come the circuit-specific columns.
         //
         // The direction bit says whether the current node is a left or
         // right child in a Merkle tree (only meaningful in Merkle mode).
-        //
-        // The accumulator reconstructs the Merkle leaf index one bit at
-        // a time as the circuit walks up the authentication path.
+        // Arity-4 shapes add the high direction bit and the bits' product.
 
         let p2_ncols = p3_poseidon2_air::num_cols::<
             WIDTH,
@@ -436,59 +430,34 @@ impl<
         //
         // The extra capacity bits enlarge only the permutation segment.
         //
-        // The circuit columns are always two wide (direction bit and accumulator).
+        // The circuit columns hold the direction bits.
         let mut trace_vec: Vec<F> =
             Vec::with_capacity(n * ((p2_ncols << extra_capacity_bits) + circuit_ncols));
         let trace_slice = trace_vec.spare_capacity_mut();
 
-        // Pass 1: Sequential
+        // Pass 1
         //
-        // This pass must run row by row because each row's accumulator
-        // depends on the previous row's value.
-        //
-        // For each row we write three things into the uninitialized memory:
+        // For each row we write two things into the uninitialized memory:
         //
         //   1. The Poseidon2 input state — the 16 field elements that will
         //      be fed into the permutation. These come directly from the
         //      operation struct provided by the caller.
         //
-        //   2. The direction bit — zero or one, indicating left or right
-        //      child in a Merkle tree.
-        //
-        //   3. The MMCS accumulator — a running value that reconstructs
-        //      the Merkle leaf index from the direction bits.
-        //
-        // The accumulator follows a simple recurrence:
-        //
-        //     next_sum = current_sum × 2 + next_bit
-        //
-        // This is just binary-to-integer conversion built up one bit at
-        // a time. For example, leaf index 5 (binary 101) is reconstructed
-        // as: 1 → 1×2+0=2 → 2×2+1=5.
-        //
-        // On chain boundaries or non-Merkle rows the accumulator resets
-        // to whatever value the operation struct carries.
-
-        // Tracks the accumulator value from the previous row.
-        //
-        // Starts at zero. Updated on each iteration.
-        let mut prev_mmcs_index_sum = F::ZERO;
+        //   2. The direction bits — zero or one, indicating the child
+        //      position in a Merkle tree.
 
         // View the flat allocation as individual rows, each with the
         // right number of columns.
         let rows = trace_slice[..n * ncols].chunks_exact_mut(ncols);
 
         // Arity-4 compression shapes carry the high direction bit and its
-        // product column; their index accumulator counts in base four.
+        // product column.
         let is_arity4 = 4 * CAPACITY_EXT == WIDTH_EXT;
 
-        for (row_index, (op, row)) in sponge_ops.zip(rows).enumerate() {
+        for (op, row) in sponge_ops.zip(rows) {
             let Poseidon2CircuitRow {
-                new_start,
-                merkle_path,
                 mmcs_bit,
                 mmcs_bit2,
-                mmcs_index_sum,
                 input_values,
                 ..
             } = op;
@@ -499,31 +468,6 @@ impl<
                 "Trace row input_values must have length WIDTH"
             );
 
-            // Update the accumulator.
-            //
-            // If this is a Merkle row that continues a chain (not the
-            // first row, not a chain boundary), apply the recurrence:
-            //
-            //     arity-2:  new_value = old_value × 2 + bit
-            //     arity-4:  new_value = old_value × 4 + bit + 2·bit2
-            //
-            // Otherwise reset the accumulator. This happens on:
-            //   - The very first row (no previous value exists).
-            //   - Chain boundaries (a new Merkle proof starts).
-            //   - Non-Merkle rows (sponge mode, no index to track).
-            if row_index > 0 && *merkle_path && !*new_start {
-                let bit = F::from_bool(*mmcs_bit);
-                if is_arity4 {
-                    prev_mmcs_index_sum = prev_mmcs_index_sum * F::from_u64(4)
-                        + bit
-                        + F::from_u64(2) * F::from_bool(*mmcs_bit2);
-                } else {
-                    prev_mmcs_index_sum = prev_mmcs_index_sum.double() + bit;
-                }
-            } else {
-                prev_mmcs_index_sum = *mmcs_index_sum;
-            }
-
             // Write the 16 input field elements into the first 16 slots
             // of the row. These will be read back in pass 2 when the
             // permutation is computed.
@@ -533,17 +477,14 @@ impl<
 
             // Write the circuit columns after the permutation block.
             //
-            // Arity-2: [ direction bit | accumulator ].
-            // Arity-4: [ direction bit | high bit | bit·high bit | accumulator ].
+            // Arity-2: [ direction bit ].
+            // Arity-4: [ direction bit | high bit | bit·high bit ].
             let (_p2_part, circuit_part) = row.split_at_mut(p2_ncols);
             circuit_part[0].write(F::from_bool(*mmcs_bit));
             if is_arity4 {
                 circuit_part[1 + ARITY4_BIT2_IDX].write(F::from_bool(*mmcs_bit2));
                 circuit_part[1 + ARITY4_BIT_X_BIT2_IDX]
                     .write(F::from_bool(*mmcs_bit && *mmcs_bit2));
-                circuit_part[1 + ARITY4_EXTRA_COLS].write(prev_mmcs_index_sum);
-            } else {
-                circuit_part[1].write(prev_mmcs_index_sum);
             }
         }
 
@@ -620,7 +561,7 @@ impl<
 
         // SAFETY: At this point every element has been initialized.
         //
-        // Pass 1 wrote the input state, direction bit, and accumulator.
+        // Pass 1 wrote the input state and direction bits.
         //
         // Pass 2 wrote all intermediate round states and the output.
         //
@@ -668,9 +609,9 @@ impl<
     /// intermediates, output).
     ///
     /// Also includes the circuit-specific columns. Arity-2 shapes
-    /// (`2·RATE_EXT == WIDTH_EXT`) add two (`mmcs_bit`, `mmcs_index_sum`).
-    /// Arity-4 compression shapes (`4·CAPACITY_EXT == WIDTH_EXT`) add four
-    /// (`mmcs_bit`, `mmcs_bit2`, `mmcs_bit_x_bit2`, `mmcs_index_sum`).
+    /// (`2·RATE_EXT == WIDTH_EXT`) add one (`mmcs_bit`). Arity-4 compression
+    /// shapes (`4·CAPACITY_EXT == WIDTH_EXT`) add three (`mmcs_bit`,
+    /// `mmcs_bit2`, `mmcs_bit_x_bit2`).
     fn width(&self) -> usize {
         Self::main_width()
     }
@@ -782,8 +723,9 @@ impl<
 /// - The **Merkle chain selector** is true when the row is not a chain
 ///   boundary, is a Merkle row, and the limb is not looked up via CTL.
 ///
-/// - The **MMCS Merkle flag** column is the capacity-side flag of a compact
-///   D=1 Merkle row; the general layout writes `mmcs_ctl_enabled && merkle_path`.
+/// - The second MMCS tail column is the capacity-side flag of a compact D=1
+///   Merkle row; the general layout holds the high direction bit's source
+///   witness index of an arity-4 Merkle row there.
 ///
 /// Computing these products at setup time avoids degree-4 expressions
 /// in the constraint polynomial.
@@ -831,8 +773,8 @@ pub fn extract_preprocessed_from_operations_with_role<
             input_indices,
             out_ctl,
             output_indices,
-            mmcs_index_sum_idx,
-            mmcs_ctl_enabled,
+            mmcs_bit_idx,
+            mmcs_bit2_idx,
             new_start,
             merkle_path,
             absorb_len,
@@ -878,7 +820,7 @@ pub fn extract_preprocessed_from_operations_with_role<
             for ctl in out_ctl.iter().take(OL) {
                 preprocessed.push(F::from_bool(*ctl));
             }
-            let bit_source_idx = if *merkle_path { *mmcs_index_sum_idx } else { 0 };
+            let bit_source_idx = if *merkle_path { *mmcs_bit_idx } else { 0 };
             preprocessed.push(F::from_u64(bit_source_idx as u64 * d as u64));
             preprocessed.push(F::from_bool(capacity_fed));
             preprocessed.push(F::from_bool(*new_start));
@@ -926,13 +868,17 @@ pub fn extract_preprocessed_from_operations_with_role<
                     out_ctl: F::from_bool(out_ctl[i]),
                 }),
 
-                mmcs_index_sum_ctl_idx: F::from_u64(if *merkle_path {
-                    *mmcs_index_sum_idx as u64 * d as u64
+                mmcs_bit_idx: F::from_u64(if *merkle_path {
+                    *mmcs_bit_idx as u64 * d as u64
                 } else {
                     0
                 }),
 
-                mmcs_merkle_flag: F::from_bool(*mmcs_ctl_enabled && *merkle_path),
+                mmcs_bit2_idx: F::from_u64(if *merkle_path {
+                    *mmcs_bit2_idx as u64 * d as u64
+                } else {
+                    0
+                }),
 
                 new_start: F::from_bool(*new_start),
 
@@ -970,10 +916,7 @@ pub fn extract_preprocessed_from_operations_with_role<
 ///    Only the first two limbs carry the Merkle selector.
 ///    Limbs 2-3 reuse the same selectors gated on the opposite direction.
 ///
-/// 4. **MMCS accumulator** — on Merkle rows that are not chain boundaries,
-///    the next accumulator equals twice the current plus the next bit.
-///
-/// 5. **Poseidon2 permutation** — delegated to the inner permutation AIR
+/// 4. **Poseidon2 permutation** — delegated to the inner permutation AIR
 ///    via a sub-builder restricted to the permutation columns.
 ///    Unconditional on every row.
 ///
@@ -1103,7 +1046,6 @@ pub(crate) fn eval<
         let tail = hdr + WIDTH_EXT + RATE_EXT + RATE_EXT;
         let next_new_start = s[tail + 2];
         let next_merkle_path = s[tail + 3];
-        let not_next_new_start = AB::Expr::ONE - next_new_start.into();
 
         // Sponge chaining (compact): rate uses precomputed `(1−ns)(1−merkle)(1−ctl_i)`; capacity shares `cap_chain_enable`.
         for limb in 0..RATE_EXT {
@@ -1173,14 +1115,6 @@ pub(crate) fn eval<
                     .assert_zero(next_in[slot * D + d] - tag);
             }
         }
-
-        builder
-            .when_transition()
-            .when(not_next_new_start)
-            .when(next_merkle_path)
-            .assert_zero(
-                next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
-            );
 
         // The rate input lookups read the half `mmcs_bit + capacity_fed` selects, so the direction
         // bit must be zero wherever it is not a bound Merkle direction (sponge rows) and on
@@ -1292,47 +1226,6 @@ pub(crate) fn eval<
         builder
             .when(AB::Expr::ONE - next_prep.merkle_path.into())
             .assert_zero(next.mmcs_bit);
-
-        // MMCS accumulator
-        //
-        // As the circuit walks up a Merkle tree, it sees one direction bit
-        // per level. These bits form the binary representation of the leaf
-        // index being authenticated.
-        //
-        // The accumulator reconstructs that index with the recurrence:
-        //
-        //     next_sum = current_sum × 2 + next_bit
-        //
-        // For example, authenticating leaf 5 (binary 101):
-        //
-        //     row 0:  acc = 1            (first bit)
-        //     row 1:  acc = 1×2 + 0 = 2  (second bit)
-        //     row 2:  acc = 2×2 + 1 = 5  (third bit → final index)
-        //
-        // The constraint only fires when the next row is a Merkle row
-        // that is not a chain boundary. On chain boundaries the
-        // accumulator resets, and on non-Merkle rows it is unused.
-
-        // Compute (1 − next_new_start). This is 1 when the next row
-        // continues a chain, 0 when it starts a new one.
-        let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
-
-        // The constraint:
-        //
-        //     next_accumulator = current_accumulator × 2 + next_direction_bit
-        //
-        // Rearranged for assert_zero:
-        //
-        //     next_acc − (current_acc × 2 + next_bit) = 0
-        //
-        // Gated on: not a chain boundary AND is a Merkle row.
-        builder
-            .when_transition()
-            .when(not_next_new_start)
-            .when(next_prep.merkle_path)
-            .assert_zero(
-                next.mmcs_index_sum - (local.mmcs_index_sum * AB::Expr::TWO + next.mmcs_bit.into()),
-            );
     }
 
     // Poseidon2 permutation
@@ -1415,8 +1308,6 @@ fn eval_challenger_chain_start<
 /// - Sponge chaining: degree 2 (preprocessed selector × residual).
 /// - Running-hash placement `merkle_chain_sel · h_k · residual`: degree 3
 ///   (`h_k` is linear thanks to the product column).
-/// - Base-four index accumulator `not_new_start · merkle_path · residual`:
-///   degree 3 (`residual` is linear in the trace columns).
 #[unroll::unroll_for_loops]
 fn eval_arity4<
     AB: AirBuilder,
@@ -1547,20 +1438,6 @@ fn eval_arity4<
             }
         }
     }
-
-    // Base-four index accumulator: `next_sum = current_sum·4 + b0 + 2·b1`,
-    // gated on a Merkle continuation row.
-    let not_next_new_start = AB::Expr::ONE - next_prep.new_start.into();
-    builder
-        .when_transition()
-        .when(not_next_new_start)
-        .when(next_prep.merkle_path)
-        .assert_zero(
-            next.mmcs_index_sum
-                - (local.mmcs_index_sum * AB::Expr::from_u64(4)
-                    + next_bit.into()
-                    + AB::Expr::TWO * next_bit2.into()),
-        );
 
     // Poseidon2 permutation, delegated to the inner AIR over the permutation
     // columns only.
@@ -1868,7 +1745,7 @@ fn eval_interactions<
     AB::F: PrimeField,
 {
     // The cross-table interactions read the permutation block (identical offset
-    // in every layout) and `mmcs_index_sum` (whose offset depends on the arity).
+    // in every layout) and the direction bits (whose count depends on the arity).
     // Arity-4 compression shapes carry the wider column view.
     if 4 * CAPACITY_EXT == WIDTH_EXT {
         let local: &Poseidon2CircuitCols<
@@ -2086,9 +1963,9 @@ fn eval_interactions_inner<
         }
 
         if is_arity4 {
-            // Bind each direction bit to the sampled-index witness directly. The base-4 accumulator
-            // is unused on arity-4, so its idx / merkle-flag preprocessed slots carry the two
-            // bit-source witness indices. `merkle_path` gates the read so non-Merkle rows stay quiet.
+            // Bind each direction bit to the sampled-index witness directly; the two bit-index
+            // preprocessed slots carry the bit-source witness indices. `merkle_path` gates the
+            // read so non-Merkle rows stay quiet.
             let merkle: AB::Expr = local_pre.merkle_path.into();
             let bit2_val: AB::Expr = local
                 .mmcs_extra
@@ -2096,7 +1973,7 @@ fn eval_interactions_inner<
                 .map_or(AB::Expr::ZERO, |v| (*v).into());
 
             let mut bit0_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
-            bit0_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
+            bit0_lookup.push(local_pre.mmcs_bit_idx.into());
             bit0_lookup.push(local.mmcs_bit.into());
             for _ in 0..(WITNESS_EXT_D - 1) {
                 bit0_lookup.push(AB::Expr::ZERO);
@@ -2108,7 +1985,7 @@ fn eval_interactions_inner<
             );
 
             let mut bit1_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
-            bit1_lookup.push(local_pre.mmcs_merkle_flag.into());
+            bit1_lookup.push(local_pre.mmcs_bit2_idx.into());
             bit1_lookup.push(bit2_val);
             for _ in 0..(WITNESS_EXT_D - 1) {
                 bit1_lookup.push(AB::Expr::ZERO);
@@ -2116,9 +1993,9 @@ fn eval_interactions_inner<
             builder.push_interaction("WitnessChecks", bit1_lookup, Count::bounded(-merkle, 1));
         } else {
             // Direction-bit send: every Merkle row reads its bit from the witness it was sourced
-            // from. The accumulator idx slot carries that witness index.
+            // from.
             let mut bit_lookup: Vec<AB::Expr> = Vec::with_capacity(WITNESS_EXT_D + 1);
-            bit_lookup.push(local_pre.mmcs_index_sum_ctl_idx.into());
+            bit_lookup.push(local_pre.mmcs_bit_idx.into());
             bit_lookup.push(local.mmcs_bit.into());
             for _ in 0..(WITNESS_EXT_D - 1) {
                 bit_lookup.push(AB::Expr::ZERO);
@@ -2197,14 +2074,13 @@ mod test {
                 merkle_path: false,
                 mmcs_bit: false,
                 mmcs_bit2: false,
-                mmcs_index_sum: Val::ZERO,
                 input_values: Val::zero_vec(WIDTH).into(),
                 in_ctl: vec![false; POSEIDON2_LIMBS].into(),
                 input_indices: vec![0; POSEIDON2_LIMBS].into(),
                 out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
                 output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-                mmcs_index_sum_idx: 0,
-                mmcs_ctl_enabled: false,
+                mmcs_bit_idx: 0,
+                mmcs_bit2_idx: 0,
                 absorb_len: 0,
             };
             padded.resize(target_rows, filler);
@@ -2252,14 +2128,13 @@ mod test {
                 merkle_path: false,
                 mmcs_bit: false,
                 mmcs_bit2: false,
-                mmcs_index_sum: Val::ZERO,
                 input_values: input_values.to_vec().into(),
                 in_ctl: vec![true; POSEIDON2_LIMBS].into(),
                 input_indices: vec![0; POSEIDON2_LIMBS].into(),
                 out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
                 output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-                mmcs_index_sum_idx: 0,
-                mmcs_ctl_enabled: false,
+                mmcs_bit_idx: 0,
+                mmcs_bit2_idx: 0,
                 absorb_len,
             };
 
@@ -2284,14 +2159,13 @@ mod test {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: Val::zero_vec(WIDTH).into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
         padded.resize(target_rows, filler);
@@ -2338,7 +2212,6 @@ mod test {
         merkle_input[..2 * 4].copy_from_slice(&first_output[..2 * 4]);
         ordinary[1].input_values = merkle_input.to_vec().into();
         ordinary[1].merkle_path = true;
-        ordinary[1].mmcs_ctl_enabled = true;
         rows.extend(ordinary);
 
         let target_rows = 1usize << 5;
@@ -2348,14 +2221,13 @@ mod test {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: Val::zero_vec(WIDTH).into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
         rows.resize(target_rows, filler);
@@ -2379,14 +2251,13 @@ mod test {
                 merkle_path: merkle_row == Some(row_index),
                 mmcs_bit: false,
                 mmcs_bit2: false,
-                mmcs_index_sum: Val::ZERO,
                 input_values: Val::zero_vec(24).into(),
                 in_ctl: vec![false; 6].into(),
                 input_indices: vec![0; 6].into(),
                 out_ctl: vec![false; 4].into(),
                 output_indices: vec![0; 4].into(),
-                mmcs_index_sum_idx: 0,
-                mmcs_ctl_enabled: false,
+                mmcs_bit_idx: 0,
+                mmcs_bit2_idx: 0,
                 absorb_len: 0,
             })
             .collect()
@@ -2542,14 +2413,13 @@ mod test {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: state_a.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2562,14 +2432,13 @@ mod test {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: state_b.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2585,14 +2454,13 @@ mod test {
             merkle_path: true,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: state_c.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2604,14 +2472,13 @@ mod test {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: state_d.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2633,14 +2500,13 @@ mod test {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: state_a.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2659,14 +2525,13 @@ mod test {
             merkle_path: true,
             mmcs_bit: true,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: state_b.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2677,14 +2542,13 @@ mod test {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: output_b.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2692,15 +2556,15 @@ mod test {
     }
 
     #[test]
-    fn satisfies_poseidon2_mmcs_accumulator() {
+    fn satisfies_poseidon2_merkle_chain() {
         const D: usize = 4;
         let mut rng = SmallRng::seed_from_u64(99);
         let (constants, perm) = make_constants_and_perm(&mut rng);
 
-        // 3-row Merkle chain that exercises the MMCS accumulator.
-        //   Row 0: new_start=true,  merkle, mmcs_bit=1 → mmcs_index_sum resets to 0
-        //   Row 1: new_start=false, merkle, mmcs_bit=0 → mmcs_index_sum = 0*2 + 0 = 0
-        //   Row 2: new_start=false, merkle, mmcs_bit=1 → mmcs_index_sum = 0*2 + 1 = 1
+        // 3-row Merkle chain whose direction bits place each digest on both sides.
+        //   Row 0: new_start=true,  merkle, mmcs_bit=1
+        //   Row 1: new_start=false, merkle, mmcs_bit=0 (digest chains left)
+        //   Row 2: new_start=false, merkle, mmcs_bit=1 (digest chains right)
         let bits = [true, false, true];
 
         let state_0: [Val; WIDTH] = core::array::from_fn(|_| rng.random());
@@ -2711,14 +2575,13 @@ mod test {
             merkle_path: true,
             mmcs_bit: bits[0],
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: state_0.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: true,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2733,14 +2596,13 @@ mod test {
             merkle_path: true,
             mmcs_bit: bits[1],
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO, // will be computed by generate_trace_rows
             input_values: state_1.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: true,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2757,14 +2619,13 @@ mod test {
             merkle_path: true,
             mmcs_bit: bits[2],
             mmcs_bit2: false,
-            mmcs_index_sum: Val::ZERO,
             input_values: state_2.to_vec().into(),
             in_ctl: vec![false; POSEIDON2_LIMBS].into(),
             input_indices: vec![0; POSEIDON2_LIMBS].into(),
             out_ctl: vec![false; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
             output_indices: vec![0; POSEIDON2_PUBLIC_OUTPUT_LIMBS].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: true,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2772,9 +2633,8 @@ mod test {
     }
 
     /// Arity-4 compression chain: a running digest is placed into one of four
-    /// `CAPACITY_EXT`-sized chunks per level via the linearized one-hot, the
-    /// three unused chunks are pinned to zero, and the base-four index
-    /// accumulator reconstructs the quaternary leaf index.
+    /// `CAPACITY_EXT`-sized chunks per level via the linearized one-hot, and the
+    /// three unused chunks are pinned to zero.
     #[test]
     fn prove_poseidon2_arity4_mmcs_chain() {
         use p3_koala_bear::Poseidon2KoalaBear;
@@ -2811,14 +2671,13 @@ mod test {
                 merkle_path: true,
                 mmcs_bit: pos & 1 == 1,
                 mmcs_bit2: pos & 2 == 2,
-                mmcs_index_sum: KbVal::ZERO,
                 input_values: state.to_vec().into(),
                 in_ctl: vec![false; WIDTH_EXT].into(),
                 input_indices: vec![0; WIDTH_EXT].into(),
                 out_ctl: vec![false; RATE_EXT].into(),
                 output_indices: vec![0; RATE_EXT].into(),
-                mmcs_index_sum_idx: 0,
-                mmcs_ctl_enabled: true,
+                mmcs_bit_idx: 0,
+                mmcs_bit2_idx: 0,
                 absorb_len: 0,
             };
             (row, output)
@@ -2833,14 +2692,13 @@ mod test {
             merkle_path: true,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: KbVal::ZERO,
             input_values: state_0.to_vec().into(),
             in_ctl: vec![false; WIDTH_EXT].into(),
             input_indices: vec![0; WIDTH_EXT].into(),
             out_ctl: vec![false; RATE_EXT].into(),
             output_indices: vec![0; RATE_EXT].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: true,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
 
@@ -2856,14 +2714,13 @@ mod test {
             merkle_path: false,
             mmcs_bit: false,
             mmcs_bit2: false,
-            mmcs_index_sum: KbVal::ZERO,
             input_values: KbVal::zero_vec(W32).into(),
             in_ctl: vec![false; WIDTH_EXT].into(),
             input_indices: vec![0; WIDTH_EXT].into(),
             out_ctl: vec![false; RATE_EXT].into(),
             output_indices: vec![0; RATE_EXT].into(),
-            mmcs_index_sum_idx: 0,
-            mmcs_ctl_enabled: false,
+            mmcs_bit_idx: 0,
+            mmcs_bit2_idx: 0,
             absorb_len: 0,
         };
         padded.resize(target_rows, filler);
@@ -2972,8 +2829,7 @@ mod test {
         use p3_goldilocks::Goldilocks;
 
         // The arity-4 compression shape exercises `eval_arity4`: the product
-        // column, the linearized one-hot placement, and the base-four index
-        // accumulator must all stay within degree 3.
+        // column and the linearized one-hot placement must stay within degree 3.
         // All three new W32/W16 compression shapes are checked.
         type KbF = KoalaBear;
         type KbEF = BinomialExtensionField<KbF, 4>;

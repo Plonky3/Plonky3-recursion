@@ -201,7 +201,6 @@ where
                 inputs,
                 out_ctl: vec![true; rate_ext],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
             },
         )?;
 
@@ -323,7 +322,6 @@ where
                 inputs,
                 out_ctl: vec![true; rate_ext],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
             },
         )?;
 
@@ -2149,7 +2147,6 @@ fn add_arity4_compression_row<EF: Field>(
             inputs,
             out_ctl: vec![is_final; rate_ext],
             return_all_outputs: false,
-            mmcs_index_sum: None,
         },
     )
 }

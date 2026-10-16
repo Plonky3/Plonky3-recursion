@@ -185,19 +185,18 @@ pub struct PoseidonPreprocessedRow<const INPUT_LIMBS: usize, const OUTPUT_LIMBS:
     ///
     /// Every Merkle row looks up its direction bit in the Witness table at
     /// this index. Arity-4 rows use it for the low direction bit.
-    pub mmcs_index_sum_ctl_idx: T,
+    pub mmcs_bit_idx: T,
 
     /// Arity-4 rows: witness index of the high direction bit's source.
     ///
     /// Arity-2 rows leave this column unused.
-    pub mmcs_merkle_flag: T,
+    pub mmcs_bit2_idx: T,
 
     /// Chain boundary flag.
     ///
     /// Set on the first row of a new sponge or Merkle chain.
     ///
-    /// When set, all chaining constraints and the MMCS accumulator
-    /// update are disabled.
+    /// When set, all chaining constraints are disabled.
     pub new_start: T,
 
     /// Merkle-path flag.
@@ -215,8 +214,8 @@ impl<const INPUT_LIMBS: usize, const OUTPUT_LIMBS: usize, T: Copy + Default> Def
         Self {
             input_limbs: [PoseidonPrepInputLimb::default(); INPUT_LIMBS],
             output_limbs: [PoseidonPrepOutputLimb::default(); OUTPUT_LIMBS],
-            mmcs_index_sum_ctl_idx: T::default(),
-            mmcs_merkle_flag: T::default(),
+            mmcs_bit_idx: T::default(),
+            mmcs_bit2_idx: T::default(),
             new_start: T::default(),
             merkle_path: T::default(),
         }

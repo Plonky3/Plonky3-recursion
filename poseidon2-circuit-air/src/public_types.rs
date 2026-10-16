@@ -753,8 +753,8 @@ const _: () = assert_circuit_cols_split::<
 >();
 
 // Pin the arity-4 circuit-vs-permutation column split for the compression-only
-// shapes. These add four circuit columns (`mmcs_bit`, `mmcs_bit2`,
-// `mmcs_bit_x_bit2`, `mmcs_index_sum`) over the permutation block.
+// shapes. These add three circuit columns (`mmcs_bit`, `mmcs_bit2`,
+// `mmcs_bit_x_bit2`) over the permutation block.
 const _: () = assert_circuit_cols_split_arity4::<
     { KoalaBearD4Width32::WIDTH },
     { KoalaBearD4Width32::SBOX_DEGREE },

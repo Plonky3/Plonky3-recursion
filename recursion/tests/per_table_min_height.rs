@@ -155,7 +155,6 @@ fn npo_min_height_override_at_or_above_global_floor_round_trips() {
                 inputs,
                 out_ctl: vec![is_last, is_last],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
                 absorb_len: 0,
             })
             .unwrap();

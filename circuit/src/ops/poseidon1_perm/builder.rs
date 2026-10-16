@@ -88,7 +88,6 @@ mod tests {
             inputs: vec![Some(zero); 6],
             out_ctl: vec![true; 4],
             return_all_outputs: false,
-            mmcs_index_sum: None,
             absorb_len: 0,
         };
 

@@ -420,7 +420,6 @@ fn sponge_start_cross_key<EF: ExtensionField<F> + ExtractBinomialW<F>>(
                 inputs,
                 out_ctl: vec![true; rate_ext],
                 return_all_outputs: false,
-                mmcs_index_sum: None,
                 absorb_len: 0,
             })
             .unwrap();

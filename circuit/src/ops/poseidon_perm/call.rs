@@ -40,11 +40,6 @@ pub struct PoseidonPermCall<V: PoseidonVariant> {
     /// When true, capacity outputs are also allocated and returned, but NOT CTL-verified
     /// (they are constrained only by the permutation itself).
     pub return_all_outputs: bool,
-    /// Optional MMCS index accumulator seed for the trace's accumulator column.
-    ///
-    /// It is not looked up on the witness bus; Merkle rows look up each direction bit at its own
-    /// source witness.
-    pub mmcs_index_sum: Option<ExprId>,
     /// Prefix-free duplex-sponge length tag: the number of rate elements absorbed on this row.
     ///
     /// The executor adds it to the first capacity element of a fresh or chained capacity (a
@@ -65,7 +60,6 @@ impl<V: PoseidonVariant> Default for PoseidonPermCall<V> {
             inputs: vec![None; config.width_ext()],
             out_ctl: vec![false; config.rate_ext()],
             return_all_outputs: false,
-            mmcs_index_sum: None,
             absorb_len: 0,
         }
     }
