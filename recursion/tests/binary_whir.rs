@@ -372,10 +372,19 @@ macro_rules! check {
                 padded_sites += 1;
             }
             for digest in [path.first(), path.last()].into_iter().flatten() {
-                // A flipped low bit keeps the limb a sixteen-bit word.
+                // A flipped low bit keeps the limb a sixteen-bit word. Paths that share a tree
+                // node share its witness, so every private copy takes the flipped value and the
+                // rejection must come from the Merkle binding, not from disagreeing copies.
                 let mut wrong = last_values.clone();
-                let index = value_index(&digest[0]);
-                wrong[index] = BabyBear::from_u32(wrong[index].as_canonical_u32() ^ 1);
+                let row = circuit.expr_to_widx[&digest[0]];
+                for (index, _) in circuit
+                    .private_input_rows
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &private_row)| private_row == row)
+                {
+                    wrong[index] = BabyBear::from_u32(wrong[index].as_canonical_u32() ^ 1);
+                }
                 assert!(!run(&circuit, &wrong));
             }
         }
