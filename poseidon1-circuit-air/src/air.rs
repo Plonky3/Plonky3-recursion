@@ -1083,25 +1083,33 @@ pub(crate) fn eval<
         // Merkle-path chaining: first `RATE_EXT` logical limbs of the output
         // form our digest; the sibling occupies the next `RATE_EXT` limbs of
         // the next row's input. The direction bit selects left vs right placement.
-        let is_left = AB::Expr::ONE - next_bit.into();
+        // Binary Merkle chaining needs both child digests to fit in equal halves of the
+        // state; an unequal shape (W24) rejects any trusted Merkle flag on the shifted row.
+        // This row-local assertion has no transition or enabled-row gate, so wraparound
+        // covers the first, last, and one-row traces as well.
+        if RATE_EXT == CAPACITY_EXT {
+            let is_left = AB::Expr::ONE - next_bit.into();
 
-        for i in 0..RATE_EXT {
-            let gate_left_i = next_prep.input_limbs[i].merkle_chain_sel * is_left.clone();
-            for d in 0..D {
-                builder
-                    .when_transition()
-                    .when(gate_left_i.clone())
-                    .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
+            for i in 0..RATE_EXT {
+                let gate_left_i = next_prep.input_limbs[i].merkle_chain_sel * is_left.clone();
+                for d in 0..D {
+                    builder
+                        .when_transition()
+                        .when(gate_left_i.clone())
+                        .assert_zero(next_in[i * D + d] - local_out[i * D + d]);
+                }
             }
-        }
-        for i in 0..RATE_EXT {
-            let gate_right_i = next_prep.input_limbs[i].merkle_chain_sel * next_bit;
-            for d in 0..D {
-                builder
-                    .when_transition()
-                    .when(gate_right_i.clone())
-                    .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
+            for i in 0..RATE_EXT {
+                let gate_right_i = next_prep.input_limbs[i].merkle_chain_sel * next_bit;
+                for d in 0..D {
+                    builder
+                        .when_transition()
+                        .when(gate_right_i.clone())
+                        .assert_zero(next_in[(RATE_EXT + i) * D + d] - local_out[i * D + d]);
+                }
             }
+        } else {
+            builder.assert_zero(next_prep.merkle_path.into());
         }
 
         // The input lookups read the half `mmcs_bit` selects, so the bit must be zero wherever it

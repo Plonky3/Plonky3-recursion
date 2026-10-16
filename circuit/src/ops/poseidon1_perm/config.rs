@@ -1,6 +1,7 @@
 //! Poseidon1 configuration types and execution closures.
 
 use alloc::format;
+use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -242,6 +243,25 @@ impl Poseidon1Config {
         self.rate_ext() + self.capacity_ext()
     }
 
+    /// Reject a binary Merkle row on a shape whose state does not split into two equal halves.
+    pub(crate) fn validate_merkle_geometry(
+        self,
+        merkle_path: bool,
+    ) -> Result<(), CircuitBuilderError> {
+        if merkle_path && self.rate_ext() != self.capacity_ext() {
+            return Err(CircuitBuilderError::Poseidon1ConfigMismatch {
+                expected: "binary Merkle shape with equal rate_ext and capacity_ext".to_string(),
+                got: format!(
+                    "{} has rate_ext={} and capacity_ext={}",
+                    self.variant_name(),
+                    self.rate_ext(),
+                    self.capacity_ext()
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Check that input and output counts match this config's expected layout.
     ///
     /// - For D=1: `add_poseidon1_perm` always supplies `width_ext + 2` input slots (MMCS slots may
@@ -258,6 +278,7 @@ impl Poseidon1Config {
         output_count: usize,
         merkle_path: bool,
     ) -> Result<(), CircuitBuilderError> {
+        self.validate_merkle_geometry(merkle_path)?;
         let is_d1 = self.d() == 1;
         let inputs_ok = if is_d1 {
             if merkle_path {
@@ -449,6 +470,26 @@ mod tests {
         // width_ext=4, rate_ext=2
         assert!(cfg.validate_io_counts(4 + 2, 2, false).is_ok()); // inputs=6, outputs=rate
         assert!(cfg.validate_io_counts(6, 4, true).is_ok()); // outputs=width
+    }
+
+    #[test]
+    fn validate_io_counts_w24_accepts_sponge_and_rejects_binary_merkle() {
+        for cfg in [
+            Poseidon1Config::BABY_BEAR_D4_W24,
+            Poseidon1Config::BABY_BEAR_D4_W24.for_challenger(),
+            Poseidon1Config::KOALA_BEAR_D4_W24,
+            Poseidon1Config::KOALA_BEAR_D4_W24.for_challenger(),
+        ] {
+            assert!(
+                cfg.validate_io_counts(cfg.width_ext() + 2, cfg.rate_ext(), false)
+                    .is_ok()
+            );
+            let Err(CircuitBuilderError::Poseidon1ConfigMismatch { .. }) =
+                cfg.validate_io_counts(cfg.width_ext() + 2, cfg.rate_ext(), true)
+            else {
+                panic!("W24 binary Merkle mode must be rejected");
+            };
+        }
     }
 
     #[test]
