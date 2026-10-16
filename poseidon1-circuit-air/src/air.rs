@@ -753,7 +753,7 @@ pub fn extract_preprocessed_from_operations<
 ///
 /// This is the core constraint function.
 ///
-/// It enforces five groups of constraints on the builder.
+/// It enforces four groups of constraints on the builder.
 ///
 /// 1. **Boolean** — the direction bit must be 0 or 1.
 ///
@@ -1063,7 +1063,7 @@ pub(crate) fn eval<
     //
     // The permutation constraint is handled by a separate AIR. We
     // give it a sub-builder that only sees the permutation columns
-    // (not the two circuit columns at the end of the row).
+    // (not the circuit column at the end of the row).
 
     let p3_poseidon1_num_cols = p3_poseidon1_air::num_cols::<
         WIDTH,
@@ -1380,7 +1380,7 @@ where
         >(builder, local, local_preprocessed, next_preprocessed);
 
         // Delegate to the core constraint function, which enforces all
-        // five constraint groups.
+        // four constraint groups.
         eval::<
             _,
             D,
