@@ -1581,7 +1581,10 @@ mod test {
 
     use super::*;
     use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
-    use crate::{BabyBearD4Width16, OptimizedConstants, Poseidon1CircuitAirBabyBearD4Width16};
+    use crate::{
+        BabyBearD4Width16, BabyBearD4Width24, OptimizedConstants,
+        Poseidon1CircuitAirBabyBearD4Width16, Poseidon1CircuitAirBabyBearD4Width24,
+    };
 
     const WIDTH: usize = 16;
     type Val = BabyBear;
@@ -1944,6 +1947,62 @@ mod test {
         };
 
         check_rows(vec![row_0, row_1, row_2], &constants);
+    }
+
+    fn w24_rows(merkle_row: Option<usize>, row_count: usize) -> Vec<Poseidon1CircuitRow<Val>> {
+        (0..row_count)
+            .map(|row_index| Poseidon1CircuitRow {
+                new_start: true,
+                merkle_path: merkle_row == Some(row_index),
+                mmcs_bit: false,
+                input_values: Val::zero_vec(24),
+                in_ctl: vec![false; 6],
+                input_indices: vec![0; 6],
+                out_ctl: vec![false; 4],
+                output_indices: vec![0; 4],
+                mmcs_bit_idx: 0,
+                absorb_len: 0,
+            })
+            .collect()
+    }
+
+    fn w24_air_and_trace(
+        rows: &[Poseidon1CircuitRow<Val>],
+    ) -> (
+        Poseidon1CircuitAirBabyBearD4Width24,
+        p3_matrix::dense::RowMajorMatrix<Val>,
+    ) {
+        let preprocessed =
+            extract_preprocessed_from_operations::<6, 4, Val, Val>(rows, 4, 4, false);
+        let (full, partial) = BabyBearD4Width24::round_constants();
+        let air = Poseidon1CircuitAirBabyBearD4Width24::new_with_preprocessed(
+            full.clone(),
+            partial.clone(),
+            preprocessed,
+        );
+        let trace = air.generate_trace_rows(rows, &full, &partial, 0);
+        (air, trace)
+    }
+
+    /// The W24 state does not split into two equal halves, so a Merkle flag on any row,
+    /// including the first and last (wrap-around) rows, must be rejected.
+    #[test]
+    fn rejects_w24_merkle_flag_at_one_first_and_last_rows() {
+        for rows in [
+            w24_rows(Some(0), 1),
+            w24_rows(Some(0), 4),
+            w24_rows(Some(3), 4),
+        ] {
+            let (air, trace) = w24_air_and_trace(&rows);
+            assert_air_rejects::<Val, EF, _>(&air, &trace);
+        }
+    }
+
+    #[test]
+    fn accepts_w24_all_sponge_rows() {
+        let rows = w24_rows(None, 4);
+        let (air, trace) = w24_air_and_trace(&rows);
+        assert_air_satisfies::<Val, EF, _>(&air, &trace);
     }
 
     #[test]
