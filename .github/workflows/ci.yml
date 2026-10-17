@@ -69,7 +69,7 @@ jobs:
               --test binary_tower128 --test blake3_compress --test byte_hash --test byte_hash_arity4_mmcs
               --test byte_hash_mmcs --test construction_limits --test construction_native --test diagnostics
               --test direct_circuit_air --test exactly_one --test indexed_circuit_air --test input_dedup
-              --test keccak_f1600 --test manifest --test native_binary_bits --test native_binary_circuit_air
+              --test keccak_f1600 --test manifest --test merkle_sponge_binding --test native_binary_bits --test native_binary_circuit_air
               --test native_binary_coordinates --test native_binary_mmcs --test native_blake3
               --test native_blake3_compress --test native_bus_blake3 --test native_bus_circuit_air
               --test native_bus_packed --test native_keccak --test native_poly192 --test native_tower128
