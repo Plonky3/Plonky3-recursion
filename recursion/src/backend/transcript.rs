@@ -13,9 +13,7 @@ use alloc::string::ToString;
 
 use p3_batch_stark::CommonData;
 use p3_batch_stark::common::GlobalPreprocessed;
-use p3_circuit_prover::batch_stark_prover::{
-    BatchStarkProof, CircuitVerifier, TableProver, lookups_for_circuit_table_air,
-};
+use p3_circuit_prover::batch_stark_prover::{BatchStarkProof, CircuitVerifier, TableProver};
 use p3_circuit_prover::field_params::ExtractBinomialW;
 use p3_field::{Algebra, ExtensionField, PrimeField64};
 use p3_lookup::logup::LogUpGadget;
@@ -127,17 +125,11 @@ where
 {
     let ReconstructedBatchTables {
         airs,
-        trace_lens,
         public_values,
+        lookups,
+        ..
     } = reconstruct_batch_tables::<SC, D>(config, proof, non_primitive_provers)?;
 
-    let lookups = airs
-        .iter()
-        .zip(&trace_lens)
-        .map(|(air, &trace_len)| {
-            lookups_for_circuit_table_air::<SC, D>(&air.to_table_air(), trace_len, config.is_zk())
-        })
-        .collect();
     let effective_common = CommonData::new(
         common_data
             .preprocessed
@@ -185,6 +177,7 @@ where
         airs,
         trace_lens: _,
         public_values,
+        ..
     } = trusted_batch_tables::<SC, D>(verifier, statement)?;
     let (transcript, _) = replay_batch_stark_transcript(
         &airs,
