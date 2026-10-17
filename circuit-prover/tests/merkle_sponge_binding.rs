@@ -7,6 +7,9 @@
 //! because the second circuit's statement is false. Changing the claimed root, which the output
 //! lookup binds, is the control showing the harness detects a missing binding at all.
 
+#[cfg(debug_assertions)]
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+
 use p3_circuit::ops::{
     PermConfig, Poseidon1Config, Poseidon2Config, Poseidon2PermCall, generate_poseidon1_trace,
     generate_poseidon2_trace, perm_private_data,
@@ -33,6 +36,8 @@ use p3_koala_bear::{
 use p3_poseidon2_circuit_air::{KoalaBearD1Width16, KoalaBearD4Width16, KoalaBearD4Width32};
 use p3_symmetric::Permutation;
 use p3_test_utils::LiftPermToQuintic;
+#[cfg(debug_assertions)]
+use p3_test_utils::rejection_oracle::{DebugRejectionKind, classify_debug_diagnostic};
 
 type F = KoalaBear;
 type EF4 = BinomialExtensionField<F, 4>;
@@ -155,19 +160,39 @@ fn run_merkle<EF: ExtensionField<F>>(
     runner.run().map_err(|e| format!("{e:?}"))
 }
 
-/// Whether `result` is a rejection by the verifier, as opposed to a prover or harness failure.
-fn rejected_by_verifier(result: &Result<(), String>) -> bool {
-    matches!(result, Err(e) if e.starts_with("verify:"))
+/// Whether `result` is a rejection by the lookup argument, as opposed to a prover or harness
+/// failure: the verifier's in a release build, the prover's lookup check in a debug build.
+fn rejected_by_lookups(result: &Result<(), String>) -> bool {
+    matches!(result, Err(e) if e.starts_with("verify:") || e.starts_with("lookup:"))
 }
 
 /// Prove `traces` under `prepared`'s key and verify with `prepared`'s verifier.
+///
+/// A debug build checks every lookup while proving and panics on an unbalanced one, so there a
+/// forged trace stops at that check and is reported as `lookup:` instead of reaching the verifier.
 fn prove_under<EF>(prepared: &PreparedCircuitProver<SC>, traces: &Traces<EF>) -> Result<(), String>
 where
     EF: ExtensionField<F> + ExtractBinomialW<F>,
 {
-    let proof = prepared
-        .prove(traces)
-        .map_err(|e| format!("prove: {e:?}"))?;
+    #[cfg(debug_assertions)]
+    let proof = match catch_unwind(AssertUnwindSafe(|| prepared.prove(traces))) {
+        Ok(proof) => proof,
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied());
+            match message {
+                Some(m) if classify_debug_diagnostic(m) == Some(DebugRejectionKind::Lookup) => {
+                    return Err(format!("lookup: {m}"));
+                }
+                _ => resume_unwind(payload),
+            }
+        }
+    };
+    #[cfg(not(debug_assertions))]
+    let proof = prepared.prove(traces);
+    let proof = proof.map_err(|e| format!("prove: {e:?}"))?;
     prepared
         .verifier()
         .verify(&proof, &[])
@@ -354,11 +379,11 @@ fn assert_merkle_family<P: Family>() {
     let not_rejected: Vec<(&str, Result<(), String>)> = cases
         .into_iter()
         .map(|(name, spec)| (name, merkle_cross_key::<P>(spec)))
-        .filter(|(_, result)| !rejected_by_verifier(result))
+        .filter(|(_, result)| !rejected_by_lookups(result))
         .collect();
     assert!(
         not_rejected.is_empty(),
-        "not rejected by the other circuit's verifier: {not_rejected:?}"
+        "not rejected under the other circuit's key: {not_rejected:?}"
     );
 }
 
@@ -467,7 +492,7 @@ fn poseidon2_d4_sponge_start_binds_capacity() {
         2..4,
     );
     assert!(
-        rejected_by_verifier(&result),
+        rejected_by_lookups(&result),
         "a non-zero starting capacity was not rejected: {result:?}"
     );
 }
@@ -486,7 +511,7 @@ fn poseidon2_compact_d1_sponge_start_binds_rate_lanes() {
         3..8,
     );
     assert!(
-        rejected_by_verifier(&result),
+        rejected_by_lookups(&result),
         "non-zero starting rate lanes were not rejected: {result:?}"
     );
 }
@@ -516,7 +541,7 @@ fn poseidon2_arity4_sponge_start_binds_empty_lanes() {
         1..8,
     );
     assert!(
-        rejected_by_verifier(&result),
+        rejected_by_lookups(&result),
         "a non-zero arity-4 starting state was not rejected: {result:?}"
     );
 }
