@@ -155,6 +155,17 @@ pub struct CommonDataTargets<SC: StarkGenericConfig, Comm> {
     pub lookups: Vec<Vec<Lookup<Val<SC>>>>,
 }
 
+impl<SC: StarkGenericConfig, Comm> CommonDataTargets<SC, Comm> {
+    /// Global preprocessed commitment targets, if the verified relation has preprocessed columns.
+    ///
+    /// Read-only access for integrations that build a verifier by hand (e.g. around
+    /// `verify_trusted_p3_batch_proof_circuit`) and must pin this commitment to a trusted
+    /// constant themselves, as `TrustedPcsRecursionBackend::constrain_trusted_preprocessing` does.
+    pub fn preprocessed_commitment(&self) -> Option<&Comm> {
+        self.preprocessed.as_ref().map(|group| &group.commitment)
+    }
+}
+
 impl<SC: StarkGenericConfig, Comm> Recursive<SC::Challenge> for CommonDataTargets<SC, Comm>
 where
     Comm: Recursive<
