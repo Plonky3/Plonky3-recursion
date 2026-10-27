@@ -3313,3 +3313,60 @@ fn check_horner_chain_head_seed(k: usize) {
         "ALU separator row 0 out column 3 changed 0 -> 1 with rows 1..=3 recomputed",
     );
 }
+
+#[test]
+fn hiding_worker_policy_defaults_to_one_and_rejects_other_counts() {
+    assert_eq!(HidingProofWorkers::default(), HidingProofWorkers::One);
+    assert_eq!(HidingProofWorkers::try_from(1).unwrap().workers(), 1);
+    assert_eq!(HidingProofWorkers::try_from(2).unwrap().workers(), 2);
+    for workers in [0, 3, usize::MAX] {
+        assert!(HidingProofWorkers::try_from(workers).is_err());
+    }
+    assert_eq!(
+        selected_hiding_workers(None).unwrap(),
+        HidingProofWorkers::One
+    );
+    assert_eq!(
+        selected_hiding_workers(Some(HidingProofWorkers::Two)).unwrap(),
+        HidingProofWorkers::Two
+    );
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn hiding_worker_policy_uses_requested_isolated_pool() {
+    for workers in [HidingProofWorkers::One, HidingProofWorkers::Two] {
+        let actual =
+            run_native_proof_in_pool(true, Some(workers), rayon::current_num_threads).unwrap();
+        assert_eq!(actual, workers.workers());
+    }
+}
+
+#[cfg(feature = "parallel")]
+#[test]
+fn hiding_worker_policy_keeps_non_hiding_caller_pool() {
+    let caller = rayon::ThreadPoolBuilder::new()
+        .num_threads(3)
+        .build()
+        .unwrap();
+    let actual = caller.install(|| {
+        run_native_proof_in_pool(
+            false,
+            Some(HidingProofWorkers::Two),
+            rayon::current_num_threads,
+        )
+        .unwrap()
+    });
+    assert_eq!(actual, 3);
+}
+
+#[cfg(not(feature = "parallel"))]
+#[test]
+fn hiding_worker_policy_requires_parallel_support_for_two_workers() {
+    assert!(run_native_proof_in_pool(true, Some(HidingProofWorkers::Two), || 7).is_err());
+    assert_eq!(run_native_proof_in_pool(true, None, || 7).unwrap(), 7);
+    assert_eq!(
+        run_native_proof_in_pool(false, Some(HidingProofWorkers::Two), || 7).unwrap(),
+        7
+    );
+}

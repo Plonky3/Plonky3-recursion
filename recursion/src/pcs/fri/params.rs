@@ -25,10 +25,6 @@ pub enum FriInputError {
     MaxArityExceedsTwoAdicity,
     #[error("native FRI {name} proof-of-work bits are not supported by the field/word limits")]
     PowBitsOutOfRange { name: &'static str },
-    #[error(
-        "native FRI batch-phase proof of work ({bits} bits) is not supported by the recursive verifier"
-    )]
-    UnsupportedBatchPow { bits: usize },
     #[error("native FRI scalar {name} does not match recursive parameters")]
     ScalarMismatch { name: &'static str },
     #[error("native FRI has {native} queries but recursive verifier requires {minimum}")]
@@ -60,6 +56,7 @@ pub struct NativeFriParams {
     log_final_poly_len: usize,
     max_log_arity: usize,
     num_queries: usize,
+    batch_pow_bits: usize,
     commit_pow_bits: usize,
     query_pow_bits: usize,
 }
@@ -81,13 +78,6 @@ impl NativeFriParams {
         if params.log_blowup == 0 {
             return Err(FriInputError::ZeroBlowup);
         }
-        // The recursive FRI verifier replays no batch-phase grind, so it only accepts the zero
-        // difficulty, at which the native transcript absorbs nothing for that phase.
-        if params.batch_proof_of_work_bits != 0 {
-            return Err(FriInputError::UnsupportedBatchPow {
-                bits: params.batch_proof_of_work_bits,
-            });
-        }
         for (name, value) in [
             ("log_blowup", params.log_blowup),
             ("log_final_poly_len", params.log_final_poly_len),
@@ -98,6 +88,7 @@ impl NativeFriParams {
             }
         }
         for (name, bits) in [
+            ("batch", params.batch_proof_of_work_bits),
             ("commit", params.commit_proof_of_work_bits),
             ("query", params.query_proof_of_work_bits),
         ] {
@@ -114,6 +105,7 @@ impl NativeFriParams {
             log_final_poly_len: params.log_final_poly_len,
             max_log_arity: params.max_log_arity,
             num_queries: params.num_queries,
+            batch_pow_bits: params.batch_proof_of_work_bits,
             commit_pow_bits: params.commit_proof_of_work_bits,
             query_pow_bits: params.query_proof_of_work_bits,
         };
@@ -135,6 +127,10 @@ impl NativeFriParams {
 
     pub const fn num_queries(&self) -> usize {
         self.num_queries
+    }
+
+    pub const fn batch_pow_bits(&self) -> usize {
+        self.batch_pow_bits
     }
 
     pub const fn commit_pow_bits(&self) -> usize {
@@ -175,6 +171,7 @@ impl NativeFriParams {
             return Err(FriInputError::MaxArityExceedsTwoAdicity);
         }
         for (name, bits) in [
+            ("batch", self.batch_pow_bits),
             ("commit", self.commit_pow_bits),
             ("query", self.query_pow_bits),
         ] {
@@ -200,6 +197,11 @@ impl NativeFriParams {
                 recursive.log_final_poly_len,
             ),
             ("max_log_arity", self.max_log_arity, recursive.max_log_arity),
+            (
+                "batch_pow_bits",
+                self.batch_pow_bits,
+                recursive.batch_pow_bits,
+            ),
             (
                 "commit_pow_bits",
                 self.commit_pow_bits,
@@ -257,6 +259,8 @@ pub struct FriVerifierParams {
     /// Since Plonky3 0.8 the fold schedule is derived from this cap and the input heights, and
     /// the cap is bound into the FRI transcript's domain separator.
     max_log_arity: usize,
+    /// Number of opening-batch proof-of-work bits required.
+    batch_pow_bits: usize,
     /// Number of commit-phase proof-of-work bits required
     commit_pow_bits: usize,
     /// Number of query proof-of-work bits required
@@ -287,6 +291,30 @@ impl FriVerifierParams {
         num_queries: usize,
         permutation_config: impl Into<PermConfig>,
     ) -> Result<Self, FriVerifierParamsError> {
+        Self::try_with_mmcs_and_batch(
+            log_blowup,
+            log_final_poly_len,
+            max_log_arity,
+            0,
+            commit_pow_bits,
+            query_pow_bits,
+            num_queries,
+            permutation_config,
+        )
+    }
+
+    /// Construct parameters that bind the opening-batch grinding difficulty.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_with_mmcs_and_batch(
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        max_log_arity: usize,
+        batch_pow_bits: usize,
+        commit_pow_bits: usize,
+        query_pow_bits: usize,
+        num_queries: usize,
+        permutation_config: impl Into<PermConfig>,
+    ) -> Result<Self, FriVerifierParamsError> {
         if num_queries == 0 {
             return Err(FriVerifierParamsError::ZeroQueries);
         }
@@ -294,6 +322,7 @@ impl FriVerifierParams {
             ("log_blowup", log_blowup),
             ("log_final_poly_len", log_final_poly_len),
             ("max_log_arity", max_log_arity),
+            ("batch_pow_bits", batch_pow_bits),
             ("commit_pow_bits", commit_pow_bits),
             ("query_pow_bits", query_pow_bits),
         ] {
@@ -314,6 +343,7 @@ impl FriVerifierParams {
             log_blowup,
             log_final_poly_len,
             max_log_arity,
+            batch_pow_bits,
             commit_pow_bits,
             query_pow_bits,
             num_queries,
@@ -344,6 +374,31 @@ impl FriVerifierParams {
         .expect("invalid production FRI verifier parameters")
     }
 
+    /// Infallible compatibility form with explicit opening-batch difficulty.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_mmcs_and_batch(
+        log_blowup: usize,
+        log_final_poly_len: usize,
+        max_log_arity: usize,
+        batch_pow_bits: usize,
+        commit_pow_bits: usize,
+        query_pow_bits: usize,
+        num_queries: usize,
+        permutation_config: impl Into<PermConfig>,
+    ) -> Self {
+        Self::try_with_mmcs_and_batch(
+            log_blowup,
+            log_final_poly_len,
+            max_log_arity,
+            batch_pow_bits,
+            commit_pow_bits,
+            query_pow_bits,
+            num_queries,
+            permutation_config,
+        )
+        .expect("invalid production FRI verifier parameters")
+    }
+
     pub const fn log_blowup(&self) -> usize {
         self.log_blowup
     }
@@ -353,6 +408,10 @@ impl FriVerifierParams {
     pub const fn max_log_arity(&self) -> usize {
         self.max_log_arity
     }
+    pub const fn batch_pow_bits(&self) -> usize {
+        self.batch_pow_bits
+    }
+
     pub const fn commit_pow_bits(&self) -> usize {
         self.commit_pow_bits
     }
@@ -428,6 +487,29 @@ mod tests {
             query_proof_of_work_bits: query_pow_bits,
             mmcs: (),
         }
+    }
+
+    #[test]
+    fn native_snapshot_accepts_and_binds_positive_batch_pow() {
+        let mut params = native(1, 0, 1, 2, 0, 0);
+        params.batch_proof_of_work_bits = 4;
+        let snapshot = NativeFriParams::try_from_native::<BabyBear, _>(&params)
+            .expect("positive opening-batch work must be supported");
+        assert_eq!(snapshot.batch_pow_bits(), 4);
+        let recursive = FriVerifierParams::with_mmcs_and_batch(1, 0, 1, 4, 0, 0, 2, p2());
+        assert!(snapshot.validate_recursive(&recursive).is_ok());
+        let zero = FriVerifierParams::with_mmcs(1, 0, 1, 0, 0, 2, p2());
+        assert_eq!(
+            snapshot.validate_recursive(&zero),
+            Err(FriInputError::ScalarMismatch {
+                name: "batch_pow_bits"
+            })
+        );
+        params.batch_proof_of_work_bits = 31;
+        assert_eq!(
+            NativeFriParams::try_from_native::<BabyBear, _>(&params),
+            Err(FriInputError::PowBitsOutOfRange { name: "batch" })
+        );
     }
 
     #[test]
@@ -526,6 +608,7 @@ mod tests {
             log_final_poly_len: 0,
             max_log_arity: 1,
             num_queries: 1,
+            batch_pow_bits: 0,
             commit_pow_bits: 0,
             query_pow_bits: 0,
         };
@@ -538,6 +621,7 @@ mod tests {
             log_final_poly_len: 1,
             max_log_arity: 1,
             num_queries: 1,
+            batch_pow_bits: 0,
             commit_pow_bits: 0,
             query_pow_bits: 0,
         };

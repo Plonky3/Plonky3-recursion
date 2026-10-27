@@ -11,7 +11,10 @@ use p3_commit::{
     CommitmentOpening, CommitmentWithOpeningPoints, MatrixOpening, Mmcs, PointOpening,
 };
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeField64, TwoAdicField};
+use p3_field::{
+    BasedVectorSpace, ExtensionField, Field, PackedValue, PrimeCharacteristicRing, PrimeField64,
+    TwoAdicField,
+};
 use p3_fri::verifier::{FriError, PowPhase, fold_query, open_inputs};
 use p3_fri::{
     BatchMultiOpening, FriFoldingStrategy, FriParameters, FriProof, FriShape, TwoAdicFriFolding,
@@ -1297,6 +1300,11 @@ where
         }
     }
 
+    if params.batch_proof_of_work_bits == 0
+        && proof.batch_pow_witness != <Challenger as GrindingChallenger>::Witness::ZERO
+    {
+        return Err(FriError::InvalidPowWitness(PowPhase::Batch));
+    }
     // Only after the complete borrowed schedule/proof preflight may transcript
     // replay begin. The challenger sits after the PCS transcript's claimed openings; finish the
     // PCS batch phase, then open the low-degree test's own transcript with its seed.

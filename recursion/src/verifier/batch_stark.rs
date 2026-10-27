@@ -2676,8 +2676,10 @@ mod create_alu_air_tests {
             })
             .collect::<Vec<_>>();
         let claims = collect_opened_values_circuit::<Config>(&target_instances, &[], &layout);
-        let seed =
-            crate::pcs::fri::fri_pcs_transcript_seed::<F, EF>(claimed_evaluation_counts(&claims));
+        let seed = crate::pcs::fri::fri_pcs_transcript_seed::<F, EF>(
+            claimed_evaluation_counts(&claims),
+            0,
+        );
         observe_claims_circuit::<Config, Poseidon2Config, WIDTH, RATE>(
             &mut circuit,
             &mut circuit_challenger,

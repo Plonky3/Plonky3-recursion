@@ -599,6 +599,32 @@ where
         self.register_npo(plugin);
     }
 
+    /// Register standard W24 over lifted scalar slots. The circuit field may
+    /// be D8 while the table binds each scalar with a full-width witness key.
+    pub fn enable_poseidon2_perm_base_width_24<Config, P>(
+        &mut self,
+        trace_generator: TraceGeneratorFn<F>,
+        perm: P,
+    ) where
+        Config: Poseidon2Params,
+        F: Field + ExtensionField<Config::BaseField>,
+        P: Permutation<[F; 24]> + Clone + Send + Sync + 'static,
+    {
+        assert_eq!(Config::D, 1, "scalar W24 requires D=1 table geometry");
+        assert_eq!(Config::WIDTH, 24, "scalar W24 requires exactly 24 slots");
+        let exec = base_perm_exec::<F, P, 24>(perm);
+        self.register_npo(Poseidon2CircuitPlugin::new(
+            Config::CONFIG,
+            exec.clone(),
+            trace_generator,
+        ));
+        self.register_npo(Poseidon2CircuitPlugin::new(
+            Config::CONFIG.for_challenger(),
+            exec,
+            generate_poseidon2_challenger_trace::<F, Config>,
+        ));
+    }
+
     /// Enables the Poseidon2 permutation operation for base field challenges (D=1) on the
     /// width-32 arity-4 compression shape.
     ///

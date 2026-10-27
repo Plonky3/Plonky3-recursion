@@ -252,6 +252,50 @@ impl KoalaBearD1Width16 {
     }
 }
 
+/// Standard W24 scalar table for extension-field verifier circuits.
+pub struct KoalaBearD1Width24;
+
+impl Poseidon2Params for KoalaBearD1Width24 {
+    type BaseField = KoalaBear;
+    const CONFIG: Poseidon2Config = Poseidon2Config::KOALA_BEAR_D1_W24;
+}
+
+impl KoalaBearD1Width24 {
+    pub const fn round_constants() -> RoundConstants<KoalaBear, 24, 4, 23> {
+        RoundConstants::new(
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_24_EXTERNAL_INITIAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_24_INTERNAL,
+            p3_koala_bear::KOALABEAR_POSEIDON2_RC_24_EXTERNAL_FINAL,
+        )
+    }
+
+    pub const fn default_air() -> Poseidon2CircuitAirKoalaBearD1Width24 {
+        Poseidon2CircuitAirKoalaBearD1Width24::new(Self::round_constants())
+    }
+
+    pub fn default_air_with_preprocessed(
+        preprocessed: Vec<KoalaBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirKoalaBearD1Width24 {
+        Poseidon2CircuitAirKoalaBearD1Width24::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+
+    pub fn default_air_with_preprocessed_witness_bus8(
+        preprocessed: Vec<KoalaBear>,
+        min_height: usize,
+    ) -> Poseidon2CircuitAirKoalaBearD1Width24WitnessBus8 {
+        Poseidon2CircuitAirKoalaBearD1Width24WitnessBus8::new_with_preprocessed(
+            Self::round_constants(),
+            preprocessed,
+        )
+        .with_min_height(min_height)
+    }
+}
+
 /// Configuration for KoalaBear with a quartic extension and a 16-element
 /// Poseidon2 state.
 ///
@@ -544,6 +588,38 @@ pub type Poseidon2CircuitAirKoalaBearD1Width16WitnessBus5 = Poseidon2CircuitAir<
     { KoalaBearD1Width16::HALF_FULL_ROUNDS },
     { KoalaBearD1Width16::PARTIAL_ROUNDS },
     5,
+>;
+
+/// Standard scalar W24 AIR with one scalar per state slot.
+pub type Poseidon2CircuitAirKoalaBearD1Width24 = Poseidon2CircuitAir<
+    KoalaBear,
+    GenericPoseidon2LinearLayersKoalaBear,
+    { KoalaBearD1Width24::D },
+    { KoalaBearD1Width24::WIDTH },
+    { KoalaBearD1Width24::WIDTH_EXT },
+    { KoalaBearD1Width24::RATE_EXT },
+    { KoalaBearD1Width24::CAPACITY_EXT },
+    { KoalaBearD1Width24::SBOX_DEGREE },
+    { KoalaBearD1Width24::SBOX_REGISTERS },
+    { KoalaBearD1Width24::HALF_FULL_ROUNDS },
+    { KoalaBearD1Width24::PARTIAL_ROUNDS },
+    { KoalaBearD1Width24::D },
+>;
+
+/// [`KoalaBearD1Width24`] with witness-bus keys padded to eight coefficients (for D8 + scalar W24).
+pub type Poseidon2CircuitAirKoalaBearD1Width24WitnessBus8 = Poseidon2CircuitAir<
+    KoalaBear,
+    GenericPoseidon2LinearLayersKoalaBear,
+    { KoalaBearD1Width24::D },
+    { KoalaBearD1Width24::WIDTH },
+    { KoalaBearD1Width24::WIDTH_EXT },
+    { KoalaBearD1Width24::RATE_EXT },
+    { KoalaBearD1Width24::CAPACITY_EXT },
+    { KoalaBearD1Width24::SBOX_DEGREE },
+    { KoalaBearD1Width24::SBOX_REGISTERS },
+    { KoalaBearD1Width24::HALF_FULL_ROUNDS },
+    { KoalaBearD1Width24::PARTIAL_ROUNDS },
+    8,
 >;
 
 /// KoalaBear Poseidon2 circuit AIR with quartic extension and 16-element state.

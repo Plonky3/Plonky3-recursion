@@ -981,7 +981,7 @@ where
         _extra_params: Option<&[usize]>,
     ) -> Result<usize, GenerationError> {
         let num_challenges =
-            1 + opening_proof.commit_phase_commits.len() + fri_proof_num_queries(opening_proof);
+            2 + 2 * opening_proof.commit_phase_commits.len() + fri_proof_num_queries(opening_proof);
 
         Ok(num_challenges)
     }
@@ -1025,7 +1025,7 @@ where
         _extra_params: Option<&[usize]>,
     ) -> Result<usize, GenerationError> {
         let inner_proof = &opening_proof.1;
-        Ok(1 + inner_proof.commit_phase_commits.len() + fri_proof_num_queries(inner_proof))
+        Ok(2 + 2 * inner_proof.commit_phase_commits.len() + fri_proof_num_queries(inner_proof))
     }
 }
 
@@ -1067,6 +1067,10 @@ where
     let mut challenges =
         Vec::with_capacity(2 + 2 * opening_proof.commit_phase_commits.len() + num_queries);
 
+    // Native canonical encoding pins the unused zero-difficulty witness to zero.
+    if batch_pow_bits == 0 && opening_proof.batch_pow_witness != Val::<SC>::ZERO {
+        return Err(GenerationError::InvalidPowWitness);
+    }
     // PCS phase: domain separator, claimed openings, batch grind, `alpha`.
     observe_opened_values::<SC>(challenger, coms_to_verify, batch_pow_bits);
     if !challenger.check_witness(batch_pow_bits, opening_proof.batch_pow_witness) {
@@ -1173,4 +1177,99 @@ where
     let alpha = challenger.sample_algebra_element::<SC::Challenge>();
     let beta = challenger.sample_algebra_element::<SC::Challenge>();
     vec![alpha, beta]
+}
+
+#[cfg(test)]
+mod challenge_count_tests {
+    use super::*;
+    use p3_field::coset::TwoAdicMultiplicativeCoset;
+    use p3_merkle_tree::{MerkleCap, PrunedMerklePaths};
+    use p3_test_utils::baby_bear_params::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    type PlainProof = InnerFriProof<MyConfig, MyMmcs, ChallengeMmcs>;
+    type HidingPcs = HidingFriPcs<F, Dft, MyMmcs, ChallengeMmcs, StdRng>;
+
+    /// Synthetic transcript geometry isolates counting from proof production.
+    /// Both PCS variants emit placeholder grind samples even at zero difficulty.
+    #[test]
+    fn batch_pow_challenge_counts_match_normal_and_hiding_generation() {
+        let cap = MerkleCap::new(vec![[F::ZERO; DIGEST_ELEMS]]);
+        let domain = TwoAdicMultiplicativeCoset::new(F::GENERATOR, 2).unwrap();
+        let claims = vec![(
+            cap.clone(),
+            vec![(domain, vec![(Challenge::ONE, vec![Challenge::ONE])])],
+        )];
+        let empty_frontier = || PrunedMerklePaths {
+            sibling_hashes: vec![],
+        };
+        let mut proof = PlainProof {
+            batch_pow_witness: F::ZERO,
+            commit_phase_commits: vec![cap.clone(), cap],
+            commit_pow_witnesses: vec![F::ZERO; 2],
+            input_openings: vec![BatchMultiOpening {
+                opened_values: vec![vec![vec![F::ONE]]; 3],
+                opening_proof: empty_frontier(),
+            }],
+            commit_phase_openings: vec![],
+            final_poly: vec![Challenge::ZERO],
+            query_pow_witness: F::ZERO,
+        };
+        let config = make_test_config();
+        let (mmcs, parameters) = test_fri_instance();
+        let hiding_pcs = HidingPcs::new(
+            Dft::default(),
+            mmcs,
+            parameters,
+            4,
+            StdRng::seed_from_u64(7),
+        );
+        for batch_bits in [0, 4] {
+            let extra = [1, 0, 1, 0, 0, batch_bits];
+            let initial = Challenger::new(default_babybear_poseidon2_16());
+            let mut batch_challenger = initial.clone();
+            observe_opened_values::<MyConfig>(&mut batch_challenger, &claims, batch_bits);
+            proof.batch_pow_witness = batch_challenger.grind(batch_bits);
+            let normal = config
+                .pcs()
+                .generate_challenges(&config, &mut initial.clone(), &claims, &proof, Some(&extra))
+                .unwrap();
+            assert_eq!(normal.len(), 9);
+            assert_eq!(
+                <MyPcs as PcsGeneration<MyConfig, PlainProof>>::num_challenges(
+                    &proof,
+                    Some(&extra)
+                )
+                .unwrap(),
+                normal.len()
+            );
+
+            let random_openings = vec![vec![vec![vec![Challenge::TWO]]]];
+            let mut merged = claims.clone();
+            merge_hiding_random_openings::<MyConfig>(&mut merged, &random_openings).unwrap();
+            let mut batch_challenger = initial.clone();
+            observe_opened_values::<MyConfig>(&mut batch_challenger, &merged, batch_bits);
+            proof.batch_pow_witness = batch_challenger.grind(batch_bits);
+            let hiding_proof = (random_openings, proof.clone());
+            let hiding = <HidingPcs as PcsGeneration<MyConfig, _>>::generate_challenges(
+                &hiding_pcs,
+                &config,
+                &mut initial.clone(),
+                &claims,
+                &hiding_proof,
+                Some(&extra),
+            )
+            .unwrap();
+            assert_eq!(hiding.len(), 9);
+            assert_eq!(
+                <HidingPcs as PcsGeneration<MyConfig, _>>::num_challenges(
+                    &hiding_proof,
+                    Some(&extra)
+                )
+                .unwrap(),
+                hiding.len()
+            );
+        }
+    }
 }

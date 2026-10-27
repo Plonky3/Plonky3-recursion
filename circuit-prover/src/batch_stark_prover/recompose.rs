@@ -277,6 +277,11 @@ impl NpoPreprocessor<KoalaBear> for RecomposePreprocessor {
         {
             return recompose_preprocess_impl::<F, _, 5>(prep, split);
         }
+        if let Some(prep) =
+            preprocessed.downcast_mut::<PreprocessedColumns<BinomialExtensionField<F, 8>, 8>>()
+        {
+            return recompose_preprocess_impl::<F, _, 8>(prep, split);
+        }
         if let Some(prep) = preprocessed.downcast_mut::<PreprocessedColumns<F, 1>>() {
             return recompose_preprocess_impl::<F, _, 1>(prep, split);
         }

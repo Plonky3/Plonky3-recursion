@@ -129,3 +129,7 @@ path = "tests/whir_quintic.rs"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "d8_scalar_w24"
+path = "tests/d8_scalar_w24.rs"

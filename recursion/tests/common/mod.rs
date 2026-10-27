@@ -407,12 +407,21 @@ where
 pub(crate) type KoalaBearD4Backend = FriRecursionBackendForExt<4, 16, 8, Poseidon2Config>;
 
 fn koala_bear_d4_recursion_config(pow_bits: usize) -> KoalaBearD4RecursionConfig {
-    let (val_mmcs, fri_params) = test_fri_instance_with_pow_bits(pow_bits);
+    koala_bear_d4_recursion_config_with_batch(pow_bits, 0)
+}
+
+fn koala_bear_d4_recursion_config_with_batch(
+    pow_bits: usize,
+    batch_pow_bits: usize,
+) -> KoalaBearD4RecursionConfig {
+    let (val_mmcs, mut fri_params) = test_fri_instance_with_pow_bits(pow_bits);
+    fri_params.batch_proof_of_work_bits = batch_pow_bits;
     let native_fri_params = NativeFriParams::try_from_native::<F, _>(&fri_params).unwrap();
-    let fri_verifier_params = FriVerifierParams::with_mmcs(
+    let fri_verifier_params = FriVerifierParams::with_mmcs_and_batch(
         native_fri_params.log_blowup(),
         native_fri_params.log_final_poly_len(),
         native_fri_params.max_log_arity(),
+        native_fri_params.batch_pow_bits(),
         native_fri_params.commit_pow_bits(),
         native_fri_params.query_pow_bits(),
         native_fri_params.num_queries(),
@@ -442,6 +451,15 @@ pub(crate) fn koala_bear_d4_recursion_config_and_backend_with_pow_bits(
     pow_bits: usize,
 ) -> (KoalaBearD4RecursionConfig, KoalaBearD4Backend) {
     let config = koala_bear_d4_recursion_config(pow_bits);
+    let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
+        .for_extension_degree::<4>();
+    (config, backend)
+}
+
+pub(crate) fn koala_bear_d4_recursion_config_and_backend_with_batch_pow_bits(
+    batch_pow_bits: usize,
+) -> (KoalaBearD4RecursionConfig, KoalaBearD4Backend) {
+    let config = koala_bear_d4_recursion_config_with_batch(0, batch_pow_bits);
     let backend = FriRecursionBackend::<16, 8, _>::new(Poseidon2Config::KOALA_BEAR_D4_W16)
         .for_extension_degree::<4>();
     (config, backend)

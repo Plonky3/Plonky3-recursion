@@ -157,6 +157,21 @@ impl Poseidon2Config {
         partial_rounds: 23,
     };
 
+    /// Scalar W24 table used by D8 circuits with a twelve-scalar digest.
+    /// Every state slot is a base-field scalar; the witness bus separately
+    /// binds all eight circuit-field coefficients.
+    pub const KOALA_BEAR_D1_W24: Self = Self {
+        field_id: Poseidon2FieldId::KoalaBear,
+        d: 1,
+        width: 24,
+        sbox_degree: 3,
+        sbox_registers: 0,
+        half_full_rounds: 4,
+        partial_rounds: 23,
+        challenger: false,
+        shared: false,
+    };
+
     /// Goldilocks with extension degree D=2, width 8 (matches Poseidon2Goldilocks<8>).
     pub const GOLDILOCKS_D2_W8: Self = Self {
         field_id: Poseidon2FieldId::Goldilocks,
@@ -241,8 +256,8 @@ impl Poseidon2Config {
     /// into extension limbs (`d >= 2`) and never uses the arity-4 compression layout.
     pub const fn for_challenger(self) -> Self {
         assert!(
-            self.d >= 2,
-            "the challenger table keys extension-limb sponge rows only"
+            self.d >= 2 || (self.is_koala_bear() && self.d == 1 && self.width == 24),
+            "dedicated challenger table requires packed limbs or scalar KoalaBear W24"
         );
         assert!(
             !self.is_arity4_shape(),
@@ -557,6 +572,7 @@ impl Poseidon2Config {
                     _ => panic!("unknown BabyBear Poseidon2 challenger config"),
                 },
                 Poseidon2FieldId::KoalaBear => match (self.d, self.width) {
+                    (1, 24) => "koala_bear_d1_w24_challenger",
                     (4, 16) => "koala_bear_d4_w16_challenger",
                     (4, 24) => "koala_bear_d4_w24_challenger",
                     _ => panic!("unknown KoalaBear Poseidon2 challenger config"),
@@ -577,6 +593,7 @@ impl Poseidon2Config {
             },
             Poseidon2FieldId::KoalaBear => match (self.d, self.width) {
                 (1, 16) => "koala_bear_d1_w16",
+                (1, 24) => "koala_bear_d1_w24",
                 (4, 16) => "koala_bear_d4_w16",
                 (4, 24) => "koala_bear_d4_w24",
                 (1, 32) => "koala_bear_d1_w32",
@@ -599,6 +616,8 @@ impl Poseidon2Config {
             "baby_bear_d4_w24" => Some(Self::BABY_BEAR_D4_W24),
             "baby_bear_d4_w32" => Some(Self::BABY_BEAR_D4_W32),
             "koala_bear_d1_w16" => Some(Self::KOALA_BEAR_D1_W16),
+            "koala_bear_d1_w24" => Some(Self::KOALA_BEAR_D1_W24),
+            "koala_bear_d1_w24_challenger" => Some(Self::KOALA_BEAR_D1_W24.for_challenger()),
             "koala_bear_d4_w16" => Some(Self::KOALA_BEAR_D4_W16),
             "koala_bear_d4_w24" => Some(Self::KOALA_BEAR_D4_W24),
             "koala_bear_d1_w32" => Some(Self::KOALA_BEAR_D1_W32),
@@ -649,6 +668,28 @@ mod tests {
     use crate::builder::NpoLoweringContext;
 
     type F = BabyBear;
+
+    #[test]
+    fn d8_scalar_w24_keeps_twelve_scalar_digest_elements() {
+        let config = Poseidon2Config::KOALA_BEAR_D1_W24;
+        assert_eq!(
+            (
+                config.d(),
+                config.width(),
+                config.rate(),
+                config.capacity_ext()
+            ),
+            (1, 24, 12, 12)
+        );
+        assert!(!config.is_arity4_shape());
+        assert!(config.validate_io_counts(25, 12, true).is_ok());
+        assert!(config.validate_io_counts(25, 8, true).is_err());
+        assert!(config.validate_io_counts(25, 16, true).is_err());
+        assert_eq!(
+            Poseidon2Config::from_variant_name(config.variant_name()),
+            Some(config)
+        );
+    }
 
     #[test]
     fn validate_io_counts_d4_w16_ok() {

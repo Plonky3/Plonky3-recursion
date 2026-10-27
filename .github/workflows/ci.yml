@@ -93,7 +93,7 @@ jobs:
             feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
           - shard: protocol
             partition_count: 1
-            targets: --test binary_components --test fri_recursion --test prepared_recursion --test protocol_contracts
+            targets: --test binary_components --test fri_recursion --test prepared_recursion --test protocol_contracts --test d8_scalar_w24
             profile: ''
             feature_args: --features p3-recursion/parallel,p3-poseidon1-circuit-air/parallel
     runs-on: ${{ matrix.os }}

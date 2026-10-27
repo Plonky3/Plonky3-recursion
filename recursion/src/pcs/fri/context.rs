@@ -296,7 +296,7 @@ where
     usage.add_final_poly_evaluations(limits, proof.final_poly.len())?;
     usage.add_scalar_elements(limits, proof.final_poly.len())?;
     usage.add_scalar_elements(limits, proof.commit_pow_witnesses.len())?;
-    usage.add_scalar_elements(limits, 1)?;
+    usage.add_scalar_elements(limits, 2)?;
     usage.check(limits)?;
     Ok(usage)
 }
@@ -420,7 +420,7 @@ pub(crate) fn checked_flat_value_totals<EF: p3_field::Field>(
         "public phase caps and witnesses",
     )?;
     let public_values = checked_add_len(public_values, final_poly_len, "public final polynomial")?;
-    let public_values = checked_add_len(public_values, 1, "public query witness")?;
+    let public_values = checked_add_len(public_values, 2, "public query and batch witnesses")?;
     check_vec_len::<EF>(private_values, "FRI private values")?;
     check_vec_len::<EF>(public_values, "FRI public values")?;
     Ok(FriValueCounts {
@@ -941,6 +941,9 @@ where
         input_salt_elems,
         phase_salt_elems,
     )?;
+    if native.batch_pow_bits() == 0 && proof.batch_pow_witness != F::ZERO {
+        return Err(invalid("noncanonical zero-difficulty batch PoW witness"));
+    }
     let permutation = recursive.permutation_config();
     let commitment_count = layout.commitment_count();
     if commitment_count > MAX_FRI_COMMITMENTS {

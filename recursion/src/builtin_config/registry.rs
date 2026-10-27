@@ -18,6 +18,7 @@ use crate::verifier::VerifierLimits;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u16)]
 pub enum SuiteIdV1 {
+    ExperimentalKoalaBearD8Poseidon2W24RandomCodewordFri = 0xF824,
     BabyBearD4Poseidon2BinaryFri = 0x0101,
     BabyBearD4Poseidon1BinaryFri = 0x0102,
     KoalaBearD4Poseidon2BinaryFri = 0x0103,
@@ -42,7 +43,8 @@ pub enum SuiteIdV1 {
 }
 
 impl SuiteIdV1 {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
+        Self::ExperimentalKoalaBearD8Poseidon2W24RandomCodewordFri,
         Self::BabyBearD4Poseidon2BinaryFri,
         Self::BabyBearD4Poseidon1BinaryFri,
         Self::KoalaBearD4Poseidon2BinaryFri,
@@ -72,6 +74,7 @@ impl SuiteIdV1 {
 
     pub const fn from_u16(raw: u16) -> Result<Self, BuiltinConfigError> {
         let suite = match raw {
+            0xF824 => Self::ExperimentalKoalaBearD8Poseidon2W24RandomCodewordFri,
             0x0101 => Self::BabyBearD4Poseidon2BinaryFri,
             0x0102 => Self::BabyBearD4Poseidon1BinaryFri,
             0x0103 => Self::KoalaBearD4Poseidon2BinaryFri,
@@ -115,6 +118,18 @@ impl SuiteIdV1 {
             proof_family,
             salt_elements,
         ) = match self {
+            Self::ExperimentalKoalaBearD8Poseidon2W24RandomCodewordFri => (
+                KoalaBear,
+                8,
+                Poseidon2,
+                24,
+                12,
+                24,
+                12,
+                2,
+                RandomCodewordFri,
+                0,
+            ),
             Self::BabyBearD4Poseidon2BinaryFri => (BabyBear, 4, Poseidon2, 16, 8, 16, 8, 2, Fri, 0),
             Self::BabyBearD4Poseidon1BinaryFri => (BabyBear, 4, Poseidon1, 16, 8, 16, 8, 2, Fri, 0),
             Self::KoalaBearD4Poseidon2BinaryFri => {
@@ -234,9 +249,13 @@ impl SuiteIdV1 {
             challenger_rate,
             mmcs_width,
             mmcs_rate,
-            digest_elements: match field {
-                Goldilocks => 4,
-                BabyBear | KoalaBear => 8,
+            digest_elements: if extension_degree == 8 {
+                12
+            } else {
+                match field {
+                    Goldilocks => 4,
+                    BabyBear | KoalaBear => 8,
+                }
             },
             merkle_arity,
             proof_family,
@@ -249,6 +268,9 @@ impl SuiteIdV1 {
         use Poseidon1Config as P1;
         use Poseidon2Config as P2;
         match self {
+            Self::ExperimentalKoalaBearD8Poseidon2W24RandomCodewordFri => {
+                PermConfig::poseidon2(P2::KOALA_BEAR_D1_W24)
+            }
             Self::BabyBearD4Poseidon1BinaryFri | Self::BabyBearD4Poseidon1RandomCodewordFri => {
                 PermConfig::poseidon1(P1::BABY_BEAR_D4_W16)
             }
@@ -368,6 +390,7 @@ pub struct FriConfigV1 {
     log_final_poly_len: u32,
     max_log_arity: u32,
     num_queries: u32,
+    batch_pow_bits: u32,
     commit_pow_bits: u32,
     query_pow_bits: u32,
     input_cap_height: u32,
@@ -397,6 +420,7 @@ impl FriConfigV1 {
             log_final_poly_len,
             max_log_arity,
             num_queries,
+            batch_pow_bits: 0,
             commit_pow_bits,
             query_pow_bits,
             input_cap_height,
@@ -404,6 +428,16 @@ impl FriConfigV1 {
             num_random_codewords,
             salt_elements,
         }
+    }
+
+    /// Configure opening-batch grinding without changing the zero-work constructor.
+    pub const fn with_batch_pow_bits(mut self, bits: u32) -> Self {
+        self.batch_pow_bits = bits;
+        self
+    }
+
+    pub const fn batch_pow_bits(&self) -> u32 {
+        self.batch_pow_bits
     }
 
     pub const fn suite(&self) -> SuiteIdV1 {
@@ -502,7 +536,7 @@ impl FriConfigV1 {
             log_blowup: self.log_blowup as usize,
             log_final_poly_len: self.log_final_poly_len as usize,
             num_queries: self.num_queries as usize,
-            batch_proof_of_work_bits: 0,
+            batch_proof_of_work_bits: self.batch_pow_bits as usize,
             commit_proof_of_work_bits: self.commit_pow_bits as usize,
             query_proof_of_work_bits: self.query_pow_bits as usize,
             mmcs: (),
@@ -513,10 +547,11 @@ impl FriConfigV1 {
             FieldFamilyV1::Goldilocks => NativeFriParams::try_from_native::<Goldilocks, _>(&params),
         }
         .map_err(BuiltinConfigError::NativeFri)?;
-        FriVerifierParams::try_with_mmcs(
+        FriVerifierParams::try_with_mmcs_and_batch(
             params.log_blowup,
             params.log_final_poly_len,
             params.max_log_arity,
+            params.batch_proof_of_work_bits,
             params.commit_proof_of_work_bits,
             params.query_proof_of_work_bits,
             params.num_queries,

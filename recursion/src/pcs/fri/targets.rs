@@ -216,10 +216,11 @@ fn num_queries_from_counts(from_rounds: Option<usize>, from_batches: Option<usiz
 
 /// The domain-separator seed of the native FRI PCS transcript for a set of claims.
 ///
-/// The recursive verifier only accepts a zero batch-phase difficulty (see
-/// [`NativeFriParams`]), so the shape binds zero batch PoW bits.
+/// The configured difficulty is part of the native shape and therefore the
+/// recursive transcript and verification key.
 pub(crate) fn fri_pcs_transcript_seed<F, EF>(
     claimed_evaluation_counts: Vec<Vec<Vec<usize>>>,
+    batch_pow_bits: usize,
 ) -> Vec<F>
 where
     F: PrimeField64,
@@ -228,10 +229,30 @@ where
     domain_separator_seed(
         &p3_fri::PcsShape {
             claimed_evaluation_counts,
-            batch_pow_bits: 0,
+            batch_pow_bits,
         }
         .domain_separator::<F, EF>(),
     )
+}
+
+/// Check the opening-batch nonce without absorbing anything at zero difficulty.
+/// A canonical zero nonce is still required when this transcript site is disabled.
+fn check_batch_pow<F, EF, const WIDTH: usize, const RATE: usize, C: crate::ChallengerPermConfig>(
+    circuit: &mut CircuitBuilder<EF>,
+    challenger: &mut CircuitChallenger<WIDTH, RATE, C>,
+    bits: usize,
+    witness: Target,
+) -> Result<(), CircuitBuilderError>
+where
+    F: PrimeField64,
+    EF: ExtensionField<F>,
+{
+    if bits == 0 {
+        circuit.assert_zero(witness);
+        Ok(())
+    } else {
+        challenger.check_pow_witness(circuit, bits, witness)
+    }
 }
 
 /// The domain-separator seed of the native FRI low-degree test for a fold schedule.
@@ -298,6 +319,7 @@ pub struct FriProofTargets<
     pub query_proofs: Vec<QueryProofTargets<F, EF, InputProof, RecMmcs>>,
     pub final_poly: Vec<Target>,
     pub pow_witness: Witness,
+    pub batch_pow_witness: Witness,
     pub log_arities: Vec<usize>,
 }
 
@@ -376,13 +398,14 @@ where
             query_proofs,
             final_poly,
             pow_witness: Witness::new(circuit, &input.query_pow_witness),
+            batch_pow_witness: Witness::new(circuit, &input.batch_pow_witness),
             log_arities,
         }
     }
 
     fn get_values(input: &Self::Input) -> Vec<EF> {
         let FriProof {
-            batch_pow_witness: _,
+            batch_pow_witness,
             commit_phase_commits,
             commit_pow_witnesses,
             input_openings,
@@ -408,6 +431,7 @@ where
             }))
             .chain(final_poly.iter().copied())
             .chain(Witness::get_values(query_pow_witness))
+            .chain(Witness::get_values(batch_pow_witness))
             .collect()
     }
 
@@ -447,7 +471,7 @@ where
 
     fn input_shape(input: &Self::Input) -> Result<Self::Shape, VerificationError> {
         let FriProof {
-            batch_pow_witness: _,
+            batch_pow_witness,
             commit_phase_commits,
             commit_pow_witnesses,
             input_openings,
@@ -509,6 +533,7 @@ where
                 .collect::<Result<_, VerificationError>>()?,
             final_poly: final_poly.len(),
             query_pow_witness: Witness::input_shape(query_pow_witness)?,
+            batch_pow_witness: Witness::input_shape(batch_pow_witness)?,
         })
     }
 }
@@ -2053,14 +2078,17 @@ where
     type VerifierParams = FriVerifierParams;
 
     fn claims_transcript_seed(
-        _params: &Self::VerifierParams,
+        params: &Self::VerifierParams,
         claimed_evaluation_counts: Vec<Vec<Vec<usize>>>,
     ) -> Vec<Val<SC>>
     where
         Val<SC>: PrimeField64,
         SC::Challenge: ExtensionField<Val<SC>>,
     {
-        fri_pcs_transcript_seed::<Val<SC>, SC::Challenge>(claimed_evaluation_counts)
+        fri_pcs_transcript_seed::<Val<SC>, SC::Challenge>(
+            claimed_evaluation_counts,
+            params.batch_pow_bits(),
+        )
     }
     type RecursiveProof = RecursiveFriProof<
         SC,
@@ -2092,8 +2120,13 @@ where
         // For batch-STARK, the caller must observe in per-instance order to match native.
         // For single-STARK, the caller can use opened_values.observe() directly.
 
-        // Sample FRI alpha (for batch opening reduction) - extension field. The batch phase
-        // grinds nothing: the recursive verifier only accepts a zero batch difficulty.
+        // Native PCS order: claimed evaluations, opening-batch witness, then alpha.
+        check_batch_pow::<Val<SC>, SC::Challenge, WIDTH, RATE, C>(
+            circuit,
+            challenger,
+            params.batch_pow_bits(),
+            fri_proof.batch_pow_witness.witness,
+        )?;
         let fri_alpha = challenger.sample_ext(circuit);
 
         // The low-degree test opens its own transcript with a seed bound to its shape.
@@ -2568,14 +2601,17 @@ where
     type VerifierParams = FriVerifierParams;
 
     fn claims_transcript_seed(
-        _params: &Self::VerifierParams,
+        params: &Self::VerifierParams,
         claimed_evaluation_counts: Vec<Vec<Vec<usize>>>,
     ) -> Vec<Val<SC>>
     where
         Val<SC>: PrimeField64,
         SC::Challenge: ExtensionField<Val<SC>>,
     {
-        fri_pcs_transcript_seed::<Val<SC>, SC::Challenge>(claimed_evaluation_counts)
+        fri_pcs_transcript_seed::<Val<SC>, SC::Challenge>(
+            claimed_evaluation_counts,
+            params.batch_pow_bits(),
+        )
     }
     type RecursiveProof = RecursiveHidingFriProof<
         SC,
@@ -2600,6 +2636,12 @@ where
     {
         let fri_proof = &proof_targets.inner_proof;
 
+        check_batch_pow::<Val<SC>, SC::Challenge, WIDTH, RATE, C>(
+            circuit,
+            challenger,
+            params.batch_pow_bits(),
+            fri_proof.batch_pow_witness.witness,
+        )?;
         let fri_alpha = challenger.sample_ext(circuit);
         challenger.observe_seed(
             circuit,
@@ -3274,17 +3316,17 @@ mod prepared_shape_tests {
 
         let ordinary_counts = checked_flat_value_totals::<Challenge>(56, 80, 0, 24, 3, 1).unwrap();
         assert_eq!(ordinary_counts.private_values(), 136);
-        assert_eq!(ordinary_counts.public_values(), 29);
+        assert_eq!(ordinary_counts.public_values(), 30);
         let hiding_counts = checked_flat_value_totals::<Challenge>(176, 128, 6, 24, 3, 1).unwrap();
         assert_eq!(hiding_counts.private_values(), 310);
-        assert_eq!(hiding_counts.public_values(), 29);
+        assert_eq!(hiding_counts.public_values(), 30);
         assert!(checked_flat_value_totals::<Challenge>(usize::MAX, 1, 0, 0, 0, 0).is_err());
         let q_limit = isize::MAX as usize / core::mem::size_of::<Challenge>();
         assert!(checked_flat_value_totals::<Challenge>(q_limit, 0, 0, 0, 0, 0).is_ok());
         assert!(checked_flat_value_totals::<Challenge>(q_limit + 1, 0, 0, 0, 0, 0).is_err());
         let public_limit = isize::MAX as usize / core::mem::size_of::<Challenge>();
-        assert!(checked_flat_value_totals::<Challenge>(0, 0, 0, public_limit - 3, 1, 1,).is_ok());
-        assert!(checked_flat_value_totals::<Challenge>(0, 0, 0, public_limit - 2, 1, 1,).is_err());
+        assert!(checked_flat_value_totals::<Challenge>(0, 0, 0, public_limit - 4, 1, 1,).is_ok());
+        assert!(checked_flat_value_totals::<Challenge>(0, 0, 0, public_limit - 3, 1, 1,).is_err());
 
         let tail_overflow = checked_flat_value_totals::<Challenge>(1, 0, usize::MAX, 0, 0, 0)
             .expect_err("late hiding-tail addition must reject");
@@ -3319,7 +3361,7 @@ mod prepared_shape_tests {
         assert!(matches!(
             query_overflow,
             VerificationError::InvalidProofShape(message)
-                if message.contains("public query witness length overflows")
+                if message.contains("public query and batch witnesses length overflows")
         ));
         assert!(checked_cap_public_values_len::<Challenge>(2, 4,).is_ok());
         assert!(checked_cap_public_values_len::<Challenge>(q_limit / 4 + 1, 4,).is_err());
@@ -3443,7 +3485,7 @@ mod prepared_shape_tests {
         )
         .expect("ordinary counted collector accepts the fixture");
         assert_eq!(counts.private_values(), 136);
-        assert_eq!(counts.public_values(), 29);
+        assert_eq!(counts.public_values(), 30);
         assert!(<OpeningTargets as CheckedRecursive<Challenge>>::validate_input(&baseline).is_ok());
         let old = <OpeningTargets as CheckedFriOpening<
             Challenge,
@@ -3881,7 +3923,7 @@ mod prepared_shape_tests {
         )
         .expect("hiding counted collector accepts the fixture");
         assert_eq!(counts.private_values(), 310);
-        assert_eq!(counts.public_values(), 29);
+        assert_eq!(counts.public_values(), 30);
         assert!(
             <HidingOpeningTargets as CheckedRecursive<Challenge>>::validate_input(&baseline)
                 .is_ok()
@@ -4605,6 +4647,133 @@ mod prepared_shape_tests {
         ));
     }
 
+    fn run_batch_pow_transcript(
+        bits: usize,
+        claims: &[F],
+        witness: F,
+        expected_alpha: Challenge,
+    ) -> bool {
+        use p3_circuit::ops::{generate_poseidon2_trace, generate_recompose_trace};
+        use p3_poseidon2_circuit_air::KoalaBearD4Width16;
+        let mut circuit = CircuitBuilder::<Challenge>::new();
+        circuit.enable_poseidon2_perm::<KoalaBearD4Width16, _>(
+            generate_poseidon2_trace::<Challenge, KoalaBearD4Width16>,
+            p3_koala_bear::default_koalabear_poseidon2_16(),
+        );
+        circuit.enable_recompose::<F>(generate_recompose_trace::<F, Challenge>);
+        let mut challenger = CircuitChallenger::<16, 8, crate::Poseidon2Config>::new_koalabear();
+        for &claim in claims {
+            let target = circuit.define_const(Challenge::from(claim));
+            RecursiveChallenger::<F, Challenge>::observe(&mut challenger, &mut circuit, target);
+        }
+        let nonce = circuit.alloc_public_input("opening-batch nonce");
+        check_batch_pow::<F, Challenge, 16, 8, crate::Poseidon2Config>(
+            &mut circuit,
+            &mut challenger,
+            bits,
+            nonce,
+        )
+        .unwrap();
+        let alpha = RecursiveChallenger::<F, Challenge>::sample_ext(&mut challenger, &mut circuit);
+        let expected = circuit.define_const(expected_alpha);
+        circuit.connect(alpha, expected);
+        let compiled = circuit.build().unwrap();
+        let mut runner = compiled.runner();
+        runner
+            .set_public_inputs(&[Challenge::from(witness)])
+            .unwrap();
+        runner.run().is_ok()
+    }
+
+    #[test]
+    fn opening_batch_pow_matches_native_and_rejects_invalid_nonce_and_changed_claims() {
+        use p3_challenger::{DuplexChallenger, FieldChallenger, GrindingChallenger};
+        let mut initial =
+            DuplexChallenger::<F, _, 16, 8>::new(p3_koala_bear::default_koalabear_poseidon2_16());
+        let claims = [F::from_u64(31), F::from_u64(79)];
+        initial.observe_slice(&claims);
+        let mut native = initial.clone();
+        let nonce = native.grind(4);
+        let alpha: Challenge = native.sample_algebra_element();
+        assert!(run_batch_pow_transcript(4, &claims, nonce, alpha));
+        let invalid = (0..F::ORDER_U64)
+            .map(F::from_u64)
+            .find(|&candidate| !initial.clone().check_witness(4, candidate))
+            .unwrap();
+        assert!(!run_batch_pow_transcript(4, &claims, invalid, alpha));
+        let changed = (0..F::ORDER_U64)
+            .map(F::from_u64)
+            .find(|&claim| {
+                let mut challenger = DuplexChallenger::<F, _, 16, 8>::new(
+                    p3_koala_bear::default_koalabear_poseidon2_16(),
+                );
+                challenger.observe_slice(&[claim, claims[1]]);
+                !challenger.check_witness(4, nonce)
+            })
+            .unwrap();
+        assert!(!run_batch_pow_transcript(
+            4,
+            &[changed, claims[1]],
+            nonce,
+            alpha
+        ));
+        // A skipped grinding step samples a different alpha from the pre-nonce transcript.
+        let skipped: Challenge = initial.clone().sample_algebra_element();
+        assert_ne!(skipped, alpha);
+        assert!(!run_batch_pow_transcript(4, &claims, nonce, skipped));
+    }
+
+    #[test]
+    fn zero_batch_pow_requires_zero_and_preserves_native_alpha() {
+        use p3_challenger::{DuplexChallenger, FieldChallenger};
+        let claims = [F::from_u64(31), F::from_u64(79)];
+        let mut native =
+            DuplexChallenger::<F, _, 16, 8>::new(p3_koala_bear::default_koalabear_poseidon2_16());
+        native.observe_slice(&claims);
+        let alpha: Challenge = native.sample_algebra_element();
+        assert!(run_batch_pow_transcript(0, &claims, F::ZERO, alpha));
+        assert!(!run_batch_pow_transcript(0, &claims, F::ONE, alpha));
+    }
+
+    #[test]
+    fn batch_pow_witness_is_extracted_and_prepared_as_a_runtime_value() {
+        let proof = ordinary_opening(&[1]);
+        let mut changed = proof.clone();
+        changed.batch_pow_witness = F::ONE;
+        let original = OpeningTargets::get_values(&proof);
+        let altered = OpeningTargets::get_values(&changed);
+        assert_ne!(
+            original, altered,
+            "batch witness must not be dropped during extraction"
+        );
+        assert!(
+            OpeningTargets::input_shape(&proof).unwrap()
+                == OpeningTargets::input_shape(&changed).unwrap(),
+            "nonce contents are runtime values, not a prepared-shape constant"
+        );
+        let mut circuit = CircuitBuilder::<Challenge>::new();
+        let _targets = OpeningTargets::new(&mut circuit, &changed);
+        assert_eq!(circuit.public_input_count(), altered.len());
+    }
+
+    #[test]
+    fn batch_pow_difficulty_binds_the_pcs_seed() {
+        let counts = vec![vec![vec![1]]];
+        let zero = fri_pcs_transcript_seed::<F, Challenge>(counts.clone(), 0);
+        let positive = fri_pcs_transcript_seed::<F, Challenge>(counts.clone(), 4);
+        assert_ne!(zero, positive);
+        assert_eq!(
+            zero,
+            domain_separator_seed(
+                &p3_fri::PcsShape {
+                    claimed_evaluation_counts: counts,
+                    batch_pow_bits: 0
+                }
+                .domain_separator::<F, Challenge>()
+            )
+        );
+    }
+
     fn frontier(count: usize) -> PrunedMerklePaths<F, DIGEST_ELEMS> {
         PrunedMerklePaths {
             sibling_hashes: vec![[F::ZERO; DIGEST_ELEMS]; count],
@@ -5141,7 +5310,7 @@ mod prepared_shape_tests {
             max_matrix_width: 2,
             max_final_poly_evaluations: 1,
             max_cap_roots: 1,
-            max_total_scalar_elements: 17,
+            max_total_scalar_elements: 18,
             max_compressed_frontier_hashes: 5,
             ..VerifierLimits::default()
         };
@@ -5156,7 +5325,7 @@ mod prepared_shape_tests {
         assert_eq!(usage.cap_roots, 1);
         assert_eq!(usage.final_poly_evaluations, 1);
         assert_eq!(usage.compressed_frontier_hashes, 5);
-        assert_eq!(usage.scalar_elements, 17);
+        assert_eq!(usage.scalar_elements, 18);
 
         for (limits, component) in [
             (
@@ -5210,7 +5379,7 @@ mod prepared_shape_tests {
             ),
             (
                 VerifierLimits {
-                    max_total_scalar_elements: 16,
+                    max_total_scalar_elements: 17,
                     ..exact
                 },
                 "scalar elements",
@@ -5301,7 +5470,7 @@ mod prepared_shape_tests {
         proof.1.commit_phase_openings[0].opening_proof.1 = frontier(3);
         let exact = VerifierLimits {
             max_matrix_width: 4,
-            max_total_scalar_elements: 26,
+            max_total_scalar_elements: 27,
             max_compressed_frontier_hashes: 5,
             ..VerifierLimits::default()
         };
@@ -5310,13 +5479,13 @@ mod prepared_shape_tests {
             <RecHidingMmcs as RecursiveMmcs<F, Challenge>>::Commitment,
         >>::check_fri_resources(&proof, &exact)
         .expect("hiding proof is accepted at its literal resource boundaries");
-        assert_eq!(usage.scalar_elements, 26);
+        assert_eq!(usage.scalar_elements, 27);
         assert_eq!(usage.compressed_frontier_hashes, 5);
 
         for (limits, component) in [
             (
                 VerifierLimits {
-                    max_total_scalar_elements: 25,
+                    max_total_scalar_elements: 26,
                     ..exact
                 },
                 "scalar elements",

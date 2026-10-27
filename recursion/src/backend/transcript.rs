@@ -95,6 +95,12 @@ where
                 common_data,
                 non_primitive_provers,
             ),
+            8 => replay_batch_layer_transcript::<SC, 8>(
+                config,
+                proof,
+                common_data,
+                non_primitive_provers,
+            ),
             d => Err(VerificationError::InvalidProofShape(format!(
                 "unsupported batch proof ext_degree {d}"
             ))),

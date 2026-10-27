@@ -229,6 +229,7 @@ macro_rules! random_codeword_impl {
     };
 }
 
+random_codeword_impl!(ExperimentalKoalaBearD8Poseidon2W24RandomCodewordConfig, KoalaBear, BinomialExtensionField<KoalaBear, 8>, 12, FieldEncoding::u32(), experimental_koala_bear_d8_poseidon2_w24_random_codeword);
 random_codeword_impl!(BabyBearD4Poseidon2RandomCodewordConfig, BabyBear, BinomialExtensionField<BabyBear, 4>, 8, FieldEncoding::u32(), baby_bear_d4_poseidon2_random_codeword);
 random_codeword_impl!(BabyBearD4Poseidon1RandomCodewordConfig, BabyBear, BinomialExtensionField<BabyBear, 4>, 8, FieldEncoding::u32(), baby_bear_d4_poseidon1_random_codeword);
 random_codeword_impl!(KoalaBearD4Poseidon2RandomCodewordConfig, KoalaBear, BinomialExtensionField<KoalaBear, 4>, 8, FieldEncoding::u32(), koala_bear_d4_poseidon2_random_codeword);
@@ -675,6 +676,9 @@ pub(crate) fn decode_portable_verifier(
         };
     }
     match suite {
+        SuiteIdV1::ExperimentalKoalaBearD8Poseidon2W24RandomCodewordFri => {
+            decode!(ExperimentalKoalaBearD8Poseidon2W24RandomCodewordConfig<StdRng>)
+        }
         SuiteIdV1::BabyBearD4Poseidon2BinaryFri => decode!(BabyBearD4Poseidon2BinaryConfig),
         SuiteIdV1::BabyBearD4Poseidon1BinaryFri => decode!(BabyBearD4Poseidon1BinaryConfig),
         SuiteIdV1::KoalaBearD4Poseidon2BinaryFri => decode!(KoalaBearD4Poseidon2BinaryConfig),

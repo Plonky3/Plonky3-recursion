@@ -242,6 +242,82 @@ fn whir_trusted_batch_statement_replay_uses_each_caller_expected_vector() {
 }
 
 #[test]
+fn positive_opening_batch_grinding_full_and_prepared_recursion() {
+    let n = 1 << 6;
+    let air = FibonacciAir {};
+    let (config, backend) =
+        common::koala_bear_d4_recursion_config_and_backend_with_batch_pow_bits(4);
+    let params = ProveNextLayerParams::default();
+    let pis = vec![F::ZERO, F::ONE, fibonacci_output::<F>(0, 1, n)];
+    let proof = prove(&config, &air, generate_trace_rows::<F>(0, 1, n), &pis).unwrap();
+    verify(&config, &air, &proof, &pis).unwrap();
+    let input = RecursionInput::UniStark {
+        proof: &proof,
+        air: &air,
+        public_inputs: pis.clone(),
+        preprocessed_commit: None,
+    };
+    let full = build_and_prove_next_layer(&input, &config, &backend, &params)
+        .expect("positive batch work must prove through the full circuit path");
+    verify_fri_output(&config, &params, &full);
+    let prepared = PreparedLayer::<
+        common::KoalaBearD4RecursionConfig,
+        FibonacciAir,
+        common::KoalaBearD4Backend,
+        4,
+    >::new(
+        PreparedSource::UniStark {
+            air: &air,
+            proof: &proof,
+            public_inputs: &pis,
+            preprocessed_commit: None,
+        },
+        config.clone(),
+        backend,
+        params.clone(),
+    )
+    .unwrap();
+    for (start_a, start_b) in [(0, 1), (2, 3)] {
+        let values = vec![
+            F::from_u64(start_a),
+            F::from_u64(start_b),
+            fibonacci_output::<F>(start_a, start_b, n),
+        ];
+        let replacement = prove(
+            &config,
+            &air,
+            generate_trace_rows::<F>(start_a, start_b, n),
+            &values,
+        )
+        .unwrap();
+        verify(&config, &air, &replacement, &values).unwrap();
+        let out = prepared
+            .prove(PreparedInput::UniStark {
+                proof: &replacement,
+                public_inputs: &values,
+                preprocessed_commit: None,
+            })
+            .expect("batch witness must be refreshed for the prepared circuit");
+        verify_fri_output(&config, &params, &out);
+        let mut invalid = replacement;
+        invalid.opening_proof.batch_pow_witness += F::ONE;
+        // Search deterministically until native verification rejects: nonce reuse alone is not a rejection rule.
+        while verify(&config, &air, &invalid, &values).is_ok() {
+            invalid.opening_proof.batch_pow_witness += F::ONE;
+        }
+        assert!(
+            prepared
+                .prove(PreparedInput::UniStark {
+                    proof: &invalid,
+                    public_inputs: &values,
+                    preprocessed_commit: None
+                })
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn fri_uni_prepared_layer_reuses_varied_witnesses_after_reference_drop() {
     let log_n = 10;
     let n = 1 << log_n;

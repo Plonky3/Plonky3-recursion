@@ -241,6 +241,35 @@ impl<const WIDTH: usize, const RATE: usize, C: ChallengerPermConfig>
     ) where
         EF: p3_field::Field,
     {
+        if poseidon2_config == Poseidon2Config::KOALA_BEAR_D1_W24 {
+            assert_eq!(
+                (WIDTH, RATE),
+                (24, 12),
+                "scalar W24 challenger geometry mismatch"
+            );
+            let inputs = (0..WIDTH)
+                .map(|i| if i < RATE { Some(self.state[i]) } else { None })
+                .collect();
+            let (_, outputs) = circuit
+                .add_poseidon2_perm(&p3_circuit::ops::Poseidon2PermCall {
+                    config: poseidon2_config.for_challenger(),
+                    new_start: !self.duplexed_once,
+                    merkle_path: false,
+                    mmcs_bit: None,
+                    mmcs_bit2: None,
+                    inputs,
+                    out_ctl: vec![true; RATE],
+                    return_all_outputs: true,
+                    absorb_len,
+                })
+                .expect("scalar W24 challenger permutation should succeed");
+            self.duplexed_once = true;
+            self.state = outputs
+                .into_iter()
+                .map(|x| x.expect("W24 full state output"))
+                .collect();
+            return;
+        }
         let (new_start, inputs) = if !self.duplexed_once {
             // First permutation: CTL-verify rate only; capacity is zero without witness CTL.
             let inputs: [Option<Target>; 16] =

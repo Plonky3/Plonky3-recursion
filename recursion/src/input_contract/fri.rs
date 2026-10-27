@@ -17,6 +17,7 @@ pub struct FriShape<C, I, M, W> {
     pub(crate) commit_phase_openings: Vec<FriCommitStepShape<M>>,
     pub(crate) final_poly: usize,
     pub(crate) query_pow_witness: W,
+    pub(crate) batch_pow_witness: W,
 }
 
 /// Allocation-relevant structure of one FRI commit-phase opening round.

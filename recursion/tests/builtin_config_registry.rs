@@ -9,6 +9,10 @@ use p3_recursion::builtin_config::{
 };
 
 const SUITES: &[(u16, SuiteIdV1)] = &[
+    (
+        0xF824,
+        SuiteIdV1::ExperimentalKoalaBearD8Poseidon2W24RandomCodewordFri,
+    ),
     (0x0101, SuiteIdV1::BabyBearD4Poseidon2BinaryFri),
     (0x0102, SuiteIdV1::BabyBearD4Poseidon1BinaryFri),
     (0x0103, SuiteIdV1::KoalaBearD4Poseidon2BinaryFri),

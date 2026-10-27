@@ -2029,12 +2029,13 @@ mod test {
     use crate::columns::{POSEIDON2_LIMBS, POSEIDON2_PUBLIC_OUTPUT_LIMBS};
     use crate::{
         BabyBearD4Width16, BabyBearD4Width24, BabyBearD4Width32, GoldilocksD2Width16,
-        KoalaBearD1Width16, KoalaBearD1Width32, KoalaBearD4Width16, KoalaBearD4Width24,
-        KoalaBearD4Width32, Poseidon2CircuitAirBabyBearD4Width16,
+        KoalaBearD1Width16, KoalaBearD1Width24, KoalaBearD1Width32, KoalaBearD4Width16,
+        KoalaBearD4Width24, KoalaBearD4Width32, Poseidon2CircuitAirBabyBearD4Width16,
         Poseidon2CircuitAirBabyBearD4Width24, Poseidon2CircuitAirBabyBearD4Width32,
-        Poseidon2CircuitAirGoldilocksD2Width8, Poseidon2CircuitAirKoalaBearD1Width32,
-        Poseidon2CircuitAirKoalaBearD4Width16, Poseidon2CircuitAirKoalaBearD4Width24,
-        Poseidon2CircuitAirKoalaBearD4Width32, goldilocks_d2_width8_round_constants,
+        Poseidon2CircuitAirGoldilocksD2Width8, Poseidon2CircuitAirKoalaBearD1Width24WitnessBus8,
+        Poseidon2CircuitAirKoalaBearD1Width32, Poseidon2CircuitAirKoalaBearD4Width16,
+        Poseidon2CircuitAirKoalaBearD4Width24, Poseidon2CircuitAirKoalaBearD4Width32,
+        goldilocks_d2_width8_round_constants,
     };
 
     const WIDTH: usize = 16;
@@ -2332,6 +2333,65 @@ mod test {
         }
         let (air, trace) = w24_challenger_air_and_trace(&rows);
         assert_air_satisfies::<Val, BinomialExtensionField<Val, 4>, _>(&air, &trace);
+    }
+
+    fn scalar_w24_d8_challenger_air_and_trace(
+        initial_capacity_shift: KoalaBear,
+        continuation_shift: KoalaBear,
+    ) -> (
+        Poseidon2CircuitAirKoalaBearD1Width24WitnessBus8,
+        RowMajorMatrix<KoalaBear>,
+    ) {
+        const RATE: usize = 12;
+        const ABSORB: usize = 5;
+        let mut opened = [KoalaBear::ZERO; 24];
+        for (index, element) in opened.iter_mut().take(ABSORB).enumerate() {
+            *element = KoalaBear::from_usize(index + 1);
+        }
+        opened[RATE] = KoalaBear::from_usize(ABSORB) + initial_capacity_shift;
+        let mut continuation = p3_koala_bear::default_koalabear_poseidon2_24().permute(opened);
+        continuation[0] += continuation_shift;
+        let row = |new_start: bool, input_values: [KoalaBear; 24], absorb_len: usize| {
+            Poseidon2CircuitRow {
+                challenger: true,
+                new_start,
+                merkle_path: false,
+                mmcs_bit: false,
+                mmcs_bit2: false,
+                input_values: input_values.to_vec().into(),
+                in_ctl: (0..24).map(|i| new_start && i < RATE).collect(),
+                input_indices: vec![0; 24].into(),
+                out_ctl: vec![false; RATE].into(),
+                output_indices: vec![0; RATE].into(),
+                mmcs_bit_idx: 0,
+                mmcs_bit2_idx: 0,
+                absorb_len,
+            }
+        };
+        let rows = vec![
+            row(true, opened, ABSORB),
+            row(false, continuation, 0),
+            row(true, [KoalaBear::ZERO; 24], 0),
+            row(true, [KoalaBear::ZERO; 24], 0),
+        ];
+        let preprocessed =
+            extract_preprocessed_from_operations::<24, 12, KoalaBear, KoalaBear>(&rows, 8, 1, true);
+        let constants = KoalaBearD1Width24::round_constants();
+        let air = KoalaBearD1Width24::default_air_with_preprocessed_witness_bus8(preprocessed, 4)
+            .with_challenger_role(true);
+        let trace = air.generate_trace_rows(&rows, &constants, 0);
+        (air, trace)
+    }
+
+    #[test]
+    fn scalar_w24_d8_challenger_air_binds_initial_capacity_and_squeeze_chain() {
+        type KbD8 = BinomialExtensionField<KoalaBear, 8>;
+        let (air, trace) = scalar_w24_d8_challenger_air_and_trace(KoalaBear::ZERO, KoalaBear::ZERO);
+        assert_air_satisfies::<KoalaBear, KbD8, _>(&air, &trace);
+        let (air, trace) = scalar_w24_d8_challenger_air_and_trace(KoalaBear::ONE, KoalaBear::ZERO);
+        assert_air_rejects::<KoalaBear, KbD8, _>(&air, &trace);
+        let (air, trace) = scalar_w24_d8_challenger_air_and_trace(KoalaBear::ZERO, KoalaBear::ONE);
+        assert_air_rejects::<KoalaBear, KbD8, _>(&air, &trace);
     }
 
     #[test]

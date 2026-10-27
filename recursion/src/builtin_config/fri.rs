@@ -177,7 +177,7 @@ fn checked_parameters<M>(
         log_blowup: descriptor.log_blowup() as usize,
         log_final_poly_len: descriptor.log_final_poly_len() as usize,
         num_queries: descriptor.num_queries() as usize,
-        batch_proof_of_work_bits: 0,
+        batch_proof_of_work_bits: descriptor.batch_pow_bits() as usize,
         commit_proof_of_work_bits: descriptor.commit_pow_bits() as usize,
         query_proof_of_work_bits: descriptor.query_pow_bits() as usize,
         mmcs,
@@ -192,10 +192,11 @@ fn checked_parameters<M>(
         }
     }
     .map_err(BuiltinConfigError::NativeFri)?;
-    let recursive = FriVerifierParams::try_with_mmcs(
+    let recursive = FriVerifierParams::try_with_mmcs_and_batch(
         params.log_blowup,
         params.log_final_poly_len,
         params.max_log_arity,
+        params.batch_proof_of_work_bits,
         params.commit_proof_of_work_bits,
         params.query_proof_of_work_bits,
         params.num_queries,
@@ -467,6 +468,7 @@ macro_rules! random_codeword_factory {
 
 random_codeword_factory!(BabyBearD4Poseidon2RandomCodewordConfig, baby_bear_d4_poseidon2_random_codeword, BabyBear, BinomialExtensionField<BabyBear, 4>, Poseidon2BabyBear<16>, 16, 8, 8, SuiteIdV1::BabyBearD4Poseidon2RandomCodewordFri, default_babybear_poseidon2_16());
 random_codeword_factory!(BabyBearD4Poseidon1RandomCodewordConfig, baby_bear_d4_poseidon1_random_codeword, BabyBear, BinomialExtensionField<BabyBear, 4>, Poseidon1BabyBear<16>, 16, 8, 8, SuiteIdV1::BabyBearD4Poseidon1RandomCodewordFri, default_babybear_poseidon1_16());
+random_codeword_factory!(ExperimentalKoalaBearD8Poseidon2W24RandomCodewordConfig, experimental_koala_bear_d8_poseidon2_w24_random_codeword, KoalaBear, BinomialExtensionField<KoalaBear, 8>, Poseidon2KoalaBear<24>, 24, 12, 12, SuiteIdV1::ExperimentalKoalaBearD8Poseidon2W24RandomCodewordFri, p3_koala_bear::default_koalabear_poseidon2_24());
 random_codeword_factory!(KoalaBearD4Poseidon2RandomCodewordConfig, koala_bear_d4_poseidon2_random_codeword, KoalaBear, BinomialExtensionField<KoalaBear, 4>, Poseidon2KoalaBear<16>, 16, 8, 8, SuiteIdV1::KoalaBearD4Poseidon2RandomCodewordFri, default_koalabear_poseidon2_16());
 random_codeword_factory!(KoalaBearD4Poseidon1RandomCodewordConfig, koala_bear_d4_poseidon1_random_codeword, KoalaBear, BinomialExtensionField<KoalaBear, 4>, Poseidon1KoalaBear<16>, 16, 8, 8, SuiteIdV1::KoalaBearD4Poseidon1RandomCodewordFri, default_koalabear_poseidon1_16());
 random_codeword_factory!(GoldilocksD2Poseidon2RandomCodewordConfig, goldilocks_d2_poseidon2_random_codeword, Goldilocks, BinomialExtensionField<Goldilocks, 2>, Poseidon2Goldilocks<8>, 8, 4, 4, SuiteIdV1::GoldilocksD2Poseidon2RandomCodewordFri, fixed_goldilocks_poseidon2_8());

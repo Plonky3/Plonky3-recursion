@@ -77,6 +77,25 @@ where
     }
 }
 
+/// Scalar W24 execution embedded in D8. The AIR's eight-coefficient witness
+/// bus binds each input/output scalar; no packed digest or truncation is used.
+#[derive(Clone)]
+struct LiftPermToOctic<P> {
+    perm: P,
+}
+impl<P> Permutation<[BinomialExtensionField<KoalaBear, 8>; 24]> for LiftPermToOctic<P>
+where
+    P: Permutation<[KoalaBear; 24]>,
+{
+    fn permute(
+        &self,
+        input: [BinomialExtensionField<KoalaBear, 8>; 24],
+    ) -> [BinomialExtensionField<KoalaBear, 8>; 24] {
+        let scalar = core::array::from_fn(|i| input[i].as_basis_coefficients_slice()[0]);
+        self.perm.permute(scalar).map(BinomialExtensionField::from)
+    }
+}
+
 macro_rules! opening_targets {
     (ordinary, $field:ty, $challenge:ty, $digest:expr, $rec_ext:ident, $rec_mmcs:ty) => {
         FriProofTargets<
@@ -223,7 +242,7 @@ macro_rules! impl_plain_fri {
                         log_blowup: descriptor.log_blowup() as usize,
                         log_final_poly_len: descriptor.log_final_poly_len() as usize,
                         num_queries: descriptor.num_queries() as usize,
-                        batch_proof_of_work_bits: 0,
+                        batch_proof_of_work_bits: descriptor.batch_pow_bits() as usize,
                         commit_proof_of_work_bits: descriptor.commit_pow_bits() as usize,
                         query_proof_of_work_bits: descriptor.query_pow_bits() as usize,
                         mmcs: ExtensionMmcs::new(commit_mmcs.clone()),
@@ -797,7 +816,7 @@ mod koala_bear_d4_poseidon2_salted {
                 log_blowup: descriptor.log_blowup() as usize,
                 log_final_poly_len: descriptor.log_final_poly_len() as usize,
                 num_queries: descriptor.num_queries() as usize,
-                batch_proof_of_work_bits: 0,
+                batch_proof_of_work_bits: descriptor.batch_pow_bits() as usize,
                 commit_proof_of_work_bits: descriptor.commit_pow_bits() as usize,
                 query_proof_of_work_bits: descriptor.query_pow_bits() as usize,
                 mmcs: ExtensionMmcs::new(commit_hiding_mmcs),
@@ -839,3 +858,22 @@ mod koala_bear_d4_poseidon2_salted {
         }
     }
 }
+
+random_codeword_fri!(
+    experimental_koala_bear_d8_poseidon2_w24_random,
+    ExperimentalKoalaBearD8Poseidon2W24RandomCodewordConfig<R>,
+    KoalaBear, BinomialExtensionField<KoalaBear, 8>, Poseidon2KoalaBear<24>,
+    24, 12, 12, Poseidon2Config::KOALA_BEAR_D1_W24,
+    p3_koala_bear::default_koalabear_poseidon2_24(),
+    |circuit| {
+        circuit.enable_poseidon2_perm_base_width_24::<p3_poseidon2_circuit_air::KoalaBearD1Width24, _>(
+            generate_poseidon2_trace::<BinomialExtensionField<KoalaBear, 8>, p3_poseidon2_circuit_air::KoalaBearD1Width24>,
+            LiftPermToOctic { perm: p3_koala_bear::default_koalabear_poseidon2_24() },
+        );
+        circuit.enable_recompose::<KoalaBear>(
+            generate_recompose_trace::<KoalaBear, BinomialExtensionField<KoalaBear, 8>>,
+        );
+        circuit.set_recompose_coeff_ctl_for_decompose_links(true);
+        Ok(())
+    }
+);

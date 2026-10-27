@@ -196,6 +196,7 @@ impl_statement_preprocessor!(
     [
         KoalaBear => 1,
         BinomialExtensionField<KoalaBear, 4> => 4,
+        BinomialExtensionField<KoalaBear, 8> => 8,
         QuinticTrinomialExtensionField<KoalaBear> => 5,
     ]
 );
