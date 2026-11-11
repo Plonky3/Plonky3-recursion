@@ -1,10 +1,10 @@
 //! Bus-binding regression for the MMCS leaf-hash absorb.
 //!
 //! `verify_batch_circuit` packs each leaf's opened base-field coefficients into extension
-//! limbs before absorbing them into the sponge. Eligible non-hiding binary D4/W16 Poseidon2
-//! leaves use the `recompose/coeff` table, which publishes each coefficient on the
+//! limbs before absorbing them into the sponge. Eligible binary D4/W16 Poseidon2 leaves, hiding
+//! ones included, use the `recompose/coeff` table, which publishes each coefficient on the
 //! `WitnessChecks` bus and exposes coefficient identity in preprocessed metadata. Excluded
-//! routes retain the legacy ALU lowering, including hiding-MMCS salts.
+//! routes retain the legacy ALU lowering.
 
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_16};
 use p3_circuit::ops::{Op, Poseidon2Config, generate_poseidon2_trace, generate_recompose_trace};
@@ -216,18 +216,6 @@ fn writer_position<F: p3_field::Field>(circuit: &Circuit<F>, wid: WitnessId) -> 
 }
 
 /// Every witness read by a Poseidon2 permutation, in op order.
-fn permutation_input_witnesses<F: p3_field::Field>(circuit: &Circuit<F>) -> Vec<WitnessId> {
-    circuit
-        .ops
-        .iter()
-        .filter(|op| is_npo_type(op, "poseidon2_perm"))
-        .flat_map(|op| match op {
-            Op::NonPrimitiveOpWithExecutor { inputs, .. } => inputs.concat(),
-            _ => unreachable!(),
-        })
-        .collect()
-}
-
 /// Witnesses absorbed by the first `chunk_count` sponge permutations that hash one leaf.
 fn leaf_hash_input_witnesses<F: p3_field::Field>(
     circuit: &Circuit<F>,
@@ -409,23 +397,47 @@ fn partial_chunk_carry_over_coefficients_use_coefficient_bound_recompose() {
     }
 }
 
+/// A hiding leaf is `[row | salt]`, and a verifier reads the row's coefficients one at a time, so
+/// each must be held to a base-field element where the leaf hash packs it, just as an unsalted
+/// row's are. Two widths: a row of six, whose second limb holds the row's last two coefficients and
+/// the salt's two; and a row of eight, whose salt falls in a second, partial chunk that carries the
+/// rest of its limb over from the first permutation's output.
 #[test]
-fn salted_leaf_hash_keeps_the_legacy_alu_lowering() {
-    let circuit = build_leaf_hash_circuit_with_salts(LEAF_WIDTH);
-    let perm_inputs = permutation_input_witnesses(&circuit);
-    assert!(
-        perm_inputs
-            .iter()
-            .any(|&wid| { matches!(circuit.ops[writer_position(&circuit, wid)], Op::Alu { .. }) }),
-        "hiding leaves must keep their ALU packing"
-    );
-    assert!(
-        !circuit
-            .ops
-            .iter()
-            .any(|op| is_npo_type(op, "recompose/coeff")),
-        "hiding leaves must not select coefficient-bound packing"
-    );
+fn salted_leaf_limbs_use_coefficient_bound_recompose() {
+    for (leaf_width, chunks) in [(LEAF_WIDTH - 2, 1), (LEAF_WIDTH, 2)] {
+        let circuit = build_leaf_hash_circuit_with_salts(leaf_width);
+        let leaf_inputs = leaf_hash_input_witnesses(&circuit, chunks, CFG.rate_ext());
+        assert!(
+            !leaf_inputs.is_empty(),
+            "a {leaf_width}-wide salted leaf must absorb through a sponge permutation"
+        );
+        assert!(
+            leaf_inputs.iter().all(|&wid| {
+                is_exact_npo_type(
+                    &circuit.ops[writer_position(&circuit, wid)],
+                    "recompose/coeff",
+                )
+            }),
+            "every limb of a {leaf_width}-wide salted leaf, the one holding salt included, must be \
+             written by an exact coefficient-bound row"
+        );
+        for op in &circuit.ops {
+            if let Op::Hint { outputs, .. } = op {
+                for out in outputs {
+                    assert!(
+                        circuit.ops.iter().any(|other| matches!(
+                            other,
+                            Op::NonPrimitiveOpWithExecutor { inputs, .. }
+                                if is_exact_npo_type(other, "recompose/coeff")
+                                    && inputs.iter().flatten().any(|input| input == out)
+                        )),
+                        "hint output {out:?} of a {leaf_width}-wide salted leaf is never read by \
+                         a coefficient-bound recompose op"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
