@@ -37,16 +37,17 @@ enum BaseCoeffPacking {
     CoeffBound,
 }
 
-fn use_coeff_bound_binary_base_opening<F, EF>(
-    permutation_config: PermConfig,
-    salts: Option<&[Vec<Target>]>,
-) -> bool
+/// Whether a binary base opening packs its leaf through the coefficient-bound recompose table.
+///
+/// A hiding opening is eligible as well, and its salts are bound with its row: a limb can hold the
+/// end of a row and the start of its salt, so binding the row's coefficients alone would leave the
+/// ones sharing a limb with salt free to move.
+fn use_coeff_bound_binary_base_opening<F, EF>(permutation_config: PermConfig) -> bool
 where
     F: Field,
     EF: ExtensionField<F>,
 {
     <EF as BasedVectorSpace<F>>::DIMENSION == 4
-        && salts.is_none()
         && permutation_config.as_poseidon2().is_some_and(|config| {
             config.d() == 4
                 && config.width() == 16
@@ -376,10 +377,10 @@ where
 ///   `MerkleTreeHidingMmcs`, which commits `[row | salt]` per matrix). `None` for a
 ///   non-hiding `MerkleTreeMmcs`.
 ///
-/// For the ordinary non-hiding binary BabyBear/KoalaBear D4 W16 Poseidon2 geometry, this entry
-/// point uses the coefficient-bound recompose table for leaf packing and fails closed with
-/// `RecomposeCoeffLookupsUnavailable` when that table is not enabled. Other geometries and hiding
-/// calls retain the legacy ALU lowering.
+/// For the ordinary binary BabyBear/KoalaBear D4 W16 Poseidon2 geometry, hiding or not, this entry
+/// point uses the coefficient-bound recompose table for leaf packing, salts included, and fails
+/// closed with `RecomposeCoeffLookupsUnavailable` when that table is not enabled. Other geometries
+/// retain the legacy ALU lowering.
 pub fn verify_batch_circuit<F, EF>(
     circuit: &mut CircuitBuilder<EF>,
     permutation_config: impl Into<PermConfig>,
@@ -394,7 +395,7 @@ where
     EF: ExtensionField<F>,
 {
     let permutation_config: PermConfig = permutation_config.into();
-    let packing = if use_coeff_bound_binary_base_opening::<F, EF>(permutation_config, salts) {
+    let packing = if use_coeff_bound_binary_base_opening::<F, EF>(permutation_config) {
         BaseCoeffPacking::CoeffBound
     } else {
         BaseCoeffPacking::Alu
@@ -430,7 +431,7 @@ where
     let permutation_config: PermConfig = permutation_config.into();
     let degree = <EF as BasedVectorSpace<F>>::DIMENSION;
     let packing = if (matches!(degree, 2 | 4) && permutation_config.d() == degree)
-        || use_coeff_bound_binary_base_opening::<F, EF>(permutation_config, None)
+        || use_coeff_bound_binary_base_opening::<F, EF>(permutation_config)
     {
         BaseCoeffPacking::CoeffBound
     } else {
