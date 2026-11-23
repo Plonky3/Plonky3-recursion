@@ -8,7 +8,6 @@ targets = [
 [advisories]
 version = 2
 ignore = [
-    "RUSTSEC-2021-0139",    # ansi_term from tracing-forest
     "RUSTSEC-2024-0436",    # paste from p3_field
 ]
 
